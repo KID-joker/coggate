@@ -3,6 +3,21 @@ use subtle::ConstantTimeEq;
 
 use crate::{CoreError, MacContext, compute_answer_mac};
 
+fn decode_answer_mac(answer_mac: &str) -> Result<[u8; 32], CoreError> {
+    let encoded = answer_mac.as_bytes();
+    if encoded.len() != 64
+        || !encoded
+            .iter()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    {
+        return Err(CoreError::InvalidChallengeMaterial);
+    }
+
+    let mut decoded = [0_u8; 32];
+    hex::decode_to_slice(encoded, &mut decoded).map_err(|_| CoreError::InvalidChallengeMaterial)?;
+    Ok(decoded)
+}
+
 pub fn verify_answer(
     key: &[u8],
     stored: &PrivateChallengeMaterial,
@@ -12,10 +27,7 @@ pub fn verify_answer(
         return Err(CoreError::InvalidChallengeMaterial);
     }
 
-    let stored_mac: [u8; 32] = hex::decode(&stored.answer_mac)
-        .map_err(|_| CoreError::InvalidChallengeMaterial)?
-        .try_into()
-        .map_err(|_| CoreError::InvalidChallengeMaterial)?;
+    let stored_mac = decode_answer_mac(&stored.answer_mac)?;
     let context = MacContext {
         challenge_id: stored.challenge_id.clone(),
         generator_version: stored.generator_version.clone(),

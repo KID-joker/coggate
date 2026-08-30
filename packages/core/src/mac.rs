@@ -5,6 +5,10 @@ use sha2::Sha256;
 use crate::{CoreError, canonicalize_answer};
 
 const DOMAIN: &[u8] = b"agentgate-answer-v1";
+const MAX_CHALLENGE_ID_BYTES: usize = 128;
+const MAX_GENERATOR_VERSION_BYTES: usize = 32;
+const MAX_NONCE_BYTES: usize = 256;
+const MAX_MAC_KEY_ID_BYTES: usize = 128;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MacContext {
@@ -17,9 +21,35 @@ pub struct MacContext {
     pub answer_encoding: AnswerEncoding,
 }
 
-fn push_field(encoded: &mut Vec<u8>, field: &[u8]) {
-    encoded.extend_from_slice(&(field.len() as u32).to_be_bytes());
-    encoded.extend_from_slice(field);
+fn answer_encoding_label(encoding: AnswerEncoding) -> &'static [u8] {
+    match encoding {
+        AnswerEncoding::Base64Url => b"base64url",
+    }
+}
+
+fn validate_context(context: &MacContext) -> Result<(), CoreError> {
+    let fields = [
+        (context.challenge_id.as_bytes(), MAX_CHALLENGE_ID_BYTES),
+        (
+            context.generator_version.as_bytes(),
+            MAX_GENERATOR_VERSION_BYTES,
+        ),
+        (context.nonce.as_bytes(), MAX_NONCE_BYTES),
+        (context.mac_key_id.as_bytes(), MAX_MAC_KEY_ID_BYTES),
+    ];
+
+    fields
+        .into_iter()
+        .all(|(field, limit)| field.len() <= limit)
+        .then_some(())
+        .ok_or(CoreError::InvalidChallengeMaterial)
+}
+
+fn push_field(mac: &mut Hmac<Sha256>, field: &[u8]) -> Result<(), CoreError> {
+    let field_len = u32::try_from(field.len()).map_err(|_| CoreError::InvalidChallengeMaterial)?;
+    mac.update(&field_len.to_be_bytes());
+    mac.update(field);
+    Ok(())
 }
 
 pub fn compute_answer_mac(
@@ -31,20 +61,19 @@ pub fn compute_answer_mac(
         return Err(CoreError::InvalidChallengeMaterial);
     }
 
+    validate_context(context)?;
     let canonical_answer = canonicalize_answer(context.answer_encoding, answer)?;
-    let mut encoded = Vec::new();
-    push_field(&mut encoded, DOMAIN);
-    push_field(&mut encoded, context.challenge_id.as_bytes());
-    push_field(&mut encoded, context.generator_version.as_bytes());
-    push_field(&mut encoded, context.nonce.as_bytes());
-    push_field(&mut encoded, &context.issued_at.to_be_bytes());
-    push_field(&mut encoded, &context.expires_at.to_be_bytes());
-    push_field(&mut encoded, context.mac_key_id.as_bytes());
-    push_field(&mut encoded, b"base64url");
-    push_field(&mut encoded, canonical_answer.as_bytes());
-
+    let answer_encoding = answer_encoding_label(context.answer_encoding);
     let mut mac =
         Hmac::<Sha256>::new_from_slice(key).map_err(|_| CoreError::InvalidChallengeMaterial)?;
-    mac.update(&encoded);
+    push_field(&mut mac, DOMAIN)?;
+    push_field(&mut mac, context.challenge_id.as_bytes())?;
+    push_field(&mut mac, context.generator_version.as_bytes())?;
+    push_field(&mut mac, context.nonce.as_bytes())?;
+    push_field(&mut mac, &context.issued_at.to_be_bytes())?;
+    push_field(&mut mac, &context.expires_at.to_be_bytes())?;
+    push_field(&mut mac, context.mac_key_id.as_bytes())?;
+    push_field(&mut mac, answer_encoding)?;
+    push_field(&mut mac, canonical_answer.as_bytes())?;
     Ok(mac.finalize().into_bytes().into())
 }
