@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PrivateChallengeMaterial",
+  "type": "object",
+  "properties": {
+    "answer_encoding": {
+      "$ref": "#/$defs/AnswerEncoding"
+    },
+    "answer_mac": {
+      "type": "string"
+    },
+    "challenge_id": {
+      "type": "string"
+    },
+    "expires_at": {
+      "type": "integer",
+      "format": "int64"
+    },
+    "generator_version": {
+      "type": "string"
+    },
+    "issued_at": {
+      "type": "integer",
+      "format": "int64"
+    },
+    "mac_key_id": {
+      "type": "string"
+    },
+    "nonce": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "challenge_id",
+    "generator_version",
+    "nonce",
+    "issued_at",
+    "expires_at",
+    "mac_key_id",
+    "answer_mac",
+    "answer_encoding"
+  ],
+  "$defs": {
+    "AnswerEncoding": {
+      "type": "string",
+      "enum": [
+        "base64url"
+      ]
+    }
+  }
+}

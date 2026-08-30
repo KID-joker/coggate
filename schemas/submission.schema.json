@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Submission",
+  "type": "object",
+  "properties": {
+    "answer": {
+      "type": "string"
+    },
+    "challenge_id": {
+      "type": "string"
+    },
+    "nonce": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "challenge_id",
+    "nonce",
+    "answer"
+  ]
+}

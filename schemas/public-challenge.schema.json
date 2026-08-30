@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PublicChallenge",
+  "type": "object",
+  "properties": {
+    "answer_encoding": {
+      "$ref": "#/$defs/AnswerEncoding"
+    },
+    "challenge_id": {
+      "type": "string"
+    },
+    "expires_at": {
+      "type": "integer",
+      "format": "int64"
+    },
+    "generator_version": {
+      "type": "string"
+    },
+    "issued_at": {
+      "type": "integer",
+      "format": "int64"
+    },
+    "nonce": {
+      "type": "string"
+    },
+    "question": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "challenge_id",
+    "generator_version",
+    "nonce",
+    "issued_at",
+    "expires_at",
+    "question",
+    "answer_encoding"
+  ],
+  "$defs": {
+    "AnswerEncoding": {
+      "type": "string",
+      "enum": [
+        "base64url"
+      ]
+    }
+  }
+}
