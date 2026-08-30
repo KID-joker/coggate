@@ -2,6 +2,8 @@ use agentgate_contracts::{
     CHALLENGE_TTL_SECONDS, MAX_SECRET_LENGTH, MIN_SECRET_LENGTH, fragment_count_for_secret_length,
 };
 
+const THREE_FRAGMENTS: Option<u8> = fragment_count_for_secret_length(MIN_SECRET_LENGTH);
+
 #[test]
 fn exposes_unified_generation_limits() {
     assert_eq!(MIN_SECRET_LENGTH, 8);
@@ -11,6 +13,8 @@ fn exposes_unified_generation_limits() {
 
 #[test]
 fn maps_supported_secret_lengths_to_fragment_counts() {
+    assert_eq!(THREE_FRAGMENTS, Some(3));
+
     for secret_length in 8..=10 {
         assert_eq!(fragment_count_for_secret_length(secret_length), Some(3));
     }
