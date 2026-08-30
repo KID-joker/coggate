@@ -58,7 +58,7 @@ fn public_challenge_fixture_deserializes() {
     assert_eq!(challenge.nonce, "bm9uY2U");
     assert_eq!(challenge.issued_at, 1_788_062_400);
     assert_eq!(challenge.expires_at, 1_788_062_408);
-    assert_eq!(challenge.question, "What is 2 + 2?");
+    assert_eq!(challenge.question, "fragment beta consumes fragment alpha");
 }
 
 #[test]

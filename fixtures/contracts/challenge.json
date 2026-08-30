@@ -4,6 +4,6 @@
   "nonce": "bm9uY2U",
   "issued_at": 1788062400,
   "expires_at": 1788062408,
-  "question": "What is 2 + 2?",
+  "question": "fragment beta consumes fragment alpha",
   "answer_encoding": "base64url"
 }
