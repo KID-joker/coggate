@@ -1,0 +1,6 @@
+/docs/
+/.worktrees/
+/target/
+.DS_Store
+.idea/
+.vscode/
