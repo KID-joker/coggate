@@ -49,9 +49,21 @@ impl Operation {
 
     pub fn validate_arity(&self, input_count: usize) -> Result<(), GenerationError> {
         match self.arity() {
-            Some(expected) if input_count == expected => Ok(()),
-            None if input_count >= 2 => Ok(()),
+            Some(expected) if input_count == expected => self.validate_static_parameters(),
+            None if input_count >= 2 => self.validate_static_parameters(),
             _ => Err(GenerationError::InvalidOperation),
+        }
+    }
+
+    fn validate_static_parameters(&self) -> Result<(), GenerationError> {
+        match self {
+            Self::Xor(key) if key.is_empty() => Err(GenerationError::InvalidOperation),
+            Self::Sha256Prefix(prefix_length) => valid_sha256_prefix(*prefix_length).map(|_| ()),
+            Self::Slice { start, end } if start > end => Err(GenerationError::InvalidOperation),
+            Self::Permute(permutation) if has_duplicate_indices(permutation) => {
+                Err(GenerationError::InvalidOperation)
+            }
+            _ => Ok(()),
         }
     }
 
@@ -256,17 +268,25 @@ fn validate_permutation(permutation: &[usize], input_length: usize) -> Result<()
         return Err(GenerationError::InvalidLength);
     }
 
+    if has_duplicate_indices(permutation) {
+        return Err(GenerationError::InvalidOperation);
+    }
+
     let mut seen = vec![false; input_length];
     for &index in permutation {
         let Some(slot) = seen.get_mut(index) else {
             return Err(GenerationError::InvalidOperation);
         };
-        if *slot {
-            return Err(GenerationError::InvalidOperation);
-        }
         *slot = true;
     }
     Ok(())
+}
+
+fn has_duplicate_indices(permutation: &[usize]) -> bool {
+    permutation
+        .iter()
+        .enumerate()
+        .any(|(index, value)| permutation[..index].contains(value))
 }
 
 fn concatenate(inputs: &[&[u8]], output_length: usize) -> Result<Vec<u8>, GenerationError> {
@@ -411,7 +431,7 @@ mod tests {
             Err(GenerationError::InvalidOperation)
         );
         assert_eq!(
-            Operation::Slice { start: 3, end: 1 }.evaluate(&[b"abcd"]),
+            Operation::Slice { start: 2, end: 1 }.evaluate(&[b"ab"]),
             Err(GenerationError::InvalidOperation)
         );
         assert_eq!(
@@ -419,7 +439,7 @@ mod tests {
             Err(GenerationError::InvalidLength)
         );
         assert_eq!(
-            Operation::HexDecode.evaluate(&[b"a"]),
+            Operation::HexDecode.evaluate(&[b"ABC"]),
             Err(GenerationError::InvalidEncoding)
         );
         assert_eq!(
@@ -427,7 +447,7 @@ mod tests {
             Err(GenerationError::InvalidEncoding)
         );
         assert_eq!(
-            Operation::Base64UrlDecode.evaluate(&[b"YT8="]),
+            Operation::Base64UrlDecode.evaluate(&[b"YQ=="]),
             Err(GenerationError::InvalidEncoding)
         );
         assert_eq!(
@@ -458,6 +478,18 @@ mod tests {
         assert_eq!(Operation::Concat.arity(), None);
         assert_eq!(Operation::ConditionalOrder.arity(), Some(3));
         assert_eq!(Operation::Concat.validate_arity(2), Ok(()));
+        assert_eq!(
+            Operation::Xor(vec![]).validate_arity(1),
+            Err(GenerationError::InvalidOperation)
+        );
+        assert_eq!(
+            Operation::Sha256Prefix(0).validate_arity(1),
+            Err(GenerationError::InvalidOperation)
+        );
+        assert_eq!(
+            Operation::Sha256Prefix(33).validate_arity(1),
+            Err(GenerationError::InvalidOperation)
+        );
         assert_eq!(
             Operation::Concat.validate_arity(1),
             Err(GenerationError::InvalidOperation)
