@@ -8,6 +8,10 @@ use super::{
     secret::{Secret, generate_with},
 };
 
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "consumed by the Phase 4 lifecycle API")
+)]
 pub(crate) struct PlannedSemantics {
     graph: ValidatedSemanticGraph,
     fragments: Vec<Vec<u8>>,
@@ -15,10 +19,7 @@ pub(crate) struct PlannedSemantics {
     cross_fragment_dependency_count: usize,
 }
 
-#[cfg_attr(
-    test,
-    expect(dead_code, reason = "consumed by the Phase 4 lifecycle API")
-)]
+#[expect(dead_code, reason = "consumed by the Phase 4 lifecycle API")]
 pub(crate) fn plan_semantics() -> Result<PlannedSemantics, GenerationError> {
     let mut random = OsRandom;
     let secret = generate_with(&mut random)?;
