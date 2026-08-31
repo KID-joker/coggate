@@ -32,6 +32,10 @@ impl<'a, R: RandomSource> NameAllocator<'a, R> {
     }
 
     pub(super) fn allocate_identifier(&mut self) -> Result<String, RenderError> {
+        if self.allocated.len() >= MAX_ALLOCATED_NAMES {
+            return Err(RenderError::NameExhausted);
+        }
+
         let start =
             sample_below(self.random, MAX_ALLOCATED_NAMES).map_err(|_| RenderError::InvalidPlan)?;
 
@@ -54,7 +58,25 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::{MAX_ALLOCATED_NAMES, MAX_IDENTIFIER_BYTES, NameAllocator};
-    use crate::generation::{render::error::RenderError, test_random::DeterministicRandom};
+    use crate::generation::{
+        GenerationError, random::RandomSource, render::error::RenderError,
+        test_random::DeterministicRandom,
+    };
+
+    struct FiniteRandom {
+        remaining: usize,
+    }
+
+    impl RandomSource for FiniteRandom {
+        fn fill(&mut self, destination: &mut [u8]) -> Result<(), GenerationError> {
+            if destination.len() > self.remaining {
+                return Err(GenerationError::RandomnessUnavailable);
+            }
+            destination.fill(0);
+            self.remaining -= destination.len();
+            Ok(())
+        }
+    }
 
     #[test]
     fn allocates_the_complete_namespace_without_duplicates() {
@@ -85,6 +107,22 @@ mod tests {
     #[test]
     fn reports_exhaustion_after_the_complete_namespace_is_allocated() {
         let mut random = DeterministicRandom::new([0x3C; 32]);
+        let mut allocator = NameAllocator::new(&mut random);
+        for _ in 0..MAX_ALLOCATED_NAMES {
+            allocator.allocate_identifier().unwrap();
+        }
+
+        assert_eq!(
+            allocator.allocate_identifier(),
+            Err(RenderError::NameExhausted)
+        );
+    }
+
+    #[test]
+    fn reports_name_exhaustion_without_requesting_more_randomness() {
+        let mut random = FiniteRandom {
+            remaining: MAX_ALLOCATED_NAMES,
+        };
         let mut allocator = NameAllocator::new(&mut random);
         for _ in 0..MAX_ALLOCATED_NAMES {
             allocator.allocate_identifier().unwrap();

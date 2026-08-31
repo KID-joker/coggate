@@ -47,9 +47,11 @@ mod tests {
         ];
 
         for error in errors {
-            let message = error.to_string();
-            assert!(!message.is_empty());
-            assert!(!message.contains(SECRET_MARKER));
+            let display = error.to_string();
+            let debug = format!("{error:?}");
+            assert!(!display.is_empty());
+            assert!(!display.contains(SECRET_MARKER));
+            assert!(!debug.contains(SECRET_MARKER));
         }
     }
 }
