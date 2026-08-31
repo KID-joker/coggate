@@ -6,6 +6,10 @@ use super::model::{RenderLanguage, TemplateFamily};
 
 pub(super) const MAX_STEP_BYTES: usize = 512;
 
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "consumed by later Phase 3 renderer tasks")
+)]
 pub(super) fn emit_operation(
     language: RenderLanguage,
     family: TemplateFamily,
@@ -21,6 +25,10 @@ pub(super) fn emit_operation(
     languages::emit_assignment(language, family, output_label, local_name, &expression)
 }
 
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "consumed by later Phase 3 renderer tasks")
+)]
 pub(super) fn emit_fragment(
     language: RenderLanguage,
     family: TemplateFamily,
@@ -40,6 +48,10 @@ pub(super) fn emit_fragment(
     languages::emit_assignment(language, family, output_label, local_name, &expression)
 }
 
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "consumed by later Phase 3 renderer tasks")
+)]
 pub(super) fn declared_template_max_bytes(
     language: RenderLanguage,
     family: TemplateFamily,
@@ -169,7 +181,10 @@ fn operation_expression(operation: &Operation, inputs: &[String]) -> Result<Stri
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_STEP_BYTES, declared_template_max_bytes, emit_fragment, emit_operation};
+    use super::{
+        MAX_STEP_BYTES, bounded_parts, declared_template_max_bytes, emit_fragment, emit_operation,
+        operation_expression,
+    };
     use crate::generation::Operation;
     use crate::generation::render::error::RenderError;
     use crate::generation::render::model::{RenderLanguage, TemplateFamily};
@@ -271,11 +286,14 @@ mod tests {
     }
 
     #[test]
-    fn operation_parameters_and_ordered_inputs_are_explicit() {
+    fn every_operation_expression_has_exact_helper_parameters_and_input_order() {
         let cases = [
+            (Operation::Reverse, "reverse(source_0)"),
             (Operation::RotateLeft(3), "rotate_left(source_0, 3)"),
             (Operation::RotateRight(2), "rotate_right(source_0, 2)"),
             (Operation::Xor(vec![1, 2]), "xor_repeat(source_0, [1, 2])"),
+            (Operation::EvenBytes, "even_bytes(source_0)"),
+            (Operation::OddBytes, "odd_bytes(source_0)"),
             (
                 Operation::Permute(vec![2, 0, 1]),
                 "permute(source_0, [2, 0, 1])",
@@ -283,6 +301,16 @@ mod tests {
             (
                 Operation::Slice { start: 1, end: 3 },
                 "slice(source_0, 1, 3)",
+            ),
+            (Operation::Concat, "concat(source_0, source_1, source_2)"),
+            (Operation::AddModulo, "add_u8(source_0, source_1)"),
+            (Operation::SubModulo, "sub_u8(source_0, source_1)"),
+            (Operation::HexEncode, "hex_lower(source_0)"),
+            (Operation::HexDecode, "hex_decode_lower(source_0)"),
+            (Operation::Base64UrlEncode, "base64url_no_pad(source_0)"),
+            (
+                Operation::Base64UrlDecode,
+                "base64url_decode_no_pad(source_0)",
             ),
             (Operation::Sha256Prefix(8), "sha256_prefix(source_0, 8)"),
             (
@@ -296,8 +324,84 @@ mod tests {
         ];
 
         for (operation, expected) in cases {
-            assert!(emit(RenderLanguage::Rust, &operation).contains(expected));
+            let input_count = operation.arity().unwrap_or(3);
+            let inputs = (0..input_count)
+                .map(|index| format!("source_{index}"))
+                .collect::<Vec<_>>();
+
+            assert_eq!(operation_expression(&operation, &inputs).unwrap(), expected);
         }
+    }
+
+    #[test]
+    fn helper_templates_have_stable_language_specific_syntax() {
+        let inputs = ["source_0".to_owned()];
+        let cases = [
+            (
+                RenderLanguage::C,
+                "bytes local_0() { return reverse(source_0); }\nbytes result_0 = local_0();  // exports result_0",
+            ),
+            (
+                RenderLanguage::Cpp,
+                "auto local_0() { return reverse(source_0); }\nauto result_0 = local_0();  // exports result_0",
+            ),
+            (
+                RenderLanguage::Rust,
+                "fn local_0() -> Bytes { reverse(source_0) }\nlet result_0 = local_0(); // exports result_0",
+            ),
+            (
+                RenderLanguage::Go,
+                "local_0 := func() bytes { return reverse(source_0) }\nresult_0 := local_0() // exports result_0",
+            ),
+            (
+                RenderLanguage::Java,
+                "byte[] local_0() { return reverse(source_0); }\nbyte[] result_0 = local_0(); // exports result_0",
+            ),
+            (
+                RenderLanguage::Pseudocode,
+                "function local_0: return reverse(source_0)\nresult_0 <- local_0()  # exports result_0",
+            ),
+        ];
+
+        for (language, expected) in cases {
+            assert_eq!(
+                emit_operation(
+                    language,
+                    TemplateFamily::Helper,
+                    "result_0",
+                    "local_0",
+                    &Operation::Reverse,
+                    &inputs,
+                )
+                .unwrap(),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn bounded_parts_counts_utf8_bytes_and_redacts_rejected_content() {
+        let ascii_limit = "A".repeat(MAX_STEP_BYTES);
+        assert_eq!(bounded_parts(&[&ascii_limit]).unwrap(), ascii_limit);
+        assert_eq!(
+            bounded_parts(&[&"A".repeat(MAX_STEP_BYTES + 1)]),
+            Err(RenderError::LengthLimit)
+        );
+
+        let ascii_over_limit = "SECRET_MARKER".repeat(40);
+        assert!(ascii_over_limit.len() > MAX_STEP_BYTES);
+        let error = bounded_parts(&[&ascii_over_limit]).unwrap_err();
+        assert_eq!(error, RenderError::LengthLimit);
+        assert!(!error.to_string().contains("SECRET_MARKER"));
+        assert!(!format!("{error:?}").contains("SECRET_MARKER"));
+
+        let utf8_limit = "é".repeat(MAX_STEP_BYTES / 2);
+        assert_eq!(utf8_limit.len(), MAX_STEP_BYTES);
+        assert_eq!(bounded_parts(&[&utf8_limit]).unwrap(), utf8_limit);
+        assert_eq!(
+            bounded_parts(&[&utf8_limit, "x"]),
+            Err(RenderError::LengthLimit)
+        );
     }
 
     #[test]
