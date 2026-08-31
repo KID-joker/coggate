@@ -5,6 +5,8 @@ mod error;
 mod mac;
 mod verifier;
 
+pub mod generation;
+
 pub use agentgate_contracts as contracts;
 pub use answer::canonicalize_answer;
 pub use error::CoreError;

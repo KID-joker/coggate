@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 agentgate-contracts = { path = "../contracts" }
 base64.workspace = true
+getrandom.workspace = true
 hex.workspace = true
 hmac.workspace = true
 sha2.workspace = true
