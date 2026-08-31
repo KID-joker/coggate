@@ -21,10 +21,6 @@ const HELPER_TEMPLATE_BUDGET: usize = 96;
 const OPERATION_EXPRESSION_BUDGET: usize = 40;
 const FRAGMENT_EXPRESSION_BUDGET: usize = 16;
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "consumed by the atomic renderer in Task 5")
-)]
 pub(super) fn validate_plan(
     graph: &ValidatedSemanticGraph,
     fragments: &[Vec<u8>],

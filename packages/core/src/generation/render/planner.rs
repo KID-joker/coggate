@@ -11,10 +11,6 @@ use super::{
     names::NameAllocator,
 };
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "consumed by the Phase 4 lifecycle API")
-)]
 pub(super) fn plan_rendering(
     graph: &ValidatedSemanticGraph,
     fragments: &[Vec<u8>],

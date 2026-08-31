@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::generation::{NodeId, Operation};
 
@@ -12,6 +12,28 @@ use super::model::{
 pub(super) const MAX_STEP_BYTES: usize = 512;
 
 const BYTE_SEMANTICS_PREAMBLE: &str = "Treat every value as a byte array. Indices are zero-based and slices use half-open [start,end) ranges. Addition and subtraction use wrapping u8 arithmetic modulo 256. Rotate amounts are reduced modulo the nonempty current array length. Hex is lowercase. Base64url is unpadded base64url.\n\n";
+const HELPER_SEMANTICS_GLOSSARY: &str = concat!(
+    "Helper semantics:\n",
+    "bytes_ascii(\"...\"): the listed ASCII bytes.\n",
+    "reverse(x): the bytes of x in reverse order.\n",
+    "rotate_left(x, n): cyclically rotate x left by n modulo len(x); x must be nonempty.\n",
+    "rotate_right(x, n): cyclically rotate x right by n modulo len(x); x must be nonempty.\n",
+    "xor_repeat(x, key): out[i] = x[i] XOR key[i modulo len(key)].\n",
+    "even_bytes(x): bytes of x at zero-based indices 0, 2, ...\n",
+    "odd_bytes(x): bytes of x at zero-based indices 1, 3, ...\n",
+    "permute(x, p): out[j] = x[p[j]].\n",
+    "slice(x, start, end): bytes x[start..end] using a half-open range.\n",
+    "concat(x1, x2, ...): concatenate inputs in the listed order.\n",
+    "add_u8(x, y): elementwise x[i] + y[i] modulo 256.\n",
+    "sub_u8(x, y): elementwise x[i] - y[i] modulo 256.\n",
+    "hex_lower(x): encode bytes as canonical lowercase hexadecimal.\n",
+    "hex_decode_lower(x): inverse of hex_lower for canonical lowercase hexadecimal only.\n",
+    "base64url_no_pad(x): encode bytes as canonical unpadded base64url.\n",
+    "base64url_decode_no_pad(x): inverse of base64url_no_pad for canonical unpadded base64url only.\n",
+    "sha256_prefix(x, n): the first n raw bytes of the SHA-256 digest of x.\n",
+    "rotate_left_derived(x, key): rotate_left(x, unsigned key[0]).\n",
+    "conditional_order(control, a, b): concat(a, b) if unsigned control[0] is even; otherwise concat(b, a).\n\n",
+);
 
 pub(super) fn emit_question(
     plan: &RenderPlan,
@@ -20,9 +42,11 @@ pub(super) fn emit_question(
     let locations = index_output_locations(plan)?;
     let mut question = String::new();
     push_with_limit(&mut question, BYTE_SEMANTICS_PREAMBLE, MAX_QUESTION_BYTES)?;
+    push_with_limit(&mut question, HELPER_SEMANTICS_GLOSSARY, MAX_QUESTION_BYTES)?;
 
     let mut dependency_clues = Vec::new();
     let mut dependency_bytes_by_fragment = vec![0_usize; plan.fragments.len()];
+    let mut seen_dependency_edges = BTreeSet::new();
 
     for (display_index, display_fragment) in plan.fragments.iter().enumerate() {
         let mut rendered_fragment = String::new();
@@ -89,7 +113,9 @@ pub(super) fn emit_question(
                         let producer = locations
                             .get(input)
                             .ok_or(RenderError::MissingReference(*input))?;
-                        if producer.display_index != display_index {
+                        if producer.display_index != display_index
+                            && seen_dependency_edges.insert((step.node, *input))
+                        {
                             let clue = format!(
                                 "Dependency: output label {} from display Fragment {} is an input to output label {} in display Fragment {}.\n",
                                 producer.output_label,

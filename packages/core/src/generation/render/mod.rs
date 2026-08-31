@@ -3,9 +3,7 @@ mod error;
 mod languages;
 mod model;
 mod names;
-#[allow(unfulfilled_lint_expectations)]
 mod planner;
-#[allow(unfulfilled_lint_expectations)]
 mod validate;
 
 use crate::generation::{ValidatedSemanticGraph, random::RandomSource};
@@ -34,7 +32,7 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::{
-        emitter,
+        RenderedQuestion, emitter,
         error::RenderError,
         model::{
             DisplayFragment, DisplayStep, DisplayStepKind, MAX_QUESTION_BYTES, RenderLanguage,
@@ -44,11 +42,34 @@ mod tests {
         render_with,
     };
     use crate::generation::{
-        NodeId, evaluate_semantic_graph,
+        NodeId, Operation, SemanticGraphBuilder, ValidatedSemanticGraph, evaluate_semantic_graph,
         planner::{PlannedSemantics, plan_with},
         secret::Secret,
         test_random::DeterministicRandom,
     };
+
+    const EXPECTED_HELPER_SEMANTICS: [&str; 18] = [
+        "bytes_ascii(\"...\"): the listed ASCII bytes.",
+        "reverse(x): the bytes of x in reverse order.",
+        "rotate_left(x, n): cyclically rotate x left by n modulo len(x); x must be nonempty.",
+        "rotate_right(x, n): cyclically rotate x right by n modulo len(x); x must be nonempty.",
+        "xor_repeat(x, key): out[i] = x[i] XOR key[i modulo len(key)].",
+        "even_bytes(x): bytes of x at zero-based indices 0, 2, ...",
+        "odd_bytes(x): bytes of x at zero-based indices 1, 3, ...",
+        "permute(x, p): out[j] = x[p[j]].",
+        "slice(x, start, end): bytes x[start..end] using a half-open range.",
+        "concat(x1, x2, ...): concatenate inputs in the listed order.",
+        "add_u8(x, y): elementwise x[i] + y[i] modulo 256.",
+        "sub_u8(x, y): elementwise x[i] - y[i] modulo 256.",
+        "hex_lower(x): encode bytes as canonical lowercase hexadecimal.",
+        "hex_decode_lower(x): inverse of hex_lower for canonical lowercase hexadecimal only.",
+        "base64url_no_pad(x): encode bytes as canonical unpadded base64url.",
+        "base64url_decode_no_pad(x): inverse of base64url_no_pad for canonical unpadded base64url only.",
+        "sha256_prefix(x, n): the first n raw bytes of the SHA-256 digest of x.",
+        "rotate_left_derived(x, key): rotate_left(x, unsigned key[0]).",
+    ];
+
+    const CONDITIONAL_ORDER_SEMANTICS: &str = "conditional_order(control, a, b): concat(a, b) if unsigned control[0] is even; otherwise concat(b, a).";
 
     fn planned_fixture() -> PlannedSemantics {
         let secret = Secret::from_test_bytes(b"AbCdEf12Gh".to_vec());
@@ -58,6 +79,15 @@ mod tests {
 
     fn fragment_slices(fragments: &[Vec<u8>]) -> Vec<&[u8]> {
         fragments.iter().map(Vec::as_slice).collect()
+    }
+
+    fn render_graph(
+        graph: &ValidatedSemanticGraph,
+        fragments: &[Vec<u8>],
+        seed: u8,
+    ) -> RenderedQuestion {
+        let mut random = DeterministicRandom::new([seed; 32]);
+        render_with(graph, fragments, &mut random).unwrap()
     }
 
     #[test]
@@ -192,5 +222,118 @@ mod tests {
         assert_eq!(error, RenderError::LengthLimit);
         assert!(!error.to_string().contains(SECRET_MARKER));
         assert!(!format!("{error:?}").contains(SECRET_MARKER));
+    }
+
+    #[test]
+    fn rendered_questions_define_every_helper_semantic() {
+        let semantics = planned_fixture();
+        let rendered = render_graph(semantics.graph(), semantics.fragments(), 41);
+
+        for definition in EXPECTED_HELPER_SEMANTICS {
+            assert!(rendered.question().contains(definition), "{definition}");
+        }
+        assert!(rendered.question().contains(CONDITIONAL_ORDER_SEMANTICS));
+    }
+
+    #[test]
+    fn rotate_left_derived_has_an_independent_answer_oracle_and_definition() {
+        let fragments = vec![b"abcd".to_vec(), b"5".to_vec(), b"Z".to_vec()];
+        let mut builder = SemanticGraphBuilder::new(vec![4, 1, 1]);
+        let value = builder.fragment(0).unwrap();
+        let key = builder.fragment(1).unwrap();
+        let suffix = builder.fragment(2).unwrap();
+        let derived = builder.operation(Operation::RotateLeftDerived, vec![value, key]);
+        let joined = builder.operation(Operation::Concat, vec![derived, suffix]);
+        let reversed = builder.operation(Operation::Reverse, vec![joined]);
+        let output = builder.operation(Operation::Reverse, vec![reversed]);
+        builder.output(output);
+        let graph = builder.validate().unwrap();
+
+        let answer = evaluate_semantic_graph(&graph, &fragment_slices(&fragments)).unwrap();
+        let rendered = render_graph(&graph, &fragments, 43);
+
+        assert_eq!(answer, b"bcdaZ");
+        assert!(
+            rendered
+                .question()
+                .contains("rotate_left_derived(x, key): rotate_left(x, unsigned key[0]).")
+        );
+    }
+
+    #[test]
+    fn conditional_order_has_an_independent_even_parity_oracle_and_definition() {
+        let fragments = vec![b"2".to_vec(), b"ab".to_vec(), b"cd".to_vec()];
+        let mut builder = SemanticGraphBuilder::new(vec![1, 2, 2]);
+        let control = builder.fragment(0).unwrap();
+        let first = builder.fragment(1).unwrap();
+        let second = builder.fragment(2).unwrap();
+        let conditional =
+            builder.operation(Operation::ConditionalOrder, vec![control, first, second]);
+        let reversed = builder.operation(Operation::Reverse, vec![conditional]);
+        let restored = builder.operation(Operation::Reverse, vec![reversed]);
+        let output = builder.operation(Operation::RotateLeft(4), vec![restored]);
+        builder.output(output);
+        let graph = builder.validate().unwrap();
+
+        let answer = evaluate_semantic_graph(&graph, &fragment_slices(&fragments)).unwrap();
+        let rendered = render_graph(&graph, &fragments, 47);
+
+        assert_eq!(answer, b"abcd");
+        assert!(rendered.question().contains(CONDITIONAL_ORDER_SEMANTICS));
+    }
+
+    #[test]
+    fn repeated_ordered_inputs_emit_once_but_dependency_clues_are_deduplicated() {
+        let fragments = vec![b"Ab".to_vec(), b"Cd".to_vec()];
+        let source_x = NodeId(0);
+        let source_y = NodeId(1);
+        let combined = NodeId(2);
+        let plan = RenderPlan {
+            fragments: vec![
+                DisplayFragment {
+                    heading: "first".to_owned(),
+                    language: RenderLanguage::Rust,
+                    steps: vec![DisplayStep {
+                        node: source_x,
+                        output_label: "source_x".to_owned(),
+                        local_name: "load_x".to_owned(),
+                        template: TemplateFamily::Direct,
+                        kind: DisplayStepKind::Fragment { index: 0 },
+                    }],
+                    distractor: false,
+                },
+                DisplayFragment {
+                    heading: "second".to_owned(),
+                    language: RenderLanguage::Go,
+                    steps: vec![
+                        DisplayStep {
+                            node: source_y,
+                            output_label: "source_y".to_owned(),
+                            local_name: "load_y".to_owned(),
+                            template: TemplateFamily::Direct,
+                            kind: DisplayStepKind::Fragment { index: 1 },
+                        },
+                        DisplayStep {
+                            node: combined,
+                            output_label: "combined".to_owned(),
+                            local_name: "join_values".to_owned(),
+                            template: TemplateFamily::Direct,
+                            kind: DisplayStepKind::Operation {
+                                operation: Operation::Concat,
+                                inputs: vec![source_x, source_x, source_y],
+                            },
+                        },
+                    ],
+                    distractor: false,
+                },
+            ],
+            output: combined,
+        };
+
+        let question = emitter::emit_question(&plan, &fragments).unwrap();
+        let clue = "Dependency: output label source_x from display Fragment 1 is an input to output label combined in display Fragment 2.";
+
+        assert!(question.contains("concat(source_x, source_x, source_y)"));
+        assert_eq!(question.matches(clue).count(), 1);
     }
 }
