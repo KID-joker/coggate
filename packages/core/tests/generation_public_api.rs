@@ -1,5 +1,6 @@
 use agentgate_core::generation::{
-    NodeId, Operation, SemanticGraphBuilder, ValidatedSemanticGraph, evaluate_semantic_graph,
+    MAX_XOR_KEY_LENGTH, NodeId, Operation, SemanticGraphBuilder, ValidatedSemanticGraph,
+    evaluate_semantic_graph,
 };
 
 fn graph() -> ValidatedSemanticGraph {
@@ -35,4 +36,9 @@ fn evaluates_a_validated_semantic_graph() {
     .expect("validated graph evaluates");
 
     assert_eq!(value, b"badcef");
+}
+
+#[test]
+fn exposes_the_v1_xor_key_length_limit() {
+    assert_eq!(MAX_XOR_KEY_LENGTH, 16);
 }

@@ -3,6 +3,8 @@ use sha2::{Digest, Sha256};
 
 use super::GenerationError;
 
+pub const MAX_XOR_KEY_LENGTH: usize = 16;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Operation {
     Reverse,
@@ -57,7 +59,9 @@ impl Operation {
 
     fn validate_static_parameters(&self) -> Result<(), GenerationError> {
         match self {
-            Self::Xor(key) if key.is_empty() => Err(GenerationError::InvalidOperation),
+            Self::Xor(key) if !(1..=MAX_XOR_KEY_LENGTH).contains(&key.len()) => {
+                Err(GenerationError::InvalidOperation)
+            }
             Self::Sha256Prefix(prefix_length) => valid_sha256_prefix(*prefix_length).map(|_| ()),
             Self::Slice { start, end } if start > end => Err(GenerationError::InvalidOperation),
             Self::Permute(permutation) => validate_permutation_parameters(permutation),
@@ -320,7 +324,7 @@ fn decode_base64_url(input: &[u8]) -> Result<Vec<u8>, GenerationError> {
 
 #[cfg(test)]
 mod tests {
-    use super::Operation;
+    use super::{MAX_XOR_KEY_LENGTH, Operation};
     use crate::generation::GenerationError;
 
     #[test]
@@ -465,6 +469,33 @@ mod tests {
             Operation::Concat.evaluate(&[b"a"]),
             Err(GenerationError::InvalidOperation)
         );
+    }
+
+    #[test]
+    fn rejects_xor_keys_longer_than_the_v1_limit() {
+        let operation = Operation::Xor(vec![0x20; 17]);
+
+        assert_eq!(
+            operation.validate_arity(1),
+            Err(GenerationError::InvalidOperation)
+        );
+        assert_eq!(
+            operation.output_length(&[2]),
+            Err(GenerationError::InvalidOperation)
+        );
+        assert_eq!(
+            operation.evaluate(&[b"AZ"]),
+            Err(GenerationError::InvalidOperation)
+        );
+    }
+
+    #[test]
+    fn accepts_an_xor_key_at_the_v1_limit() {
+        let operation = Operation::Xor(vec![0x20; MAX_XOR_KEY_LENGTH]);
+
+        assert_eq!(operation.validate_arity(1), Ok(()));
+        assert_eq!(operation.output_length(&[2]), Ok(2));
+        assert_eq!(operation.evaluate(&[b"AZ"]), Ok(b"az".to_vec()));
     }
 
     #[test]

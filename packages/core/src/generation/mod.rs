@@ -13,4 +13,4 @@ mod test_random;
 pub use answer::evaluate_semantic_graph;
 pub use error::GenerationError;
 pub use graph::{NodeId, NodeKind, SemanticGraphBuilder, SemanticNode, ValidatedSemanticGraph};
-pub use operation::Operation;
+pub use operation::{MAX_XOR_KEY_LENGTH, Operation};
