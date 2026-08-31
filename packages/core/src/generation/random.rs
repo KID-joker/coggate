@@ -70,6 +70,44 @@ mod tests {
     }
 
     #[test]
+    fn rejects_out_of_range_bytes_before_sampling() {
+        let mut random = ScriptedRandom(vec![255, 7]);
+
+        assert_eq!(sample_below(&mut random, 10), Ok(7));
+    }
+
+    #[test]
+    fn samples_the_full_byte_range() {
+        let mut random = ScriptedRandom(vec![255]);
+
+        assert_eq!(sample_below(&mut random, 256), Ok(255));
+    }
+
+    #[test]
+    fn rejects_invalid_sampling_bounds() {
+        let mut random = ScriptedRandom(vec![]);
+
+        assert_eq!(
+            sample_below(&mut random, 0),
+            Err(GenerationError::InvalidOperation)
+        );
+        assert_eq!(
+            sample_below(&mut random, 257),
+            Err(GenerationError::InvalidOperation)
+        );
+    }
+
+    #[test]
+    fn propagates_random_source_exhaustion() {
+        let mut random = ScriptedRandom(vec![]);
+
+        assert_eq!(
+            sample_below(&mut random, 10),
+            Err(GenerationError::RandomnessUnavailable)
+        );
+    }
+
+    #[test]
     fn shuffling_preserves_every_element_once() {
         let mut values = vec![1, 2, 3, 4, 5, 6];
         let mut random = ScriptedRandom((0_u8..=255).cycle().take(128).collect());
