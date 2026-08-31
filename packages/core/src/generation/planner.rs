@@ -108,11 +108,14 @@ fn cross_fragment_dependency_count(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::{BTreeMap, BTreeSet};
+
     use agentgate_contracts::fragment_count_for_secret_length;
 
     use super::{PlannedSemantics, plan_with};
     use crate::generation::{
-        NodeKind, evaluate_semantic_graph, secret::Secret, test_random::DeterministicRandom,
+        NodeId, NodeKind, Operation, evaluate_semantic_graph, secret::Secret,
+        test_random::DeterministicRandom,
     };
 
     fn ascii_secret(length: usize) -> Secret {
@@ -139,7 +142,13 @@ mod tests {
             _ => unreachable!(),
         };
         assert_eq!(plan.graph.operation_count(), expected_operation_count);
-        assert!(plan.cross_fragment_dependency_count >= 2);
+        let recomputed_cross_fragment_dependency_count =
+            recompute_cross_fragment_dependencies(plan);
+        assert!(recomputed_cross_fragment_dependency_count >= 2);
+        assert_eq!(
+            plan.cross_fragment_dependency_count,
+            recomputed_cross_fragment_dependency_count
+        );
         let fragments: Vec<&[u8]> = plan.fragments.iter().map(Vec::as_slice).collect();
         assert_eq!(
             evaluate_semantic_graph(&plan.graph, &fragments).unwrap(),
@@ -151,6 +160,70 @@ mod tests {
                 NodeKind::Fragment { .. } | NodeKind::Operation { .. }
             )
         }));
+    }
+
+    fn recompute_cross_fragment_dependencies(plan: &PlannedSemantics) -> usize {
+        let mut provenance = BTreeMap::<NodeId, BTreeSet<usize>>::new();
+        let mut count = 0;
+
+        for node in plan.graph.topological_nodes() {
+            let origins = match node.kind() {
+                NodeKind::Fragment { index } => BTreeSet::from([*index]),
+                NodeKind::Operation { inputs, .. } => {
+                    let origins = inputs
+                        .iter()
+                        .flat_map(|input| {
+                            provenance
+                                .get(input)
+                                .expect("topological input provenance exists")
+                                .iter()
+                                .copied()
+                        })
+                        .collect::<BTreeSet<_>>();
+                    if origins.len() >= 2 {
+                        count += 1;
+                    }
+                    origins
+                }
+            };
+            provenance.insert(node.id(), origins);
+        }
+
+        count
+    }
+
+    fn operation_pattern(plan: &PlannedSemantics) -> Vec<(Operation, Vec<NodeId>)> {
+        plan.graph
+            .topological_nodes()
+            .iter()
+            .filter_map(|node| match node.kind() {
+                NodeKind::Fragment { .. } => None,
+                NodeKind::Operation { operation, inputs } => {
+                    Some((operation.clone(), inputs.clone()))
+                }
+            })
+            .collect()
+    }
+
+    fn randomized_structure_pattern(plan: &PlannedSemantics) -> (Vec<&'static str>, Vec<NodeId>) {
+        let mut unary_sequence = Vec::new();
+        let mut concat_inputs = Vec::new();
+
+        for node in plan.graph.topological_nodes() {
+            let NodeKind::Operation { operation, inputs } = node.kind() else {
+                continue;
+            };
+            match operation {
+                Operation::Reverse => unary_sequence.push("reverse"),
+                Operation::RotateLeft(1) => unary_sequence.push("rotate-left-one"),
+                Operation::RotateRight(1) => unary_sequence.push("rotate-right-one"),
+                Operation::Xor(_) => unary_sequence.push("xor"),
+                Operation::Concat => concat_inputs.clone_from(inputs),
+                _ => {}
+            }
+        }
+
+        (unary_sequence, concat_inputs)
     }
 
     #[test]
@@ -186,14 +259,20 @@ mod tests {
     #[test]
     fn planning_varies_the_unary_operations_or_concat_order_across_streams() {
         let secret = Secret::from_test_bytes(b"AbCdEf12Gh".to_vec());
-        let mut shapes = std::collections::BTreeSet::new();
+        let mut operation_patterns = Vec::new();
+        let mut randomized_structure_patterns = BTreeSet::new();
 
         for seed in 0_u8..=127 {
             let mut random = DeterministicRandom::new([seed; 32]);
             let plan = plan_with(&secret, &mut random).unwrap();
-            shapes.insert(format!("{:?}", plan.graph));
+            let operation_pattern = operation_pattern(&plan);
+            if !operation_patterns.contains(&operation_pattern) {
+                operation_patterns.push(operation_pattern);
+            }
+            randomized_structure_patterns.insert(randomized_structure_pattern(&plan));
         }
 
-        assert!(shapes.len() > 1);
+        assert!(operation_patterns.len() > 1);
+        assert!(randomized_structure_patterns.len() > 1);
     }
 }
