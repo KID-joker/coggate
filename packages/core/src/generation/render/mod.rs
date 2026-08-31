@@ -4,6 +4,8 @@ mod languages;
 mod model;
 mod names;
 mod planner;
+#[cfg(test)]
+mod properties;
 mod validate;
 
 use crate::generation::{ValidatedSemanticGraph, random::RandomSource};

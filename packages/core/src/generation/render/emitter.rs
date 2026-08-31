@@ -34,6 +34,21 @@ const HELPER_SEMANTICS_GLOSSARY: &str = concat!(
     "rotate_left_derived(x, key): rotate_left(x, unsigned key[0]).\n",
     "conditional_order(control, a, b): concat(a, b) if unsigned control[0] is even; otherwise concat(b, a).\n\n",
 );
+const DEPENDENCY_CLUES_HEADER: &str = "Dependency clues:\n";
+const DISPLAY_ORDER_WARNING: &str = "Display order is not evaluation order.\n";
+const OUTPUT_REQUEST_PREFIX: &str = "The requested result is output label ";
+const OUTPUT_REQUEST_SUFFIX: &str = ". Submit its byte array as unpadded base64url.\n";
+
+#[cfg(test)]
+pub(super) fn common_question_bytes() -> usize {
+    BYTE_SEMANTICS_PREAMBLE.len()
+        + HELPER_SEMANTICS_GLOSSARY.len()
+        + DEPENDENCY_CLUES_HEADER.len()
+        + "\n".len()
+        + DISPLAY_ORDER_WARNING.len()
+        + OUTPUT_REQUEST_PREFIX.len()
+        + OUTPUT_REQUEST_SUFFIX.len()
+}
 
 pub(super) fn emit_question(
     plan: &RenderPlan,
@@ -154,7 +169,7 @@ pub(super) fn emit_question(
     }
 
     if !dependency_clues.is_empty() {
-        push_with_limit(&mut question, "Dependency clues:\n", MAX_QUESTION_BYTES)?;
+        push_with_limit(&mut question, DEPENDENCY_CLUES_HEADER, MAX_QUESTION_BYTES)?;
         for clue in dependency_clues {
             push_with_limit(&mut question, &clue, MAX_QUESTION_BYTES)?;
         }
@@ -165,16 +180,10 @@ pub(super) fn emit_question(
         .get(&plan.output)
         .map(|location| location.output_label.as_str())
         .ok_or(RenderError::MissingReference(plan.output))?;
+    push_with_limit(&mut question, DISPLAY_ORDER_WARNING, MAX_QUESTION_BYTES)?;
     push_with_limit(
         &mut question,
-        "Display order is not evaluation order.\n",
-        MAX_QUESTION_BYTES,
-    )?;
-    push_with_limit(
-        &mut question,
-        &format!(
-            "The requested result is output label {output_label}. Submit its byte array as unpadded base64url.\n"
-        ),
+        &format!("{OUTPUT_REQUEST_PREFIX}{output_label}{OUTPUT_REQUEST_SUFFIX}"),
         MAX_QUESTION_BYTES,
     )?;
 
@@ -278,18 +287,18 @@ pub(super) fn declared_template_max_bytes(
     family: TemplateFamily,
 ) -> usize {
     match (language, family) {
-        (RenderLanguage::C, TemplateFamily::Direct) => 512,
-        (RenderLanguage::C, TemplateFamily::Helper) => 512,
-        (RenderLanguage::Cpp, TemplateFamily::Direct) => 512,
-        (RenderLanguage::Cpp, TemplateFamily::Helper) => 512,
-        (RenderLanguage::Rust, TemplateFamily::Direct) => 512,
-        (RenderLanguage::Rust, TemplateFamily::Helper) => 512,
-        (RenderLanguage::Go, TemplateFamily::Direct) => 512,
-        (RenderLanguage::Go, TemplateFamily::Helper) => 512,
-        (RenderLanguage::Java, TemplateFamily::Direct) => 512,
-        (RenderLanguage::Java, TemplateFamily::Helper) => 512,
-        (RenderLanguage::Pseudocode, TemplateFamily::Direct) => 512,
-        (RenderLanguage::Pseudocode, TemplateFamily::Helper) => 512,
+        (RenderLanguage::C, TemplateFamily::Direct) => 304,
+        (RenderLanguage::C, TemplateFamily::Helper) => 352,
+        (RenderLanguage::Cpp, TemplateFamily::Direct) => 304,
+        (RenderLanguage::Cpp, TemplateFamily::Helper) => 352,
+        (RenderLanguage::Rust, TemplateFamily::Direct) => 304,
+        (RenderLanguage::Rust, TemplateFamily::Helper) => 352,
+        (RenderLanguage::Go, TemplateFamily::Direct) => 288,
+        (RenderLanguage::Go, TemplateFamily::Helper) => 352,
+        (RenderLanguage::Java, TemplateFamily::Direct) => 304,
+        (RenderLanguage::Java, TemplateFamily::Helper) => 352,
+        (RenderLanguage::Pseudocode, TemplateFamily::Direct) => 288,
+        (RenderLanguage::Pseudocode, TemplateFamily::Helper) => 352,
     }
 }
 
@@ -430,6 +439,48 @@ mod tests {
             Operation::Sha256Prefix(8),
             Operation::RotateLeftDerived,
             Operation::ConditionalOrder,
+        ]
+    }
+
+    fn worst_case_operations() -> Vec<(Operation, Vec<String>)> {
+        let unary = || vec!["source_000000000".to_owned()];
+        let binary = || vec!["source_000000000".to_owned(), "source_000000001".to_owned()];
+        let ternary = || {
+            vec![
+                "source_000000000".to_owned(),
+                "source_000000001".to_owned(),
+                "source_000000002".to_owned(),
+            ]
+        };
+
+        vec![
+            (Operation::Reverse, unary()),
+            (Operation::RotateLeft(usize::MAX), unary()),
+            (Operation::RotateRight(usize::MAX), unary()),
+            (Operation::Xor(vec![u8::MAX; 16]), unary()),
+            (Operation::EvenBytes, unary()),
+            (Operation::OddBytes, unary()),
+            (Operation::Permute((0..16).rev().collect()), unary()),
+            (
+                Operation::Slice {
+                    start: usize::MAX,
+                    end: usize::MAX,
+                },
+                unary(),
+            ),
+            (
+                Operation::Concat,
+                (0..13).map(|index| format!("source_{index:09}")).collect(),
+            ),
+            (Operation::AddModulo, binary()),
+            (Operation::SubModulo, binary()),
+            (Operation::HexEncode, unary()),
+            (Operation::HexDecode, unary()),
+            (Operation::Base64UrlEncode, unary()),
+            (Operation::Base64UrlDecode, unary()),
+            (Operation::Sha256Prefix(32), unary()),
+            (Operation::RotateLeftDerived, binary()),
+            (Operation::ConditionalOrder, ternary()),
         ]
     }
 
@@ -647,6 +698,50 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn declarations_strictly_cover_every_worst_case_operation_template() {
+        let operations = worst_case_operations();
+        assert_eq!(operations.len(), 18);
+        let mut measured = Vec::new();
+
+        for language in RenderLanguage::ALL {
+            for family in [TemplateFamily::Direct, TemplateFamily::Helper] {
+                let declared = declared_template_max_bytes(language, family);
+                let mut longest = 0;
+
+                for (operation, inputs) in &operations {
+                    let rendered = emit_operation(
+                        language,
+                        family,
+                        "output_000000000",
+                        "helper_000000000",
+                        operation,
+                        inputs,
+                    )
+                    .unwrap();
+                    longest = longest.max(rendered.len());
+                    assert!(
+                        rendered.len() <= declared,
+                        "{language:?} {family:?} {operation:?}: {} > {declared}",
+                        rendered.len()
+                    );
+                }
+                let rounded_longest = longest.div_ceil(16) * 16;
+                assert_eq!(
+                    declared, rounded_longest,
+                    "{language:?} {family:?} declaration is not the smallest 16-byte-rounded bound"
+                );
+                measured.push((language, family, declared, longest));
+            }
+        }
+        assert!(
+            measured
+                .iter()
+                .all(|(_, _, declared, _)| *declared < MAX_STEP_BYTES),
+            "declarations must be strict; measured {measured:?}"
+        );
     }
 
     #[test]

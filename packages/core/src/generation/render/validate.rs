@@ -12,7 +12,7 @@ use super::{
     names::MAX_IDENTIFIER_BYTES,
 };
 
-const COMMON_QUESTION_BUDGET: usize = 2_048;
+pub(super) const COMMON_QUESTION_BUDGET: usize = 2_048;
 const FRAGMENT_WRAPPER_BUDGET: usize = 64;
 const DISTRACTOR_WRAPPER_BUDGET: usize = 256;
 const DEPENDENCY_CLUE_BUDGET: usize = 96;
