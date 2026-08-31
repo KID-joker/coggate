@@ -60,9 +60,7 @@ impl Operation {
             Self::Xor(key) if key.is_empty() => Err(GenerationError::InvalidOperation),
             Self::Sha256Prefix(prefix_length) => valid_sha256_prefix(*prefix_length).map(|_| ()),
             Self::Slice { start, end } if start > end => Err(GenerationError::InvalidOperation),
-            Self::Permute(permutation) if has_duplicate_indices(permutation) => {
-                Err(GenerationError::InvalidOperation)
-            }
+            Self::Permute(permutation) => validate_permutation_parameters(permutation),
             _ => Ok(()),
         }
     }
@@ -79,10 +77,7 @@ impl Operation {
                     Ok(input_lengths[0])
                 }
             }
-            Self::Permute(permutation) => {
-                validate_permutation(permutation, input_lengths[0])?;
-                Ok(input_lengths[0])
-            }
+            Self::Permute(permutation) => equal_length(permutation.len(), input_lengths[0]),
             Self::RotateLeft(_) | Self::RotateRight(_) => non_empty_length(input_lengths[0]),
             Self::EvenBytes => Ok(input_lengths[0] / 2 + input_lengths[0] % 2),
             Self::OddBytes => Ok(input_lengths[0] / 2),
@@ -111,7 +106,6 @@ impl Operation {
     }
 
     pub fn evaluate(&self, inputs: &[&[u8]]) -> Result<Vec<u8>, GenerationError> {
-        self.validate_arity(inputs.len())?;
         let input_lengths: Vec<usize> = inputs.iter().map(|input| input.len()).collect();
         let output_length = self.output_length(&input_lengths)?;
 
@@ -126,7 +120,7 @@ impl Operation {
             Self::Xor(key) => xor(inputs[0], key),
             Self::EvenBytes => Ok(inputs[0].iter().step_by(2).copied().collect()),
             Self::OddBytes => Ok(inputs[0].iter().skip(1).step_by(2).copied().collect()),
-            Self::Permute(permutation) => permute(inputs[0], permutation),
+            Self::Permute(permutation) => Ok(permute(inputs[0], permutation)),
             Self::Slice { start, end } => Ok(inputs[0][*start..*end].to_vec()),
             Self::Concat => concatenate(inputs, output_length),
             Self::AddModulo => modular_combine(inputs[0], inputs[1], u8::wrapping_add),
@@ -257,36 +251,25 @@ fn xor(input: &[u8], key: &[u8]) -> Result<Vec<u8>, GenerationError> {
         .collect())
 }
 
-fn permute(input: &[u8], permutation: &[usize]) -> Result<Vec<u8>, GenerationError> {
-    validate_permutation(permutation, input.len())?;
-
-    Ok(permutation.iter().map(|&index| input[index]).collect())
+fn permute(input: &[u8], permutation: &[usize]) -> Vec<u8> {
+    permutation.iter().map(|&index| input[index]).collect()
 }
 
-fn validate_permutation(permutation: &[usize], input_length: usize) -> Result<(), GenerationError> {
-    if permutation.len() != input_length {
-        return Err(GenerationError::InvalidLength);
-    }
-
-    if has_duplicate_indices(permutation) {
-        return Err(GenerationError::InvalidOperation);
-    }
-
-    let mut seen = vec![false; input_length];
+fn validate_permutation_parameters(permutation: &[usize]) -> Result<(), GenerationError> {
+    let mut seen = Vec::new();
+    seen.try_reserve_exact(permutation.len())
+        .map_err(|_| GenerationError::InvalidLength)?;
+    seen.resize(permutation.len(), false);
     for &index in permutation {
         let Some(slot) = seen.get_mut(index) else {
             return Err(GenerationError::InvalidOperation);
         };
+        if *slot {
+            return Err(GenerationError::InvalidOperation);
+        }
         *slot = true;
     }
     Ok(())
-}
-
-fn has_duplicate_indices(permutation: &[usize]) -> bool {
-    permutation
-        .iter()
-        .enumerate()
-        .any(|(index, value)| permutation[..index].contains(value))
 }
 
 fn concatenate(inputs: &[&[u8]], output_length: usize) -> Result<Vec<u8>, GenerationError> {
@@ -431,6 +414,10 @@ mod tests {
             Err(GenerationError::InvalidOperation)
         );
         assert_eq!(
+            Operation::Slice { start: 1, end: 3 }.evaluate(&[b"ab"]),
+            Err(GenerationError::InvalidLength)
+        );
+        assert_eq!(
             Operation::Slice { start: 2, end: 1 }.evaluate(&[b"ab"]),
             Err(GenerationError::InvalidOperation)
         );
@@ -452,6 +439,14 @@ mod tests {
         );
         assert_eq!(
             Operation::RotateLeft(1).evaluate(&[b""]),
+            Err(GenerationError::InvalidLength)
+        );
+        assert_eq!(
+            Operation::RotateLeftDerived.evaluate(&[b"ab", b""]),
+            Err(GenerationError::InvalidLength)
+        );
+        assert_eq!(
+            Operation::ConditionalOrder.evaluate(&[b"", b"ab", b"cd"]),
             Err(GenerationError::InvalidLength)
         );
         assert_eq!(
@@ -491,6 +486,14 @@ mod tests {
             Err(GenerationError::InvalidOperation)
         );
         assert_eq!(
+            Operation::Permute(vec![1]).validate_arity(1),
+            Err(GenerationError::InvalidOperation)
+        );
+        assert_eq!(
+            Operation::Permute(vec![0, 2]).validate_arity(1),
+            Err(GenerationError::InvalidOperation)
+        );
+        assert_eq!(
             Operation::Concat.validate_arity(1),
             Err(GenerationError::InvalidOperation)
         );
@@ -519,6 +522,42 @@ mod tests {
         assert_eq!(
             Operation::Concat.output_length(&[usize::MAX, 1]),
             Err(GenerationError::InvalidLength)
+        );
+    }
+
+    #[test]
+    fn static_output_lengths_match_all_positive_operation_evaluations() {
+        assert_output_length_matches_evaluation(&Operation::Reverse, &[b"abcd"]);
+        assert_output_length_matches_evaluation(&Operation::RotateLeft(1), &[b"abcd"]);
+        assert_output_length_matches_evaluation(&Operation::RotateRight(1), &[b"abcd"]);
+        assert_output_length_matches_evaluation(&Operation::Xor(vec![0x20]), &[b"AZ"]);
+        assert_output_length_matches_evaluation(&Operation::EvenBytes, &[b"abcdef"]);
+        assert_output_length_matches_evaluation(&Operation::OddBytes, &[b"abcdef"]);
+        assert_output_length_matches_evaluation(&Operation::Permute(vec![2, 0, 1]), &[b"abc"]);
+        assert_output_length_matches_evaluation(&Operation::Slice { start: 1, end: 3 }, &[b"abcd"]);
+        assert_output_length_matches_evaluation(&Operation::Concat, &[b"ab", b"cd"]);
+        assert_output_length_matches_evaluation(&Operation::AddModulo, &[&[250, 1], &[10, 2]]);
+        assert_output_length_matches_evaluation(&Operation::SubModulo, &[&[4, 1], &[10, 2]]);
+        assert_output_length_matches_evaluation(&Operation::HexEncode, &[&[0xab, 0x01]]);
+        assert_output_length_matches_evaluation(&Operation::HexDecode, &[b"ab01"]);
+        assert_output_length_matches_evaluation(&Operation::Base64UrlEncode, &[b"a?"]);
+        assert_output_length_matches_evaluation(&Operation::Base64UrlDecode, &[b"YT8"]);
+        assert_output_length_matches_evaluation(&Operation::Sha256Prefix(4), &[b"abc"]);
+        assert_output_length_matches_evaluation(
+            &Operation::RotateLeftDerived,
+            &[&b"abcd"[..], &[5]],
+        );
+        assert_output_length_matches_evaluation(
+            &Operation::ConditionalOrder,
+            &[&[2], &b"ab"[..], &b"cd"[..]],
+        );
+    }
+
+    fn assert_output_length_matches_evaluation(operation: &Operation, inputs: &[&[u8]]) {
+        let input_lengths: Vec<usize> = inputs.iter().map(|input| input.len()).collect();
+        assert_eq!(
+            operation.output_length(&input_lengths),
+            operation.evaluate(inputs).map(|output| output.len())
         );
     }
 }
