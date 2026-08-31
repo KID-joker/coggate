@@ -24,6 +24,7 @@ impl Secret {
         self.0.len()
     }
 
+    #[expect(dead_code, reason = "consumed by the Phase 4 lifecycle API")]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
@@ -33,6 +34,7 @@ impl Secret {
     }
 }
 
+#[expect(dead_code, reason = "consumed by the Phase 4 lifecycle API")]
 pub(crate) fn generate_secret() -> Result<Secret, super::GenerationError> {
     let mut random = OsRandom;
     generate_with(&mut random)

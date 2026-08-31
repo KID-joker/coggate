@@ -3,6 +3,10 @@ mod error;
 mod graph;
 mod operation;
 mod partition;
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "consumed by the Phase 4 lifecycle API")
+)]
 mod planner;
 mod random;
 mod secret;
