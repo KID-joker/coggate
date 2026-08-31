@@ -12,6 +12,17 @@ pub enum RenderLanguage {
     Pseudocode,
 }
 
+impl RenderLanguage {
+    pub const ALL: [Self; 6] = [
+        Self::C,
+        Self::Cpp,
+        Self::Rust,
+        Self::Go,
+        Self::Java,
+        Self::Pseudocode,
+    ];
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[allow(dead_code)]
 pub(super) enum TemplateFamily {
