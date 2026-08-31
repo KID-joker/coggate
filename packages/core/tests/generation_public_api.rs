@@ -1,7 +1,8 @@
-use agentgate_core::generation::{NodeId, Operation, SemanticGraphBuilder};
+use agentgate_core::generation::{
+    NodeId, Operation, SemanticGraphBuilder, ValidatedSemanticGraph, evaluate_semantic_graph,
+};
 
-#[test]
-fn builds_and_inspects_a_validated_semantic_graph() {
+fn graph() -> ValidatedSemanticGraph {
     let mut builder = SemanticGraphBuilder::new(vec![2, 2, 2]);
     let first = builder.fragment(0).expect("first fragment exists");
     let second = builder.fragment(1).expect("second fragment exists");
@@ -11,10 +12,27 @@ fn builds_and_inspects_a_validated_semantic_graph() {
     let joined = builder.operation(Operation::Concat, vec![reversed, rotated]);
     let output = builder.operation(Operation::Concat, vec![joined, third]);
     builder.output(output);
+    builder.validate().expect("graph is valid")
+}
 
-    let graph = builder.validate().expect("graph is valid");
+#[test]
+fn builds_and_inspects_a_validated_semantic_graph() {
+    let graph = graph();
 
-    assert_eq!(graph.output(), output);
+    assert_eq!(graph.output(), NodeId(6));
     assert_eq!(graph.operation_count(), 4);
     assert!(graph.node(NodeId(999)).is_none());
+}
+
+#[test]
+fn evaluates_a_validated_semantic_graph() {
+    let graph = graph();
+
+    let value = evaluate_semantic_graph(
+        &graph,
+        &[b"ab".as_slice(), b"cd".as_slice(), b"ef".as_slice()],
+    )
+    .expect("validated graph evaluates");
+
+    assert_eq!(value, b"badcef");
 }
