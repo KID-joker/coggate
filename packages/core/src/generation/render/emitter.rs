@@ -1,15 +1,214 @@
-use crate::generation::Operation;
+use std::collections::BTreeMap;
+
+use crate::generation::{NodeId, Operation};
 
 use super::error::RenderError;
 use super::languages;
-use super::model::{RenderLanguage, TemplateFamily};
+use super::model::{
+    DisplayStepKind, MAX_FRAGMENT_BYTES, MAX_QUESTION_BYTES, RenderLanguage, RenderPlan,
+    TemplateFamily,
+};
 
 pub(super) const MAX_STEP_BYTES: usize = 512;
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "consumed by later Phase 3 renderer tasks")
-)]
+const BYTE_SEMANTICS_PREAMBLE: &str = "Treat every value as a byte array. Indices are zero-based and slices use half-open [start,end) ranges. Addition and subtraction use wrapping u8 arithmetic modulo 256. Rotate amounts are reduced modulo the nonempty current array length. Hex is lowercase. Base64url is unpadded base64url.\n\n";
+
+pub(super) fn emit_question(
+    plan: &RenderPlan,
+    fragments: &[Vec<u8>],
+) -> Result<String, RenderError> {
+    let locations = index_output_locations(plan)?;
+    let mut question = String::new();
+    push_with_limit(&mut question, BYTE_SEMANTICS_PREAMBLE, MAX_QUESTION_BYTES)?;
+
+    let mut dependency_clues = Vec::new();
+    let mut dependency_bytes_by_fragment = vec![0_usize; plan.fragments.len()];
+
+    for (display_index, display_fragment) in plan.fragments.iter().enumerate() {
+        let mut rendered_fragment = String::new();
+        push_with_limit(
+            &mut rendered_fragment,
+            &format!(
+                "[Fragment {} — {}]\n",
+                display_index + 1,
+                language_name(display_fragment.language)
+            ),
+            MAX_FRAGMENT_BYTES,
+        )?;
+
+        if display_fragment.distractor {
+            push_with_limit(
+                &mut rendered_fragment,
+                "This audit/example branch does not contribute to the requested result.\n\n",
+                MAX_FRAGMENT_BYTES,
+            )?;
+        } else {
+            push_with_limit(
+                &mut rendered_fragment,
+                &format!("Section identifier: {}\n", display_fragment.heading),
+                MAX_FRAGMENT_BYTES,
+            )?;
+
+            for step in &display_fragment.steps {
+                let emitted = match &step.kind {
+                    DisplayStepKind::Fragment { index } => emit_fragment(
+                        display_fragment.language,
+                        step.template,
+                        &step.output_label,
+                        &step.local_name,
+                        fragments.get(*index).ok_or(RenderError::InvalidPlan)?,
+                    )?,
+                    DisplayStepKind::Operation { operation, inputs } => {
+                        let input_labels = inputs
+                            .iter()
+                            .map(|input| {
+                                locations
+                                    .get(input)
+                                    .map(|location| location.output_label.clone())
+                                    .ok_or(RenderError::MissingReference(*input))
+                            })
+                            .collect::<Result<Vec<_>, _>>()?;
+                        emit_operation(
+                            display_fragment.language,
+                            step.template,
+                            &step.output_label,
+                            &step.local_name,
+                            operation,
+                            &input_labels,
+                        )?
+                    }
+                };
+                if emitted.len() > MAX_STEP_BYTES {
+                    return Err(RenderError::LengthLimit);
+                }
+                push_with_limit(&mut rendered_fragment, &emitted, MAX_FRAGMENT_BYTES)?;
+                push_with_limit(&mut rendered_fragment, "\n", MAX_FRAGMENT_BYTES)?;
+
+                if let DisplayStepKind::Operation { inputs, .. } = &step.kind {
+                    for input in inputs {
+                        let producer = locations
+                            .get(input)
+                            .ok_or(RenderError::MissingReference(*input))?;
+                        if producer.display_index != display_index {
+                            let clue = format!(
+                                "Dependency: output label {} from display Fragment {} is an input to output label {} in display Fragment {}.\n",
+                                producer.output_label,
+                                producer.display_index + 1,
+                                step.output_label,
+                                display_index + 1
+                            );
+                            let clue_bytes = dependency_bytes_by_fragment[display_index]
+                                .checked_add(clue.len())
+                                .ok_or(RenderError::LengthLimit)?;
+                            let accounted_fragment_bytes = rendered_fragment
+                                .len()
+                                .checked_add(clue_bytes)
+                                .ok_or(RenderError::LengthLimit)?;
+                            if accounted_fragment_bytes > MAX_FRAGMENT_BYTES {
+                                return Err(RenderError::LengthLimit);
+                            }
+                            dependency_bytes_by_fragment[display_index] = clue_bytes;
+                            dependency_clues.push(clue);
+                        }
+                    }
+                }
+            }
+            push_with_limit(&mut rendered_fragment, "\n", MAX_FRAGMENT_BYTES)?;
+        }
+
+        let accounted_fragment_bytes = rendered_fragment
+            .len()
+            .checked_add(dependency_bytes_by_fragment[display_index])
+            .ok_or(RenderError::LengthLimit)?;
+        if accounted_fragment_bytes > MAX_FRAGMENT_BYTES {
+            return Err(RenderError::LengthLimit);
+        }
+
+        push_with_limit(&mut question, &rendered_fragment, MAX_QUESTION_BYTES)?;
+    }
+
+    if !dependency_clues.is_empty() {
+        push_with_limit(&mut question, "Dependency clues:\n", MAX_QUESTION_BYTES)?;
+        for clue in dependency_clues {
+            push_with_limit(&mut question, &clue, MAX_QUESTION_BYTES)?;
+        }
+        push_with_limit(&mut question, "\n", MAX_QUESTION_BYTES)?;
+    }
+
+    let output_label = locations
+        .get(&plan.output)
+        .map(|location| location.output_label.as_str())
+        .ok_or(RenderError::MissingReference(plan.output))?;
+    push_with_limit(
+        &mut question,
+        "Display order is not evaluation order.\n",
+        MAX_QUESTION_BYTES,
+    )?;
+    push_with_limit(
+        &mut question,
+        &format!(
+            "The requested result is output label {output_label}. Submit its byte array as unpadded base64url.\n"
+        ),
+        MAX_QUESTION_BYTES,
+    )?;
+
+    Ok(question)
+}
+
+struct OutputLocation {
+    output_label: String,
+    display_index: usize,
+}
+
+fn index_output_locations(
+    plan: &RenderPlan,
+) -> Result<BTreeMap<NodeId, OutputLocation>, RenderError> {
+    let mut locations = BTreeMap::new();
+    for (display_index, fragment) in plan.fragments.iter().enumerate() {
+        if fragment.distractor {
+            continue;
+        }
+        for step in &fragment.steps {
+            if locations
+                .insert(
+                    step.node,
+                    OutputLocation {
+                        output_label: step.output_label.clone(),
+                        display_index,
+                    },
+                )
+                .is_some()
+            {
+                return Err(RenderError::DuplicateReference(step.node));
+            }
+        }
+    }
+    Ok(locations)
+}
+
+fn language_name(language: RenderLanguage) -> &'static str {
+    match language {
+        RenderLanguage::C => "C",
+        RenderLanguage::Cpp => "C++",
+        RenderLanguage::Rust => "Rust",
+        RenderLanguage::Go => "Go",
+        RenderLanguage::Java => "Java",
+        RenderLanguage::Pseudocode => "Pseudocode",
+    }
+}
+
+fn push_with_limit(output: &mut String, value: &str, limit: usize) -> Result<(), RenderError> {
+    let length = output
+        .len()
+        .checked_add(value.len())
+        .ok_or(RenderError::LengthLimit)?;
+    if length > limit {
+        return Err(RenderError::LengthLimit);
+    }
+    output.push_str(value);
+    Ok(())
+}
+
 pub(super) fn emit_operation(
     language: RenderLanguage,
     family: TemplateFamily,
@@ -25,10 +224,6 @@ pub(super) fn emit_operation(
     languages::emit_assignment(language, family, output_label, local_name, &expression)
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "consumed by later Phase 3 renderer tasks")
-)]
 pub(super) fn emit_fragment(
     language: RenderLanguage,
     family: TemplateFamily,

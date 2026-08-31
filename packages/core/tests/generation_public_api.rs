@@ -1,6 +1,6 @@
 use agentgate_core::generation::{
-    MAX_XOR_KEY_LENGTH, NodeId, Operation, SemanticGraphBuilder, ValidatedSemanticGraph,
-    evaluate_semantic_graph,
+    MAX_QUESTION_BYTES, MAX_XOR_KEY_LENGTH, NodeId, Operation, RenderLanguage, RenderMetadata,
+    RenderedQuestion, SemanticGraphBuilder, ValidatedSemanticGraph, evaluate_semantic_graph,
 };
 
 fn graph() -> ValidatedSemanticGraph {
@@ -41,4 +41,12 @@ fn evaluates_a_validated_semantic_graph() {
 #[test]
 fn exposes_the_v1_xor_key_length_limit() {
     assert_eq!(MAX_XOR_KEY_LENGTH, 16);
+}
+
+#[test]
+fn exposes_read_only_renderer_diagnostics() {
+    assert_eq!(RenderLanguage::ALL.len(), 6);
+    assert!(std::hint::black_box(MAX_QUESTION_BYTES) >= 8_192);
+    assert!(std::mem::size_of::<RenderMetadata>() > 0);
+    assert!(std::mem::size_of::<RenderedQuestion>() > 0);
 }

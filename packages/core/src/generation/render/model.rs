@@ -83,6 +83,30 @@ pub struct RenderMetadata {
 }
 
 impl RenderMetadata {
+    pub(super) fn from_validated_plan(plan: &RenderPlan, byte_length: usize) -> Self {
+        let languages = plan
+            .fragments
+            .iter()
+            .filter(|fragment| !fragment.distractor)
+            .map(|fragment| fragment.language)
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let effective_fragment_count = plan
+            .fragments
+            .iter()
+            .filter(|fragment| !fragment.distractor)
+            .count();
+        let has_distractor = plan.fragments.iter().any(|fragment| fragment.distractor);
+
+        Self {
+            languages,
+            effective_fragment_count,
+            has_distractor,
+            byte_length,
+        }
+    }
+
     pub fn languages(&self) -> &[RenderLanguage] {
         &self.languages
     }
@@ -106,6 +130,10 @@ pub struct RenderedQuestion {
 }
 
 impl RenderedQuestion {
+    pub(super) fn new(question: String, metadata: RenderMetadata) -> Self {
+        Self { question, metadata }
+    }
+
     pub fn question(&self) -> &str {
         &self.question
     }
