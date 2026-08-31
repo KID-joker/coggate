@@ -3,6 +3,7 @@ mod error;
 mod graph;
 mod operation;
 mod partition;
+mod planner;
 mod random;
 mod secret;
 

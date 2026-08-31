@@ -15,6 +15,11 @@ impl fmt::Debug for Secret {
 }
 
 impl Secret {
+    #[cfg(test)]
+    pub(crate) fn from_test_bytes(bytes: Vec<u8>) -> Self {
+        Self(bytes)
+    }
+
     pub fn len(&self) -> usize {
         self.0.len()
     }
