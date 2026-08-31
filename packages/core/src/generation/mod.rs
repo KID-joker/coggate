@@ -5,6 +5,7 @@ mod operation;
 mod partition;
 mod planner;
 mod random;
+mod render;
 mod secret;
 
 #[cfg(test)]
@@ -14,3 +15,4 @@ pub use answer::evaluate_semantic_graph;
 pub use error::GenerationError;
 pub use graph::{NodeId, NodeKind, SemanticGraphBuilder, SemanticNode, ValidatedSemanticGraph};
 pub use operation::{MAX_XOR_KEY_LENGTH, Operation};
+pub use render::{RenderLanguage, RenderMetadata, RenderedQuestion};
