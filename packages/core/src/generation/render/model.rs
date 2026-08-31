@@ -2,6 +2,12 @@ use std::fmt;
 
 use crate::generation::{NodeId, Operation};
 
+/// Maximum conservative pre-emission budget for one effective display fragment.
+pub(super) const MAX_FRAGMENT_BYTES: usize = 2_048;
+
+/// Maximum UTF-8 byte length of a complete rendered question.
+pub const MAX_QUESTION_BYTES: usize = 12_288;
+
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum RenderLanguage {
     C,
