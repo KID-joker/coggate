@@ -54,6 +54,8 @@ use super::test_random::DeterministicRandom;
 
 #[test]
 fn generates_redacted_ascii_alphanumeric_secrets_within_policy_bounds() {
+    let mut generated_lengths = std::collections::BTreeSet::new();
+
     for seed in 0_u8..=255 {
         let mut random = DeterministicRandom::new([seed; 32]);
         let secret = generate_with(&mut random).unwrap();
@@ -61,5 +63,8 @@ fn generates_redacted_ascii_alphanumeric_secrets_within_policy_bounds() {
         assert!((8..=16).contains(&secret.len()));
         assert!(secret.expose().iter().all(u8::is_ascii_alphanumeric));
         assert_eq!(format!("{secret:?}"), "Secret([REDACTED])");
+        generated_lengths.insert(secret.len());
     }
+
+    assert_eq!(generated_lengths, (8_usize..=16).collect());
 }

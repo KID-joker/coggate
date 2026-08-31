@@ -56,4 +56,25 @@ mod tests {
 
         assert_ne!(first_bytes, second_bytes);
     }
+
+    #[test]
+    fn advances_the_counter_across_consecutive_fills() {
+        let seed = [0xA5; 32];
+        let mut expected = Vec::new();
+        for counter in 0_u64..=2 {
+            let mut hasher = Sha256::new();
+            hasher.update(seed);
+            hasher.update(counter.to_be_bytes());
+            expected.extend_from_slice(&hasher.finalize());
+        }
+
+        let mut random = DeterministicRandom::new(seed);
+        let mut first_fill = [0; 64];
+        let mut second_fill = [0; 32];
+        random.fill(&mut first_fill).unwrap();
+        random.fill(&mut second_fill).unwrap();
+
+        assert_eq!(first_fill.as_slice(), &expected[..64]);
+        assert_eq!(second_fill.as_slice(), &expected[64..]);
+    }
 }

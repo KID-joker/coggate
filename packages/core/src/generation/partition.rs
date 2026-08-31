@@ -37,6 +37,7 @@ fn partitions_each_supported_length_into_the_policy_count_without_empty_fragment
         let secret: Vec<u8> = (0..length)
             .map(|value| value.wrapping_add(length))
             .collect();
+        let mut split_shapes = std::collections::BTreeSet::new();
 
         for seed in 0_u8..=63 {
             let mut random = DeterministicRandom::new([seed; 32]);
@@ -48,7 +49,13 @@ fn partitions_each_supported_length_into_the_policy_count_without_empty_fragment
             );
             assert!(fragments.iter().all(|fragment| !fragment.is_empty()));
             assert_eq!(fragments.concat(), secret);
+            split_shapes.insert(fragments.iter().map(Vec::len).collect::<Vec<_>>());
         }
+
+        assert!(
+            split_shapes.len() >= 2,
+            "length {length} produced only one split shape"
+        );
     }
 }
 
