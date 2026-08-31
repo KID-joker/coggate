@@ -408,6 +408,44 @@ mod tests {
     }
 
     #[test]
+    fn reduces_rotation_amounts_modulo_input_length() {
+        assert_eq!(
+            Operation::RotateLeft(5).evaluate(&[b"abcd"]),
+            Ok(b"bcda".to_vec())
+        );
+        assert_eq!(
+            Operation::RotateRight(5).evaluate(&[b"abcd"]),
+            Ok(b"dabc".to_vec())
+        );
+    }
+
+    #[test]
+    fn repeats_multi_byte_xor_keys_and_concatenates_many_inputs_in_order() {
+        assert_eq!(
+            Operation::Xor(vec![1, 2]).evaluate(&[&[0, 0, 0]]),
+            Ok(vec![1, 2, 1])
+        );
+        assert_eq!(
+            Operation::Concat.evaluate(&[b"ab", b"cd", b"ef"]),
+            Ok(b"abcdef".to_vec())
+        );
+    }
+
+    #[test]
+    fn defines_empty_input_behavior_for_length_safe_operations() {
+        assert_eq!(Operation::EvenBytes.evaluate(&[b""]), Ok(Vec::new()));
+        assert_eq!(Operation::OddBytes.evaluate(&[b""]), Ok(Vec::new()));
+        assert_eq!(
+            Operation::Permute(Vec::new()).evaluate(&[b""]),
+            Ok(Vec::new())
+        );
+        assert_eq!(Operation::HexEncode.evaluate(&[b""]), Ok(Vec::new()));
+        assert_eq!(Operation::HexDecode.evaluate(&[b""]), Ok(Vec::new()));
+        assert_eq!(Operation::Base64UrlEncode.evaluate(&[b""]), Ok(Vec::new()));
+        assert_eq!(Operation::Base64UrlDecode.evaluate(&[b""]), Ok(Vec::new()));
+    }
+
+    #[test]
     fn rejects_invalid_parameters_and_input_lengths() {
         assert_eq!(
             Operation::Xor(vec![]).evaluate(&[b"x"]),
