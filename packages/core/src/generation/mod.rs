@@ -2,7 +2,12 @@ mod answer;
 mod error;
 mod graph;
 mod operation;
+mod partition;
 mod random;
+mod secret;
+
+#[cfg(test)]
+mod test_random;
 
 pub use answer::evaluate_semantic_graph;
 pub use error::GenerationError;
