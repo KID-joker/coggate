@@ -178,10 +178,14 @@ fn validate_identifier(identifier: &str) -> Result<(), RenderError> {
     if identifier.len() > MAX_IDENTIFIER_BYTES {
         return Err(RenderError::LengthLimit);
     }
-    if identifier.is_empty()
-        || !identifier
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    let Some((first, remaining)) = identifier.as_bytes().split_first() else {
+        return Err(RenderError::InvalidPlan);
+    };
+    if identifier == "_"
+        || !(first.is_ascii_alphabetic() || *first == b'_')
+        || !remaining
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
     {
         return Err(RenderError::InvalidPlan);
     }
@@ -833,6 +837,54 @@ mod tests {
 
         let (_, _, mut plan) = fixture_plan();
         effective_fragments(&mut plan)[0].heading = "not-portable".to_owned();
+        assert_eq!(
+            validate_plan(&graph, &fragments, &plan),
+            Err(RenderError::InvalidPlan)
+        );
+    }
+
+    #[test]
+    fn rejects_digit_leading_names_in_every_identifier_category() {
+        let (graph, fragments, mut plan) = fixture_plan();
+        effective_fragments(&mut plan)[0].steps[0].output_label = "1value".to_owned();
+        assert_eq!(
+            validate_plan(&graph, &fragments, &plan),
+            Err(RenderError::InvalidPlan)
+        );
+
+        let (_, _, mut plan) = fixture_plan();
+        effective_fragments(&mut plan)[0].steps[0].local_name = "1value".to_owned();
+        assert_eq!(
+            validate_plan(&graph, &fragments, &plan),
+            Err(RenderError::InvalidPlan)
+        );
+
+        let (_, _, mut plan) = fixture_plan();
+        effective_fragments(&mut plan)[0].heading = "1value".to_owned();
+        assert_eq!(
+            validate_plan(&graph, &fragments, &plan),
+            Err(RenderError::InvalidPlan)
+        );
+    }
+
+    #[test]
+    fn rejects_a_bare_underscore_in_every_identifier_category() {
+        let (graph, fragments, mut plan) = fixture_plan();
+        effective_fragments(&mut plan)[0].steps[0].output_label = "_".to_owned();
+        assert_eq!(
+            validate_plan(&graph, &fragments, &plan),
+            Err(RenderError::InvalidPlan)
+        );
+
+        let (_, _, mut plan) = fixture_plan();
+        effective_fragments(&mut plan)[0].steps[0].local_name = "_".to_owned();
+        assert_eq!(
+            validate_plan(&graph, &fragments, &plan),
+            Err(RenderError::InvalidPlan)
+        );
+
+        let (_, _, mut plan) = fixture_plan();
+        effective_fragments(&mut plan)[0].heading = "_".to_owned();
         assert_eq!(
             validate_plan(&graph, &fragments, &plan),
             Err(RenderError::InvalidPlan)
