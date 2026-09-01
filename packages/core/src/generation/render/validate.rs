@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use crate::generation::{NodeId, NodeKind, Operation, ValidatedSemanticGraph};
 
 use super::{
-    emitter::MAX_STEP_BYTES,
+    emitter::{DEPENDENCY_CLUE_FIXED_BYTES, MAX_STEP_BYTES},
     error::RenderError,
     model::{
         DisplayStep, DisplayStepKind, MAX_FRAGMENT_BYTES, MAX_QUESTION_BYTES, RenderLanguage,
@@ -16,7 +16,6 @@ use super::{
 pub(super) const COMMON_QUESTION_BUDGET: usize = 2_048;
 const FRAGMENT_WRAPPER_BUDGET: usize = 64;
 const DISTRACTOR_WRAPPER_BUDGET: usize = 256;
-const DEPENDENCY_CLUE_BUDGET: usize = 96;
 const DIRECT_TEMPLATE_BUDGET: usize = 48;
 const HELPER_TEMPLATE_BUDGET: usize = 96;
 const OPERATION_EXPRESSION_BUDGET: usize = 40;
@@ -359,11 +358,9 @@ fn validate_length_bounds(
                     && seen_dependency_edges.insert((step.node, *input))
                 {
                     let clue = checked_sum(&[
-                        DEPENDENCY_CLUE_BUDGET,
+                        DEPENDENCY_CLUE_FIXED_BYTES,
                         producer.output_label.len(),
                         step.output_label.len(),
-                        effective[*producer_fragment].heading.len(),
-                        effective[*fragment_index].heading.len(),
                     ])?;
                     fragment_budgets[*fragment_index] =
                         checked_add(fragment_budgets[*fragment_index], clue)?;

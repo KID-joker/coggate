@@ -1,7 +1,10 @@
 use std::collections::BTreeSet;
 
 use super::{
-    emitter::{self, common_question_bytes},
+    emitter::{
+        self, common_question_bytes, declared_template_max_bytes,
+        emitted_dependency_clue_fixed_bytes,
+    },
     model::{
         DisplayFragment, DisplayStep, DisplayStepKind, MAX_FRAGMENT_BYTES, MAX_QUESTION_BYTES,
         RenderLanguage, RenderPlan, TemplateFamily,
@@ -148,7 +151,8 @@ fn worst_case_question_fixture() -> (ValidatedSemanticGraph, Vec<Vec<u8>>, Rende
     let xored = builder.operation(Operation::Xor(vec![u8::MAX; 16]), vec![source[0]]);
     let permuted = builder.operation(Operation::Permute((0..16).rev().collect()), vec![source[1]]);
     let left = builder.operation(Operation::RotateLeft(usize::MAX), vec![source[2]]);
-    let sliced = builder.operation(Operation::Slice { start: 16, end: 16 }, vec![source[3]]);
+    // Keep the full maximum renderer-supported source range instead of an empty 16..16 slice.
+    let sliced = builder.operation(Operation::Slice { start: 0, end: 16 }, vec![source[3]]);
     let hashed = builder.operation(Operation::Sha256Prefix(32), vec![source[4]]);
     let concatenated = builder.operation(
         Operation::Concat,
@@ -182,13 +186,13 @@ fn worst_case_question_fixture() -> (ValidatedSemanticGraph, Vec<Vec<u8>>, Rende
         .collect::<Vec<_>>();
     let languages = [
         RenderLanguage::Java,
-        RenderLanguage::Cpp,
-        RenderLanguage::Rust,
         RenderLanguage::Java,
-        RenderLanguage::Cpp,
+        RenderLanguage::Java,
+        RenderLanguage::Java,
+        RenderLanguage::Go,
     ];
     let mut steps = steps.into_iter();
-    let mut display_fragments = [3, 3, 3, 2, 2]
+    let mut display_fragments = [5, 5, 1, 1, 1]
         .into_iter()
         .enumerate()
         .map(|(index, size)| DisplayFragment {
@@ -218,6 +222,43 @@ fn worst_case_assembled_question_fits_actual_fragment_and_question_limits() {
     let (graph, fragments, plan) = worst_case_question_fixture();
     assert_eq!(graph.operation_count(), 8);
     assert_eq!(plan.fragments.len(), 6);
+    let effective_languages = plan
+        .fragments
+        .iter()
+        .filter(|fragment| !fragment.distractor)
+        .map(|fragment| fragment.language)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        effective_languages,
+        vec![
+            RenderLanguage::Java,
+            RenderLanguage::Java,
+            RenderLanguage::Java,
+            RenderLanguage::Java,
+            RenderLanguage::Go,
+        ]
+    );
+    let reverse_helper_lengths = RenderLanguage::ALL.map(|language| {
+        emitter::emit_operation(
+            language,
+            TemplateFamily::Helper,
+            "output_000000000",
+            "helper_000000000",
+            &Operation::Reverse,
+            &["source_000000000".to_owned()],
+        )
+        .unwrap()
+        .len()
+    });
+    assert_eq!(reverse_helper_lengths, [136, 134, 131, 136, 137, 126]);
+    let best_non_java = reverse_helper_lengths
+        .iter()
+        .enumerate()
+        .filter_map(|(index, length)| (index != 4).then_some(*length))
+        .max()
+        .unwrap();
+    assert_eq!(reverse_helper_lengths[3], best_non_java);
+    assert_eq!(best_non_java + 1, reverse_helper_lengths[4]);
     let effective_steps = plan
         .fragments
         .iter()
@@ -263,12 +304,52 @@ fn worst_case_assembled_question_fits_actual_fragment_and_question_limits() {
             } if permutation.len() == 16
         )
     }));
+    assert!(effective_steps.iter().any(|step| {
+        matches!(
+            &step.kind,
+            DisplayStepKind::Operation {
+                operation: Operation::Slice { start: 0, end: 16 },
+                ..
+            }
+        )
+    }));
+    let fragment_by_node = plan
+        .fragments
+        .iter()
+        .filter(|fragment| !fragment.distractor)
+        .enumerate()
+        .flat_map(|(fragment_index, fragment)| {
+            fragment
+                .steps
+                .iter()
+                .map(move |step| (step.node, fragment_index))
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let unique_edges = effective_steps
+        .iter()
+        .flat_map(|step| match &step.kind {
+            DisplayStepKind::Operation { inputs, .. } => inputs
+                .iter()
+                .copied()
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .map(|input| (input, step.node))
+                .collect::<Vec<_>>(),
+            DisplayStepKind::Fragment { .. } => Vec::new(),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(unique_edges.len(), 12);
+    assert!(
+        unique_edges
+            .iter()
+            .all(|(input, output)| { fragment_by_node[input] < fragment_by_node[output] })
+    );
     validate::validate_plan(&graph, &fragments, &plan).unwrap();
 
     let question = emitter::emit_question(&plan, &fragments).unwrap();
     let expected_question_bytes = match usize::BITS {
-        64 => 5_655,
-        32 => 5_635,
+        64 => 5_954,
+        32 => 5_934,
         width => panic!("unsupported usize width {width}"),
     };
     assert_eq!(question.len(), expected_question_bytes);
@@ -286,7 +367,7 @@ fn worst_case_assembled_question_fits_actual_fragment_and_question_limits() {
         .lines()
         .filter(|line| line.starts_with("Dependency: "))
         .collect::<Vec<_>>();
-    assert_eq!(clues.len(), 10);
+    assert_eq!(clues.len(), 12);
     assert!(clues.iter().all(|clue| clue.len() + 1 == 134));
     let target_clue_counts = (1..=5)
         .map(|target| {
@@ -294,12 +375,12 @@ fn worst_case_assembled_question_fits_actual_fragment_and_question_limits() {
             clues.iter().filter(|clue| clue.ends_with(&suffix)).count()
         })
         .collect::<Vec<_>>();
-    assert_eq!(target_clue_counts, vec![0, 1, 3, 5, 1]);
+    assert_eq!(target_clue_counts, vec![0, 5, 5, 1, 1]);
     let dependency_start = question.find("Dependency clues:\n").unwrap();
     let dependency_end = question
         .find("Display order is not evaluation order.\n")
         .unwrap();
-    assert_eq!(dependency_end - dependency_start, 1_359);
+    assert_eq!(dependency_end - dependency_start, 1_627);
 
     assert_eq!(sections.len(), 6);
     let section_lengths = sections
@@ -308,8 +389,8 @@ fn worst_case_assembled_question_fits_actual_fragment_and_question_limits() {
         .map(|(index, start)| sections.get(index + 1).copied().unwrap_or(dependency_start) - start)
         .collect::<Vec<_>>();
     let expected_sections = match usize::BITS {
-        64 => vec![492, 561, 544, 561, 356, 94],
-        32 => vec![492, 561, 534, 561, 346, 94],
+        64 => vec![780, 932, 413, 225, 195, 94],
+        32 => vec![780, 922, 413, 215, 195, 94],
         _ => unreachable!(),
     };
     assert_eq!(section_lengths, expected_sections);
@@ -319,8 +400,8 @@ fn worst_case_assembled_question_fits_actual_fragment_and_question_limits() {
         .map(|(section, clue_count)| section + clue_count * 134)
         .collect::<Vec<_>>();
     let expected_accounted = match usize::BITS {
-        64 => vec![492, 695, 946, 1_231, 490],
-        32 => vec![492, 695, 936, 1_231, 480],
+        64 => vec![780, 1_602, 1_083, 359, 329],
+        32 => vec![780, 1_592, 1_083, 349, 329],
         _ => unreachable!(),
     };
     assert_eq!(accounted_effective, expected_accounted);
@@ -329,6 +410,16 @@ fn worst_case_assembled_question_fits_actual_fragment_and_question_limits() {
             .iter()
             .all(|bytes| *bytes <= MAX_FRAGMENT_BYTES)
     );
+    let fragment_margins = accounted_effective
+        .iter()
+        .map(|bytes| MAX_FRAGMENT_BYTES - bytes)
+        .collect::<Vec<_>>();
+    let expected_margins = match usize::BITS {
+        64 => vec![1_268, 446, 965, 1_689, 1_719],
+        32 => vec![1_268, 456, 965, 1_699, 1_719],
+        _ => unreachable!(),
+    };
+    assert_eq!(fragment_margins, expected_margins);
     assert_eq!(section_lengths[5], 94);
 }
 
@@ -337,4 +428,60 @@ fn fixed_common_question_text_fits_the_validator_reservation() {
     let actual = common_question_bytes();
     assert_eq!(actual, 1_691);
     assert_eq!(COMMON_QUESTION_BUDGET - actual, 357);
+}
+
+#[test]
+fn maximum_legal_v1_slice_index_fits_every_template_declaration() {
+    const MAX_LEGAL_SLICE_INDEX: usize = 1_003_976_272;
+
+    let mut builder = SemanticGraphBuilder::new(vec![16; 5]);
+    let sources = (0..5)
+        .map(|index| builder.fragment(index).unwrap())
+        .collect::<Vec<_>>();
+    let mut first_inputs = sources.clone();
+    first_inputs.extend(std::iter::repeat(sources[0]).take(8));
+    let mut current = builder.operation(Operation::Concat, first_inputs);
+    let mut current_length = 16 * 13;
+    for _ in 0..6 {
+        current = builder.operation(Operation::Concat, vec![current; 13]);
+        current_length *= 13;
+    }
+    assert_eq!(current_length, MAX_LEGAL_SLICE_INDEX);
+    let output = builder.operation(
+        Operation::Slice {
+            start: MAX_LEGAL_SLICE_INDEX,
+            end: MAX_LEGAL_SLICE_INDEX,
+        },
+        vec![current],
+    );
+    builder.output(output);
+    let graph = builder.validate().unwrap();
+    assert_eq!(graph.operation_count(), 8);
+    assert_eq!(graph.output_length(), 0);
+
+    let input = ["source_000000000".to_owned()];
+    let operation = Operation::Slice {
+        start: MAX_LEGAL_SLICE_INDEX,
+        end: MAX_LEGAL_SLICE_INDEX,
+    };
+    for language in RenderLanguage::ALL {
+        for family in [TemplateFamily::Direct, TemplateFamily::Helper] {
+            let emitted = emitter::emit_operation(
+                language,
+                family,
+                "output_000000000",
+                "helper_000000000",
+                &operation,
+                &input,
+            )
+            .unwrap();
+            assert!(emitted.contains("1003976272, 1003976272"));
+            assert!(emitted.len() <= declared_template_max_bytes(language, family));
+        }
+    }
+}
+
+#[test]
+fn dependency_clue_budget_matches_the_real_emitter_format() {
+    assert_eq!(emitted_dependency_clue_fixed_bytes(), 102);
 }

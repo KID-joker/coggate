@@ -39,6 +39,8 @@ const DEPENDENCY_CLUES_HEADER: &str = "Dependency clues:\n";
 const DISPLAY_ORDER_WARNING: &str = "Display order is not evaluation order.\n";
 const OUTPUT_REQUEST_PREFIX: &str = "The requested result is output label ";
 const OUTPUT_REQUEST_SUFFIX: &str = ". Submit its byte array as unpadded base64url.\n";
+// V1 emits at most six display fragments, so both one-based clue indices use one byte.
+pub(super) const DEPENDENCY_CLUE_FIXED_BYTES: usize = 102;
 
 #[cfg(test)]
 pub(super) fn common_question_bytes() -> usize {
@@ -129,12 +131,11 @@ pub(super) fn emit_question(
                         if producer.display_index != display_index
                             && seen_dependency_edges.insert((step.node, *input))
                         {
-                            let clue = format!(
-                                "Dependency: output label {} from display Fragment {} is an input to output label {} in display Fragment {}.\n",
-                                producer.output_label,
-                                producer.display_index + 1,
-                                step.output_label,
-                                display_index + 1
+                            let clue = format_dependency_clue(
+                                &producer.output_label,
+                                producer.display_index,
+                                &step.output_label,
+                                display_index,
                             );
                             let clue_bytes = dependency_bytes_by_fragment[display_index]
                                 .checked_add(clue.len())
@@ -175,6 +176,24 @@ pub(super) fn emit_question(
     push_final_request(&mut question, output_label)?;
 
     Ok(question)
+}
+
+fn format_dependency_clue(
+    producer_label: &str,
+    producer_display_index: usize,
+    output_label: &str,
+    output_display_index: usize,
+) -> String {
+    format!(
+        "Dependency: output label {producer_label} from display Fragment {} is an input to output label {output_label} in display Fragment {}.\n",
+        producer_display_index + 1,
+        output_display_index + 1
+    )
+}
+
+#[cfg(test)]
+pub(super) fn emitted_dependency_clue_fixed_bytes() -> usize {
+    format_dependency_clue("", 5, "", 5).len()
 }
 
 fn push_question_preamble(question: &mut String) -> Result<(), RenderError> {
