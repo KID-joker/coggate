@@ -129,10 +129,10 @@ fn map_generation_error(error: GenerationError) -> CandidateError {
 fn map_render_error(error: RenderError) -> CandidateError {
     match error {
         RenderError::RandomnessUnavailable => CandidateError::RandomnessUnavailable,
-        RenderError::NameExhausted | RenderError::InvalidPlan | RenderError::LengthLimit => {
-            CandidateError::Rejected
-        }
-        RenderError::MissingReference(_)
+        RenderError::LengthLimit => CandidateError::Rejected,
+        RenderError::NameExhausted
+        | RenderError::InvalidPlan
+        | RenderError::MissingReference(_)
         | RenderError::DuplicateReference(_)
         | RenderError::SemanticMismatch(_)
         | RenderError::AmbiguousOutput
@@ -321,6 +321,14 @@ mod tests {
     fn maps_render_invariants_and_safe_rejections_separately() {
         assert_eq!(
             map_render_error(RenderError::MissingReference(crate::generation::NodeId(1))),
+            CandidateError::Internal
+        );
+        assert_eq!(
+            map_render_error(RenderError::NameExhausted),
+            CandidateError::Internal
+        );
+        assert_eq!(
+            map_render_error(RenderError::InvalidPlan),
             CandidateError::Internal
         );
         assert_eq!(
