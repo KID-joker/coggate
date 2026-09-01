@@ -13,10 +13,6 @@ use crate::generation::{ValidatedSemanticGraph, random::RandomSource};
 use error::RenderError;
 pub use model::{MAX_QUESTION_BYTES, RenderLanguage, RenderMetadata, RenderedQuestion};
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "consumed by the Phase 4 lifecycle API")
-)]
 pub(crate) fn render_with(
     graph: &ValidatedSemanticGraph,
     fragments: &[Vec<u8>],

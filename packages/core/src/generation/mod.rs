@@ -1,9 +1,14 @@
 mod answer;
+mod candidate;
 mod error;
 mod graph;
 mod operation;
 mod partition;
 mod planner;
+#[allow(
+    dead_code,
+    reason = "OsRandom is constructed by the Phase 4 challenge service"
+)]
 mod random;
 mod render;
 mod secret;
@@ -12,7 +17,19 @@ mod secret;
 mod test_random;
 
 pub use answer::evaluate_semantic_graph;
+#[expect(
+    unused_imports,
+    reason = "crate-private service-facing generation reexports"
+)]
+pub(crate) use candidate::{
+    CandidateError, ChallengeCandidate, generate_candidate_with, retry_candidates,
+};
 pub use error::GenerationError;
 pub use graph::{NodeId, NodeKind, SemanticGraphBuilder, SemanticNode, ValidatedSemanticGraph};
 pub use operation::{MAX_CONCAT_INPUTS, MAX_PERMUTATION_LENGTH, MAX_XOR_KEY_LENGTH, Operation};
+#[expect(
+    unused_imports,
+    reason = "crate-private service-facing generation reexports"
+)]
+pub(crate) use random::{OsRandom, RandomSource};
 pub use render::{MAX_QUESTION_BYTES, RenderLanguage, RenderMetadata, RenderedQuestion};

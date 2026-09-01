@@ -2,7 +2,7 @@ use std::fmt;
 
 use agentgate_contracts::{MAX_SECRET_LENGTH, MIN_SECRET_LENGTH};
 
-use super::random::{OsRandom, RandomSource, sample_below};
+use super::random::{RandomSource, sample_below};
 
 const ALPHANUMERIC: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 
@@ -24,20 +24,9 @@ impl Secret {
         self.0.len()
     }
 
-    #[expect(dead_code, reason = "consumed by the Phase 4 lifecycle API")]
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
     pub(crate) fn expose(&self) -> &[u8] {
         &self.0
     }
-}
-
-#[expect(dead_code, reason = "consumed by the Phase 4 lifecycle API")]
-pub(crate) fn generate_secret() -> Result<Secret, super::GenerationError> {
-    let mut random = OsRandom;
-    generate_with(&mut random)
 }
 
 pub(crate) fn generate_with(

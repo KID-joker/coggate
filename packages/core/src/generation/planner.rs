@@ -4,8 +4,8 @@ use super::{
     GenerationError, NodeId, NodeKind, Operation, SemanticGraphBuilder, ValidatedSemanticGraph,
     evaluate_semantic_graph,
     partition::partition_with,
-    random::{OsRandom, RandomSource, sample_below, shuffle},
-    secret::{Secret, generate_with},
+    random::{RandomSource, sample_below, shuffle},
+    secret::Secret,
 };
 
 pub(crate) struct PlannedSemantics {
@@ -19,10 +19,6 @@ pub(crate) struct PlannedSemantics {
     cross_fragment_dependency_count: usize,
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "consumed by the Phase 4 lifecycle API")
-)]
 impl PlannedSemantics {
     pub(crate) fn graph(&self) -> &ValidatedSemanticGraph {
         &self.graph
@@ -35,13 +31,6 @@ impl PlannedSemantics {
     pub(crate) fn answer(&self) -> &[u8] {
         &self.answer
     }
-}
-
-#[expect(dead_code, reason = "consumed by the Phase 4 lifecycle API")]
-pub(crate) fn plan_semantics() -> Result<PlannedSemantics, GenerationError> {
-    let mut random = OsRandom;
-    let secret = generate_with(&mut random)?;
-    plan_with(&secret, &mut random)
 }
 
 pub(crate) fn plan_with(
