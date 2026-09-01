@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::{
     emitter::{self, common_question_bytes, declared_template_max_bytes},
@@ -7,11 +7,12 @@ use super::{
         DisplayFragment, DisplayStep, DisplayStepKind, MAX_FRAGMENT_BYTES, MAX_QUESTION_BYTES,
         RenderLanguage, RenderPlan, TemplateFamily,
     },
+    planner::plan_rendering,
     render_with,
     validate::{self, COMMON_QUESTION_BUDGET},
 };
 use crate::generation::{
-    MAX_CONCAT_INPUTS, NodeKind, Operation, SemanticGraphBuilder, ValidatedSemanticGraph,
+    MAX_CONCAT_INPUTS, NodeId, NodeKind, Operation, SemanticGraphBuilder, ValidatedSemanticGraph,
     evaluate_semantic_graph, planner::plan_with, secret::Secret, test_random::DeterministicRandom,
 };
 
@@ -80,6 +81,60 @@ fn dense_legal_dependencies_render_for_every_stream_within_fixed_bounds() {
     for seed in 0_u8..=127 {
         let mut random = DeterministicRandom::new([seed; 32]);
         let rendered = render_with(&graph, &fragments, &mut random).unwrap();
+        let mut plan_random = DeterministicRandom::new([seed; 32]);
+        let plan = plan_rendering(&graph, &fragments, &mut plan_random).unwrap();
+        let mut locations = BTreeMap::<NodeId, (&str, usize)>::new();
+        for (display_index, fragment) in plan.fragments.iter().enumerate() {
+            if fragment.distractor {
+                continue;
+            }
+            for step in &fragment.steps {
+                assert!(
+                    locations
+                        .insert(step.node, (&step.output_label, display_index))
+                        .is_none()
+                );
+            }
+        }
+
+        let mut expected_clue_count = 0;
+        for (display_index, fragment) in plan.fragments.iter().enumerate() {
+            if fragment.distractor {
+                continue;
+            }
+            for step in &fragment.steps {
+                let DisplayStepKind::Operation { inputs, .. } = &step.kind else {
+                    continue;
+                };
+                let mut seen_producers = BTreeSet::new();
+                let mut producers = Vec::new();
+                for input in inputs {
+                    let (producer_label, producer_display_index) = locations[input];
+                    if producer_display_index != display_index && seen_producers.insert(*input) {
+                        producers.push((producer_label, producer_display_index));
+                    }
+                }
+                if producers.is_empty() {
+                    continue;
+                }
+
+                let clue =
+                    emitter::format_dependency_clue(&producers, &step.output_label, display_index)
+                        .unwrap();
+                assert_eq!(
+                    rendered.question().matches(&clue).count(),
+                    1,
+                    "seed {seed}: {clue}"
+                );
+                expected_clue_count += 1;
+            }
+        }
+        let actual_clue_count = rendered
+            .question()
+            .lines()
+            .filter(|line| line.starts_with("Dependency: "))
+            .count();
+        assert_eq!(actual_clue_count, expected_clue_count, "seed {seed}");
         assert!(rendered.question().len() <= MAX_QUESTION_BYTES);
         assert_eq!(
             evaluate_semantic_graph(&graph, &fragment_slices(&fragments)).unwrap(),
