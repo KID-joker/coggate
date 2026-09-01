@@ -4,7 +4,7 @@ AgentGate generates short, mixed-language semantic challenges intended to make L
 
 ## Workspace status
 
-Phase 1 defines protocol contracts and context-bound answer verification. Phase 2 adds the validated semantic DAG, deterministic answer engine, fixed-policy secret generation and partitioning, and constrained challenge planning. Mixed-language rendering, lifecycle integration, language bindings, and adversarial qualification remain subsequent roadmap phases.
+Phase 1 defines protocol contracts and context-bound answer verification. Phase 2 adds the validated semantic DAG, deterministic answer engine, fixed-policy secret generation and partitioning, and constrained challenge planning. Phase 3 adds bounded mixed-language rendering with deterministic presentation planning, dependency clues, name randomization, distractor isolation, ambiguity validation, and complete V1 operation coverage. Public challenge generation and lifecycle integration are the next roadmap phase; language bindings and adversarial qualification remain later phases.
 
 ## Verify
 
