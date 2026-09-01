@@ -8,7 +8,6 @@ use super::model::{
     DisplayStepKind, MAX_FRAGMENT_BYTES, MAX_QUESTION_BYTES, RenderLanguage, RenderPlan,
     TemplateFamily,
 };
-use super::render_collection_within_v1_bounds;
 
 pub(super) const MAX_STEP_BYTES: usize = 512;
 
@@ -283,9 +282,6 @@ pub(super) fn emit_operation(
     operation: &Operation,
     inputs: &[String],
 ) -> Result<String, RenderError> {
-    if !render_collection_within_v1_bounds(operation, inputs.len()) {
-        return Err(RenderError::InvalidPlan);
-    }
     operation
         .validate_arity(inputs.len())
         .map_err(|_| RenderError::InvalidPlan)?;
@@ -312,10 +308,6 @@ pub(super) fn emit_fragment(
     languages::emit_assignment(language, family, output_label, local_name, &expression)
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "consumed by later Phase 3 renderer tasks")
-)]
 pub(super) fn declared_template_max_bytes(
     language: RenderLanguage,
     family: TemplateFamily,
@@ -449,9 +441,9 @@ mod tests {
         MAX_STEP_BYTES, bounded_parts, declared_template_max_bytes, emit_fragment, emit_operation,
         operation_expression,
     };
-    use crate::generation::Operation;
     use crate::generation::render::error::RenderError;
     use crate::generation::render::model::{RenderLanguage, TemplateFamily};
+    use crate::generation::{MAX_CONCAT_INPUTS, MAX_PERMUTATION_LENGTH, Operation};
 
     fn operations() -> Vec<Operation> {
         vec![
@@ -504,7 +496,7 @@ mod tests {
             ("odd", Operation::OddBytes, unary()),
             (
                 "permute_16",
-                Operation::Permute((0..16).rev().collect()),
+                Operation::Permute((0..MAX_PERMUTATION_LENGTH).rev().collect()),
                 unary(),
             ),
             (
@@ -518,7 +510,9 @@ mod tests {
             (
                 "concat_13",
                 Operation::Concat,
-                (0..13).map(|index| format!("source_{index:09}")).collect(),
+                (0..MAX_CONCAT_INPUTS)
+                    .map(|index| format!("source_{index:09}"))
+                    .collect(),
             ),
             ("add", Operation::AddModulo, binary()),
             ("sub", Operation::SubModulo, binary()),
@@ -887,7 +881,7 @@ mod tests {
 
     #[test]
     fn renderer_accepts_v1_collection_limits_and_rejects_the_next_item() {
-        let mut labels = (0..14)
+        let mut labels = (0..=MAX_CONCAT_INPUTS)
             .map(|index| format!("source_{index:09}"))
             .collect::<Vec<_>>();
         assert!(
@@ -897,11 +891,11 @@ mod tests {
                 "output_000000000",
                 "helper_000000000",
                 &Operation::Concat,
-                &labels[..13],
+                &labels[..MAX_CONCAT_INPUTS],
             )
             .is_ok()
         );
-        labels[13] = "SECRET_BOUNDARY_MARKER".to_owned();
+        labels[MAX_CONCAT_INPUTS] = "SECRET_BOUNDARY_MARKER".to_owned();
         let error = emit_operation(
             RenderLanguage::Rust,
             TemplateFamily::Direct,
@@ -922,7 +916,7 @@ mod tests {
                 TemplateFamily::Direct,
                 "output_000000000",
                 "helper_000000000",
-                &Operation::Permute((0..16).collect()),
+                &Operation::Permute((0..MAX_PERMUTATION_LENGTH).collect()),
                 &input,
             )
             .is_ok()
@@ -933,7 +927,7 @@ mod tests {
                 TemplateFamily::Direct,
                 "output_000000000",
                 "helper_000000000",
-                &Operation::Permute((0..17).collect()),
+                &Operation::Permute((0..=MAX_PERMUTATION_LENGTH).collect()),
                 &input,
             ),
             Err(RenderError::InvalidPlan)

@@ -13,8 +13,8 @@ use super::{
     validate::{self, COMMON_QUESTION_BUDGET},
 };
 use crate::generation::{
-    NodeKind, Operation, SemanticGraphBuilder, ValidatedSemanticGraph, evaluate_semantic_graph,
-    planner::plan_with, secret::Secret, test_random::DeterministicRandom,
+    MAX_CONCAT_INPUTS, NodeKind, Operation, SemanticGraphBuilder, ValidatedSemanticGraph,
+    evaluate_semantic_graph, planner::plan_with, secret::Secret, test_random::DeterministicRandom,
 };
 
 fn ascii_secret(length: usize) -> Secret {
@@ -439,12 +439,12 @@ fn maximum_legal_v1_slice_index_fits_every_template_declaration() {
         .map(|index| builder.fragment(index).unwrap())
         .collect::<Vec<_>>();
     let mut first_inputs = sources.clone();
-    first_inputs.extend(std::iter::repeat(sources[0]).take(8));
+    first_inputs.extend(std::iter::repeat(sources[0]).take(MAX_CONCAT_INPUTS - sources.len()));
     let mut current = builder.operation(Operation::Concat, first_inputs);
-    let mut current_length = 16 * 13;
+    let mut current_length = 16 * MAX_CONCAT_INPUTS;
     for _ in 0..6 {
-        current = builder.operation(Operation::Concat, vec![current; 13]);
-        current_length *= 13;
+        current = builder.operation(Operation::Concat, vec![current; MAX_CONCAT_INPUTS]);
+        current_length *= MAX_CONCAT_INPUTS;
     }
     assert_eq!(current_length, MAX_LEGAL_SLICE_INDEX);
     let output = builder.operation(

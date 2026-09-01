@@ -4,6 +4,8 @@ use sha2::{Digest, Sha256};
 use super::GenerationError;
 
 pub const MAX_XOR_KEY_LENGTH: usize = 16;
+pub const MAX_CONCAT_INPUTS: usize = 13;
+pub const MAX_PERMUTATION_LENGTH: usize = 16;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Operation {
@@ -52,7 +54,9 @@ impl Operation {
     pub fn validate_arity(&self, input_count: usize) -> Result<(), GenerationError> {
         match self.arity() {
             Some(expected) if input_count == expected => self.validate_static_parameters(),
-            None if input_count >= 2 => self.validate_static_parameters(),
+            None if (2..=MAX_CONCAT_INPUTS).contains(&input_count) => {
+                self.validate_static_parameters()
+            }
             _ => Err(GenerationError::InvalidOperation),
         }
     }
@@ -64,6 +68,9 @@ impl Operation {
             }
             Self::Sha256Prefix(prefix_length) => valid_sha256_prefix(*prefix_length).map(|_| ()),
             Self::Slice { start, end } if start > end => Err(GenerationError::InvalidOperation),
+            Self::Permute(permutation) if permutation.len() > MAX_PERMUTATION_LENGTH => {
+                Err(GenerationError::InvalidOperation)
+            }
             Self::Permute(permutation) => validate_permutation_parameters(permutation),
             _ => Ok(()),
         }
@@ -324,7 +331,7 @@ fn decode_base64_url(input: &[u8]) -> Result<Vec<u8>, GenerationError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_XOR_KEY_LENGTH, Operation};
+    use super::{MAX_CONCAT_INPUTS, MAX_PERMUTATION_LENGTH, MAX_XOR_KEY_LENGTH, Operation};
     use crate::generation::GenerationError;
 
     #[test]
@@ -534,6 +541,33 @@ mod tests {
         assert_eq!(operation.validate_arity(1), Ok(()));
         assert_eq!(operation.output_length(&[2]), Ok(2));
         assert_eq!(operation.evaluate(&[b"AZ"]), Ok(b"az".to_vec()));
+    }
+
+    #[test]
+    fn enforces_v1_concat_and_permutation_collection_limits() {
+        assert_eq!(MAX_CONCAT_INPUTS, 13);
+        assert_eq!(Operation::Concat.validate_arity(MAX_CONCAT_INPUTS), Ok(()));
+        assert_eq!(
+            Operation::Concat.validate_arity(MAX_CONCAT_INPUTS + 1),
+            Err(GenerationError::InvalidOperation)
+        );
+
+        assert_eq!(MAX_PERMUTATION_LENGTH, 16);
+        let maximum_permutation = Operation::Permute((0..MAX_PERMUTATION_LENGTH).collect());
+        assert_eq!(maximum_permutation.validate_arity(1), Ok(()));
+        assert_eq!(
+            maximum_permutation.output_length(&[MAX_PERMUTATION_LENGTH]),
+            Ok(MAX_PERMUTATION_LENGTH)
+        );
+        let oversized_permutation = Operation::Permute((0..=MAX_PERMUTATION_LENGTH).collect());
+        assert_eq!(
+            oversized_permutation.validate_arity(1),
+            Err(GenerationError::InvalidOperation)
+        );
+        assert_eq!(
+            oversized_permutation.output_length(&[MAX_PERMUTATION_LENGTH + 1]),
+            Err(GenerationError::InvalidOperation)
+        );
     }
 
     #[test]

@@ -385,7 +385,9 @@ fn reorder_nodes(
 #[cfg(test)]
 mod tests {
     use super::{NodeId, NodeKind, SemanticGraphBuilder};
-    use crate::generation::{GenerationError, Operation};
+    use crate::generation::{
+        GenerationError, MAX_CONCAT_INPUTS, MAX_PERMUTATION_LENGTH, Operation,
+    };
 
     fn valid_builder() -> SemanticGraphBuilder {
         let mut builder = SemanticGraphBuilder::new(vec![2, 2, 2]);
@@ -538,6 +540,53 @@ mod tests {
         *operation = Operation::Xor(Vec::new());
 
         assert_eq!(builder.validate(), Err(GenerationError::InvalidOperation));
+    }
+
+    #[test]
+    fn enforces_operation_collection_limits_at_graph_validation() {
+        let validate_concat = |input_count| {
+            let mut builder = SemanticGraphBuilder::new(vec![1, 1, 1]);
+            let fragments = (0..3)
+                .map(|index| builder.fragment(index).unwrap())
+                .collect::<Vec<_>>();
+            let inputs = fragments
+                .iter()
+                .copied()
+                .cycle()
+                .take(input_count)
+                .collect();
+            let mut output = builder.operation(Operation::Concat, inputs);
+            for _ in 0..3 {
+                output = builder.operation(Operation::Reverse, vec![output]);
+            }
+            builder.output(output);
+            builder.validate()
+        };
+        assert!(validate_concat(MAX_CONCAT_INPUTS).is_ok());
+        assert_eq!(
+            validate_concat(MAX_CONCAT_INPUTS + 1),
+            Err(GenerationError::InvalidOperation)
+        );
+
+        let validate_permutation = |length| {
+            let mut builder = SemanticGraphBuilder::new(vec![length, 1, 1]);
+            let first = builder.fragment(0).unwrap();
+            let second = builder.fragment(1).unwrap();
+            let third = builder.fragment(2).unwrap();
+            let permuted =
+                builder.operation(Operation::Permute((0..length).collect()), vec![first]);
+            let mut output = builder.operation(Operation::Concat, vec![permuted, second, third]);
+            for _ in 0..2 {
+                output = builder.operation(Operation::Reverse, vec![output]);
+            }
+            builder.output(output);
+            builder.validate()
+        };
+        assert!(validate_permutation(MAX_PERMUTATION_LENGTH).is_ok());
+        assert_eq!(
+            validate_permutation(MAX_PERMUTATION_LENGTH + 1),
+            Err(GenerationError::InvalidOperation)
+        );
     }
 
     #[test]

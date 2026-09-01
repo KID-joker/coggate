@@ -1,25 +1,23 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use crate::generation::{NodeId, NodeKind, Operation, ValidatedSemanticGraph};
+use crate::generation::{NodeId, NodeKind, ValidatedSemanticGraph};
 
 use super::{
-    emitter::{DEPENDENCY_CLUE_FIXED_BYTES, MAX_STEP_BYTES},
+    emitter::{
+        DEPENDENCY_CLUE_FIXED_BYTES, MAX_STEP_BYTES, declared_template_max_bytes, emit_fragment,
+        emit_operation,
+    },
     error::RenderError,
     model::{
         DisplayStep, DisplayStepKind, MAX_FRAGMENT_BYTES, MAX_QUESTION_BYTES, RenderLanguage,
-        RenderPlan, TemplateFamily,
+        RenderPlan,
     },
     names::MAX_IDENTIFIER_BYTES,
-    render_collection_within_v1_bounds,
 };
 
 pub(super) const COMMON_QUESTION_BUDGET: usize = 2_048;
 const FRAGMENT_WRAPPER_BUDGET: usize = 64;
 const DISTRACTOR_WRAPPER_BUDGET: usize = 256;
-const DIRECT_TEMPLATE_BUDGET: usize = 48;
-const HELPER_TEMPLATE_BUDGET: usize = 96;
-const OPERATION_EXPRESSION_BUDGET: usize = 40;
-const FRAGMENT_EXPRESSION_BUDGET: usize = 16;
 
 pub(super) fn validate_plan(
     graph: &ValidatedSemanticGraph,
@@ -42,23 +40,9 @@ pub(super) fn validate_plan(
     }
 
     resolve_operation_inputs(&steps)?;
-    validate_render_collections(&steps)?;
     validate_length_bounds(fragments, plan, &steps)?;
     validate_semantic_correspondence(graph, &steps)?;
     validate_fragment_dependencies(plan, &steps)
-}
-
-fn validate_render_collections(
-    steps: &BTreeMap<NodeId, (&DisplayStep, usize)>,
-) -> Result<(), RenderError> {
-    for (step, _) in steps.values() {
-        if let DisplayStepKind::Operation { operation, inputs } = &step.kind {
-            if !render_collection_within_v1_bounds(operation, inputs.len()) {
-                return Err(RenderError::InvalidPlan);
-            }
-        }
-    }
-    Ok(())
 }
 
 fn validate_source_fragments(
@@ -342,10 +326,8 @@ fn validate_length_bounds(
     let mut seen_dependency_edges = BTreeSet::new();
 
     for (step, fragment_index) in steps.values() {
-        let step_budget = step_budget(step, fragments, steps)?;
-        if step_budget > MAX_STEP_BYTES {
-            return Err(RenderError::LengthLimit);
-        }
+        let step_budget =
+            emitted_step_bytes(effective[*fragment_index].language, step, fragments, steps)?;
         fragment_budgets[*fragment_index] =
             checked_add(fragment_budgets[*fragment_index], step_budget)?;
 
@@ -399,104 +381,45 @@ fn output_label<'a>(
         .ok_or(RenderError::MissingReference(plan.output))
 }
 
-fn step_budget(
+fn emitted_step_bytes(
+    language: RenderLanguage,
     step: &DisplayStep,
     fragments: &[Vec<u8>],
     steps: &BTreeMap<NodeId, (&DisplayStep, usize)>,
 ) -> Result<usize, RenderError> {
-    let expression = match &step.kind {
-        DisplayStepKind::Fragment { index } => checked_add(
-            FRAGMENT_EXPRESSION_BUDGET,
-            fragments.get(*index).ok_or(RenderError::InvalidPlan)?.len(),
+    let emitted = match &step.kind {
+        DisplayStepKind::Fragment { index } => emit_fragment(
+            language,
+            step.template,
+            &step.output_label,
+            &step.local_name,
+            fragments.get(*index).ok_or(RenderError::InvalidPlan)?,
         )?,
         DisplayStepKind::Operation { operation, inputs } => {
-            operation_budget(operation, inputs, steps)?
+            let input_labels = inputs
+                .iter()
+                .map(|input| {
+                    steps
+                        .get(input)
+                        .map(|(producer, _)| producer.output_label.clone())
+                        .ok_or(RenderError::MissingReference(*input))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            emit_operation(
+                language,
+                step.template,
+                &step.output_label,
+                &step.local_name,
+                operation,
+                &input_labels,
+            )?
         }
     };
-    let wrapper = match step.template {
-        TemplateFamily::Direct => checked_sum(&[
-            DIRECT_TEMPLATE_BUDGET,
-            expression,
-            step.output_label.len(),
-            step.output_label.len(),
-        ])?,
-        TemplateFamily::Helper => checked_sum(&[
-            HELPER_TEMPLATE_BUDGET,
-            expression,
-            step.output_label.len(),
-            step.output_label.len(),
-            step.local_name.len(),
-            step.local_name.len(),
-        ])?,
-    };
-    Ok(wrapper)
-}
-
-fn operation_budget(
-    operation: &Operation,
-    inputs: &[NodeId],
-    steps: &BTreeMap<NodeId, (&DisplayStep, usize)>,
-) -> Result<usize, RenderError> {
-    let mut budget = OPERATION_EXPRESSION_BUDGET;
-    for input in inputs {
-        let (producer, _) = steps
-            .get(input)
-            .ok_or(RenderError::MissingReference(*input))?;
-        budget = checked_sum(&[budget, producer.output_label.len(), 2])?;
+    let declared = declared_template_max_bytes(language, step.template);
+    if emitted.len() > declared || emitted.len() > MAX_STEP_BYTES {
+        return Err(RenderError::LengthLimit);
     }
-
-    let parameter_budget = match operation {
-        Operation::RotateLeft(value)
-        | Operation::RotateRight(value)
-        | Operation::Sha256Prefix(value) => checked_add(2, decimal_bytes(*value))?,
-        Operation::Xor(key) => {
-            sequence_budget(key.iter().map(|value| decimal_bytes(usize::from(*value))))?
-        }
-        Operation::Permute(permutation) => {
-            sequence_budget(permutation.iter().map(|value| decimal_bytes(*value)))?
-        }
-        Operation::Slice { start, end } => {
-            checked_sum(&[4, decimal_bytes(*start), decimal_bytes(*end)])?
-        }
-        Operation::Reverse
-        | Operation::EvenBytes
-        | Operation::OddBytes
-        | Operation::Concat
-        | Operation::AddModulo
-        | Operation::SubModulo
-        | Operation::HexEncode
-        | Operation::HexDecode
-        | Operation::Base64UrlEncode
-        | Operation::Base64UrlDecode
-        | Operation::RotateLeftDerived
-        | Operation::ConditionalOrder => 0,
-    };
-    checked_add(budget, parameter_budget)
-}
-
-fn sequence_budget(values: impl IntoIterator<Item = usize>) -> Result<usize, RenderError> {
-    let mut budget = 2_usize;
-    let mut count = 0_usize;
-    for value in values {
-        budget = checked_add(budget, value)?;
-        count = count.checked_add(1).ok_or(RenderError::LengthLimit)?;
-    }
-    if count > 1 {
-        budget = checked_add(
-            budget,
-            (count - 1).checked_mul(2).ok_or(RenderError::LengthLimit)?,
-        )?;
-    }
-    Ok(budget)
-}
-
-fn decimal_bytes(mut value: usize) -> usize {
-    let mut digits = 1;
-    while value >= 10 {
-        value /= 10;
-        digits += 1;
-    }
-    digits
+    Ok(emitted.len())
 }
 
 fn checked_sum(values: &[usize]) -> Result<usize, RenderError> {
@@ -515,13 +438,13 @@ mod tests {
         NodeId, Operation, SemanticGraphBuilder, ValidatedSemanticGraph,
         render::{
             error::RenderError,
-            model::{DisplayFragment, DisplayStepKind, RenderLanguage, RenderPlan},
+            model::{DisplayFragment, DisplayStepKind, RenderLanguage, RenderPlan, TemplateFamily},
             planner::plan_rendering,
         },
         test_random::DeterministicRandom,
     };
 
-    use super::validate_plan;
+    use super::{emitted_step_bytes, index_effective_steps, validate_plan};
 
     fn fixture() -> (ValidatedSemanticGraph, Vec<Vec<u8>>) {
         let mut builder = SemanticGraphBuilder::new(vec![2, 2, 2, 2]);
@@ -564,6 +487,105 @@ mod tests {
         let (graph, fragments, plan) = fixture_plan();
 
         assert_eq!(validate_plan(&graph, &fragments, &plan), Ok(()));
+    }
+
+    #[test]
+    fn validator_step_bytes_match_actual_emission_for_every_language_and_template() {
+        let (_, fragments, plan) = fixture_plan();
+        let steps = index_effective_steps(&plan).unwrap();
+
+        for fragment in plan
+            .fragments
+            .iter()
+            .filter(|fragment| !fragment.distractor)
+        {
+            for step in &fragment.steps {
+                let actual = match &step.kind {
+                    DisplayStepKind::Fragment { index } => {
+                        crate::generation::render::emitter::emit_fragment(
+                            fragment.language,
+                            step.template,
+                            &step.output_label,
+                            &step.local_name,
+                            &fragments[*index],
+                        )
+                        .unwrap()
+                    }
+                    DisplayStepKind::Operation { operation, inputs } => {
+                        let labels = inputs
+                            .iter()
+                            .map(|input| steps[input].0.output_label.clone())
+                            .collect::<Vec<_>>();
+                        crate::generation::render::emitter::emit_operation(
+                            fragment.language,
+                            step.template,
+                            &step.output_label,
+                            &step.local_name,
+                            operation,
+                            &labels,
+                        )
+                        .unwrap()
+                    }
+                };
+
+                assert_eq!(
+                    emitted_step_bytes(fragment.language, step, &fragments, &steps).unwrap(),
+                    actual.len()
+                );
+            }
+        }
+
+        let representative_steps = [
+            steps
+                .values()
+                .map(|(step, _)| *step)
+                .find(|step| matches!(step.kind, DisplayStepKind::Fragment { .. }))
+                .unwrap(),
+            steps
+                .values()
+                .map(|(step, _)| *step)
+                .find(|step| matches!(step.kind, DisplayStepKind::Operation { .. }))
+                .unwrap(),
+        ];
+        for language in RenderLanguage::ALL {
+            for family in [TemplateFamily::Direct, TemplateFamily::Helper] {
+                for representative in representative_steps {
+                    let mut step = representative.clone();
+                    step.template = family;
+                    let actual = match &step.kind {
+                        DisplayStepKind::Fragment { index } => {
+                            crate::generation::render::emitter::emit_fragment(
+                                language,
+                                family,
+                                &step.output_label,
+                                &step.local_name,
+                                &fragments[*index],
+                            )
+                            .unwrap()
+                        }
+                        DisplayStepKind::Operation { operation, inputs } => {
+                            let labels = inputs
+                                .iter()
+                                .map(|input| steps[input].0.output_label.clone())
+                                .collect::<Vec<_>>();
+                            crate::generation::render::emitter::emit_operation(
+                                language,
+                                family,
+                                &step.output_label,
+                                &step.local_name,
+                                operation,
+                                &labels,
+                            )
+                            .unwrap()
+                        }
+                    };
+                    assert_eq!(
+                        emitted_step_bytes(language, &step, &fragments, &steps).unwrap(),
+                        actual.len()
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -903,7 +925,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_an_oversized_accumulated_operation_budget() {
+    fn rejects_an_operation_outside_the_authoritative_semantic_contract() {
         let (graph, fragments, mut plan) = fixture_plan();
         let step = effective_fragments(&mut plan)
             .into_iter()
@@ -919,55 +941,6 @@ mod tests {
             inputs,
         };
 
-        assert_eq!(
-            validate_plan(&graph, &fragments, &plan),
-            Err(RenderError::LengthLimit)
-        );
-    }
-
-    #[test]
-    fn rejects_render_collections_beyond_v1_limits_before_semantic_matching() {
-        let (graph, fragments, mut plan) = fixture_plan();
-        let concat = effective_fragments(&mut plan)
-            .into_iter()
-            .flat_map(|fragment| &mut fragment.steps)
-            .find(|step| {
-                matches!(
-                    step.kind,
-                    DisplayStepKind::Operation {
-                        operation: Operation::Concat,
-                        ..
-                    }
-                )
-            })
-            .unwrap();
-        let repeated = match &concat.kind {
-            DisplayStepKind::Operation { inputs, .. } => inputs[0],
-            DisplayStepKind::Fragment { .. } => unreachable!(),
-        };
-        concat.kind = DisplayStepKind::Operation {
-            operation: Operation::Concat,
-            inputs: vec![repeated; 14],
-        };
-        assert_eq!(
-            validate_plan(&graph, &fragments, &plan),
-            Err(RenderError::InvalidPlan)
-        );
-
-        let (_, _, mut plan) = fixture_plan();
-        let operation = effective_fragments(&mut plan)
-            .into_iter()
-            .flat_map(|fragment| &mut fragment.steps)
-            .find(|step| matches!(step.kind, DisplayStepKind::Operation { .. }))
-            .unwrap();
-        let input = match &operation.kind {
-            DisplayStepKind::Operation { inputs, .. } => inputs[0],
-            DisplayStepKind::Fragment { .. } => unreachable!(),
-        };
-        operation.kind = DisplayStepKind::Operation {
-            operation: Operation::Permute((0..17).collect()),
-            inputs: vec![input],
-        };
         assert_eq!(
             validate_plan(&graph, &fragments, &plan),
             Err(RenderError::InvalidPlan)
