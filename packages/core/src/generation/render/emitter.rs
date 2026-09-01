@@ -8,6 +8,7 @@ use super::model::{
     DisplayStepKind, MAX_FRAGMENT_BYTES, MAX_QUESTION_BYTES, RenderLanguage, RenderPlan,
     TemplateFamily,
 };
+use super::render_collection_within_v1_bounds;
 
 pub(super) const MAX_STEP_BYTES: usize = 512;
 
@@ -41,13 +42,11 @@ const OUTPUT_REQUEST_SUFFIX: &str = ". Submit its byte array as unpadded base64u
 
 #[cfg(test)]
 pub(super) fn common_question_bytes() -> usize {
-    BYTE_SEMANTICS_PREAMBLE.len()
-        + HELPER_SEMANTICS_GLOSSARY.len()
-        + DEPENDENCY_CLUES_HEADER.len()
-        + "\n".len()
-        + DISPLAY_ORDER_WARNING.len()
-        + OUTPUT_REQUEST_PREFIX.len()
-        + OUTPUT_REQUEST_SUFFIX.len()
+    let mut emitted = String::new();
+    push_question_preamble(&mut emitted).unwrap();
+    push_dependency_clues(&mut emitted, &[String::new()]).unwrap();
+    push_final_request(&mut emitted, "").unwrap();
+    emitted.len()
 }
 
 pub(super) fn emit_question(
@@ -56,8 +55,7 @@ pub(super) fn emit_question(
 ) -> Result<String, RenderError> {
     let locations = index_output_locations(plan)?;
     let mut question = String::new();
-    push_with_limit(&mut question, BYTE_SEMANTICS_PREAMBLE, MAX_QUESTION_BYTES)?;
-    push_with_limit(&mut question, HELPER_SEMANTICS_GLOSSARY, MAX_QUESTION_BYTES)?;
+    push_question_preamble(&mut question)?;
 
     let mut dependency_clues = Vec::new();
     let mut dependency_bytes_by_fragment = vec![0_usize; plan.fragments.len()];
@@ -168,26 +166,40 @@ pub(super) fn emit_question(
         push_with_limit(&mut question, &rendered_fragment, MAX_QUESTION_BYTES)?;
     }
 
-    if !dependency_clues.is_empty() {
-        push_with_limit(&mut question, DEPENDENCY_CLUES_HEADER, MAX_QUESTION_BYTES)?;
-        for clue in dependency_clues {
-            push_with_limit(&mut question, &clue, MAX_QUESTION_BYTES)?;
-        }
-        push_with_limit(&mut question, "\n", MAX_QUESTION_BYTES)?;
-    }
+    push_dependency_clues(&mut question, &dependency_clues)?;
 
     let output_label = locations
         .get(&plan.output)
         .map(|location| location.output_label.as_str())
         .ok_or(RenderError::MissingReference(plan.output))?;
-    push_with_limit(&mut question, DISPLAY_ORDER_WARNING, MAX_QUESTION_BYTES)?;
-    push_with_limit(
-        &mut question,
-        &format!("{OUTPUT_REQUEST_PREFIX}{output_label}{OUTPUT_REQUEST_SUFFIX}"),
-        MAX_QUESTION_BYTES,
-    )?;
+    push_final_request(&mut question, output_label)?;
 
     Ok(question)
+}
+
+fn push_question_preamble(question: &mut String) -> Result<(), RenderError> {
+    push_with_limit(question, BYTE_SEMANTICS_PREAMBLE, MAX_QUESTION_BYTES)?;
+    push_with_limit(question, HELPER_SEMANTICS_GLOSSARY, MAX_QUESTION_BYTES)
+}
+
+fn push_dependency_clues(question: &mut String, clues: &[String]) -> Result<(), RenderError> {
+    if clues.is_empty() {
+        return Ok(());
+    }
+    push_with_limit(question, DEPENDENCY_CLUES_HEADER, MAX_QUESTION_BYTES)?;
+    for clue in clues {
+        push_with_limit(question, clue, MAX_QUESTION_BYTES)?;
+    }
+    push_with_limit(question, "\n", MAX_QUESTION_BYTES)
+}
+
+fn push_final_request(question: &mut String, output_label: &str) -> Result<(), RenderError> {
+    push_with_limit(question, DISPLAY_ORDER_WARNING, MAX_QUESTION_BYTES)?;
+    push_with_limit(
+        question,
+        &format!("{OUTPUT_REQUEST_PREFIX}{output_label}{OUTPUT_REQUEST_SUFFIX}"),
+        MAX_QUESTION_BYTES,
+    )
 }
 
 struct OutputLocation {
@@ -252,6 +264,9 @@ pub(super) fn emit_operation(
     operation: &Operation,
     inputs: &[String],
 ) -> Result<String, RenderError> {
+    if !render_collection_within_v1_bounds(operation, inputs.len()) {
+        return Err(RenderError::InvalidPlan);
+    }
     operation
         .validate_arity(inputs.len())
         .map_err(|_| RenderError::InvalidPlan)?;
@@ -442,7 +457,7 @@ mod tests {
         ]
     }
 
-    fn worst_case_operations() -> Vec<(Operation, Vec<String>)> {
+    fn worst_case_operations() -> Vec<(&'static str, Operation, Vec<String>)> {
         let unary = || vec!["source_000000000".to_owned()];
         let binary = || vec!["source_000000000".to_owned(), "source_000000001".to_owned()];
         let ternary = || {
@@ -454,34 +469,65 @@ mod tests {
         };
 
         vec![
-            (Operation::Reverse, unary()),
-            (Operation::RotateLeft(usize::MAX), unary()),
-            (Operation::RotateRight(usize::MAX), unary()),
-            (Operation::Xor(vec![u8::MAX; 16]), unary()),
-            (Operation::EvenBytes, unary()),
-            (Operation::OddBytes, unary()),
-            (Operation::Permute((0..16).rev().collect()), unary()),
+            ("reverse", Operation::Reverse, unary()),
             (
+                "rotate_left",
+                Operation::RotateLeft(u32::MAX as usize),
+                unary(),
+            ),
+            (
+                "rotate_right",
+                Operation::RotateRight(u32::MAX as usize),
+                unary(),
+            ),
+            ("xor_16", Operation::Xor(vec![u8::MAX; 16]), unary()),
+            ("even", Operation::EvenBytes, unary()),
+            ("odd", Operation::OddBytes, unary()),
+            (
+                "permute_16",
+                Operation::Permute((0..16).rev().collect()),
+                unary(),
+            ),
+            (
+                "slice",
                 Operation::Slice {
-                    start: usize::MAX,
-                    end: usize::MAX,
+                    start: u32::MAX as usize,
+                    end: u32::MAX as usize,
                 },
                 unary(),
             ),
             (
+                "concat_13",
                 Operation::Concat,
                 (0..13).map(|index| format!("source_{index:09}")).collect(),
             ),
-            (Operation::AddModulo, binary()),
-            (Operation::SubModulo, binary()),
-            (Operation::HexEncode, unary()),
-            (Operation::HexDecode, unary()),
-            (Operation::Base64UrlEncode, unary()),
-            (Operation::Base64UrlDecode, unary()),
-            (Operation::Sha256Prefix(32), unary()),
-            (Operation::RotateLeftDerived, binary()),
-            (Operation::ConditionalOrder, ternary()),
+            ("add", Operation::AddModulo, binary()),
+            ("sub", Operation::SubModulo, binary()),
+            ("hex_encode", Operation::HexEncode, unary()),
+            ("hex_decode", Operation::HexDecode, unary()),
+            ("base64_encode", Operation::Base64UrlEncode, unary()),
+            ("base64_decode", Operation::Base64UrlDecode, unary()),
+            ("sha_32", Operation::Sha256Prefix(32), unary()),
+            ("rotate_derived", Operation::RotateLeftDerived, binary()),
+            ("conditional", Operation::ConditionalOrder, ternary()),
         ]
+    }
+
+    fn expected_stable_longest(language: RenderLanguage, family: TemplateFamily) -> usize {
+        match (language, family) {
+            (RenderLanguage::C, TemplateFamily::Direct) => 295,
+            (RenderLanguage::C, TemplateFamily::Helper) => 351,
+            (RenderLanguage::Cpp, TemplateFamily::Direct) => 294,
+            (RenderLanguage::Cpp, TemplateFamily::Helper) => 349,
+            (RenderLanguage::Rust, TemplateFamily::Direct) => 292,
+            (RenderLanguage::Rust, TemplateFamily::Helper) => 346,
+            (RenderLanguage::Go, TemplateFamily::Direct) => 288,
+            (RenderLanguage::Go, TemplateFamily::Helper) => 351,
+            (RenderLanguage::Java, TemplateFamily::Direct) => 295,
+            (RenderLanguage::Java, TemplateFamily::Helper) => 352,
+            (RenderLanguage::Pseudocode, TemplateFamily::Direct) => 288,
+            (RenderLanguage::Pseudocode, TemplateFamily::Helper) => 341,
+        }
     }
 
     fn emit(language: RenderLanguage, operation: &Operation) -> String {
@@ -710,8 +756,9 @@ mod tests {
             for family in [TemplateFamily::Direct, TemplateFamily::Helper] {
                 let declared = declared_template_max_bytes(language, family);
                 let mut longest = 0;
+                let mut winner = "";
 
-                for (operation, inputs) in &operations {
+                for (name, operation, inputs) in &operations {
                     let rendered = emit_operation(
                         language,
                         family,
@@ -721,13 +768,18 @@ mod tests {
                         inputs,
                     )
                     .unwrap();
-                    longest = longest.max(rendered.len());
+                    if rendered.len() > longest {
+                        longest = rendered.len();
+                        winner = name;
+                    }
                     assert!(
                         rendered.len() <= declared,
                         "{language:?} {family:?} {operation:?}: {} > {declared}",
                         rendered.len()
                     );
                 }
+                assert_eq!(winner, "concat_13");
+                assert_eq!(longest, expected_stable_longest(language, family));
                 let rounded_longest = longest.div_ceil(16) * 16;
                 assert_eq!(
                     declared, rounded_longest,
@@ -742,6 +794,36 @@ mod tests {
                 .all(|(_, _, declared, _)| *declared < MAX_STEP_BYTES),
             "declarations must be strict; measured {measured:?}"
         );
+    }
+
+    #[test]
+    fn platform_maximum_numeric_parameters_fit_stable_declarations() {
+        let inputs = ["source_000000000".to_owned()];
+        let operations = [
+            Operation::RotateLeft(usize::MAX),
+            Operation::RotateRight(usize::MAX),
+            Operation::Slice {
+                start: usize::MAX,
+                end: usize::MAX,
+            },
+        ];
+
+        for language in RenderLanguage::ALL {
+            for family in [TemplateFamily::Direct, TemplateFamily::Helper] {
+                for operation in &operations {
+                    let rendered = emit_operation(
+                        language,
+                        family,
+                        "output_000000000",
+                        "helper_000000000",
+                        operation,
+                        &inputs,
+                    )
+                    .unwrap();
+                    assert!(rendered.len() <= declared_template_max_bytes(language, family));
+                }
+            }
+        }
     }
 
     #[test]
@@ -782,5 +864,60 @@ mod tests {
                 Err(RenderError::InvalidPlan)
             );
         }
+    }
+
+    #[test]
+    fn renderer_accepts_v1_collection_limits_and_rejects_the_next_item() {
+        let mut labels = (0..14)
+            .map(|index| format!("source_{index:09}"))
+            .collect::<Vec<_>>();
+        assert!(
+            emit_operation(
+                RenderLanguage::Rust,
+                TemplateFamily::Direct,
+                "output_000000000",
+                "helper_000000000",
+                &Operation::Concat,
+                &labels[..13],
+            )
+            .is_ok()
+        );
+        labels[13] = "SECRET_BOUNDARY_MARKER".to_owned();
+        let error = emit_operation(
+            RenderLanguage::Rust,
+            TemplateFamily::Direct,
+            "output_000000000",
+            "helper_000000000",
+            &Operation::Concat,
+            &labels,
+        )
+        .unwrap_err();
+        assert_eq!(error, RenderError::InvalidPlan);
+        assert!(!error.to_string().contains("SECRET_BOUNDARY_MARKER"));
+        assert!(!format!("{error:?}").contains("SECRET_BOUNDARY_MARKER"));
+
+        let input = vec!["source_000000000".to_owned()];
+        assert!(
+            emit_operation(
+                RenderLanguage::Rust,
+                TemplateFamily::Direct,
+                "output_000000000",
+                "helper_000000000",
+                &Operation::Permute((0..16).collect()),
+                &input,
+            )
+            .is_ok()
+        );
+        assert_eq!(
+            emit_operation(
+                RenderLanguage::Rust,
+                TemplateFamily::Direct,
+                "output_000000000",
+                "helper_000000000",
+                &Operation::Permute((0..17).collect()),
+                &input,
+            ),
+            Err(RenderError::InvalidPlan)
+        );
     }
 }

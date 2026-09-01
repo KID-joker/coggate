@@ -152,7 +152,10 @@ fn worst_case_question_fixture() -> (ValidatedSemanticGraph, Vec<Vec<u8>>, Rende
     let hashed = builder.operation(Operation::Sha256Prefix(32), vec![source[4]]);
     let concatenated = builder.operation(
         Operation::Concat,
-        vec![xored, permuted, left, sliced, hashed],
+        vec![
+            xored, permuted, left, sliced, hashed, xored, permuted, left, sliced, hashed, xored,
+            permuted, left,
+        ],
     );
     let right = builder.operation(Operation::RotateRight(usize::MAX), vec![concatenated]);
     let output = builder.operation(Operation::Reverse, vec![right]);
@@ -178,10 +181,10 @@ fn worst_case_question_fixture() -> (ValidatedSemanticGraph, Vec<Vec<u8>>, Rende
         })
         .collect::<Vec<_>>();
     let languages = [
-        RenderLanguage::C,
+        RenderLanguage::Java,
         RenderLanguage::Cpp,
         RenderLanguage::Rust,
-        RenderLanguage::C,
+        RenderLanguage::Java,
         RenderLanguage::Cpp,
     ];
     let mut steps = steps.into_iter();
@@ -215,44 +218,123 @@ fn worst_case_assembled_question_fits_actual_fragment_and_question_limits() {
     let (graph, fragments, plan) = worst_case_question_fixture();
     assert_eq!(graph.operation_count(), 8);
     assert_eq!(plan.fragments.len(), 6);
+    let effective_steps = plan
+        .fragments
+        .iter()
+        .filter(|fragment| !fragment.distractor)
+        .flat_map(|fragment| &fragment.steps)
+        .collect::<Vec<_>>();
+    assert!(
+        effective_steps
+            .iter()
+            .all(|step| step.template == TemplateFamily::Helper)
+    );
     assert!(
         plan.fragments
             .iter()
-            .flat_map(|fragment| &fragment.steps)
-            .all(|step| step.template == TemplateFamily::Helper)
+            .all(|fragment| fragment.heading.len() == 16)
     );
+    assert!(
+        effective_steps
+            .iter()
+            .all(|step| { step.output_label.len() == 16 && step.local_name.len() == 16 })
+    );
+    let concat_inputs = effective_steps
+        .iter()
+        .find_map(|step| match &step.kind {
+            DisplayStepKind::Operation {
+                operation: Operation::Concat,
+                inputs,
+            } => Some(inputs),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(concat_inputs.len(), 13);
+    assert_eq!(
+        concat_inputs.iter().copied().collect::<BTreeSet<_>>().len(),
+        5
+    );
+    assert!(effective_steps.iter().any(|step| {
+        matches!(
+            &step.kind,
+            DisplayStepKind::Operation {
+                operation: Operation::Permute(permutation),
+                ..
+            } if permutation.len() == 16
+        )
+    }));
     validate::validate_plan(&graph, &fragments, &plan).unwrap();
 
     let question = emitter::emit_question(&plan, &fragments).unwrap();
-    assert!(question.len() <= MAX_QUESTION_BYTES);
+    let expected_question_bytes = match usize::BITS {
+        64 => 5_655,
+        32 => 5_635,
+        width => panic!("unsupported usize width {width}"),
+    };
+    assert_eq!(question.len(), expected_question_bytes);
+    assert_eq!(
+        MAX_QUESTION_BYTES - question.len(),
+        12_288 - expected_question_bytes
+    );
     assert!(question.contains("audit/example branch"));
 
     let sections = question
         .match_indices("[Fragment ")
         .map(|(start, _)| start)
         .collect::<Vec<_>>();
+    let clues = question
+        .lines()
+        .filter(|line| line.starts_with("Dependency: "))
+        .collect::<Vec<_>>();
+    assert_eq!(clues.len(), 10);
+    assert!(clues.iter().all(|clue| clue.len() + 1 == 134));
+    let target_clue_counts = (1..=5)
+        .map(|target| {
+            let suffix = format!("in display Fragment {target}.");
+            clues.iter().filter(|clue| clue.ends_with(&suffix)).count()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(target_clue_counts, vec![0, 1, 3, 5, 1]);
+    let dependency_start = question.find("Dependency clues:\n").unwrap();
+    let dependency_end = question
+        .find("Display order is not evaluation order.\n")
+        .unwrap();
+    assert_eq!(dependency_end - dependency_start, 1_359);
+
     assert_eq!(sections.len(), 6);
-    for (index, start) in sections.iter().copied().enumerate() {
-        let end = sections
-            .get(index + 1)
-            .copied()
-            .or_else(|| {
-                question[start..]
-                    .find("Dependency clues:\n")
-                    .map(|offset| start + offset)
-            })
-            .unwrap_or(question.len());
-        assert!(
-            end - start <= MAX_FRAGMENT_BYTES,
-            "fragment {index}: {}",
-            end - start
-        );
-    }
+    let section_lengths = sections
+        .iter()
+        .enumerate()
+        .map(|(index, start)| sections.get(index + 1).copied().unwrap_or(dependency_start) - start)
+        .collect::<Vec<_>>();
+    let expected_sections = match usize::BITS {
+        64 => vec![492, 561, 544, 561, 356, 94],
+        32 => vec![492, 561, 534, 561, 346, 94],
+        _ => unreachable!(),
+    };
+    assert_eq!(section_lengths, expected_sections);
+    let accounted_effective = section_lengths[..5]
+        .iter()
+        .zip(&target_clue_counts)
+        .map(|(section, clue_count)| section + clue_count * 134)
+        .collect::<Vec<_>>();
+    let expected_accounted = match usize::BITS {
+        64 => vec![492, 695, 946, 1_231, 490],
+        32 => vec![492, 695, 936, 1_231, 480],
+        _ => unreachable!(),
+    };
+    assert_eq!(accounted_effective, expected_accounted);
+    assert!(
+        accounted_effective
+            .iter()
+            .all(|bytes| *bytes <= MAX_FRAGMENT_BYTES)
+    );
+    assert_eq!(section_lengths[5], 94);
 }
 
 #[test]
 fn fixed_common_question_text_fits_the_validator_reservation() {
     let actual = common_question_bytes();
-    assert!(actual > 0);
-    assert!(actual <= COMMON_QUESTION_BUDGET);
+    assert_eq!(actual, 1_691);
+    assert_eq!(COMMON_QUESTION_BUDGET - actual, 357);
 }

@@ -10,6 +10,24 @@ mod validate;
 
 use crate::generation::{ValidatedSemanticGraph, random::RandomSource};
 
+// A V1 graph has at most five fragment nodes and eight operation nodes.
+pub(super) const MAX_RENDER_CONCAT_INPUTS: usize = 5 + 8;
+// V1 renderer literals are bounded to the maximum supported 16-byte sequence.
+pub(super) const MAX_RENDER_PERMUTATION_ITEMS: usize = 16;
+
+fn render_collection_within_v1_bounds(
+    operation: &crate::generation::Operation,
+    input_count: usize,
+) -> bool {
+    match operation {
+        crate::generation::Operation::Concat => input_count <= MAX_RENDER_CONCAT_INPUTS,
+        crate::generation::Operation::Permute(permutation) => {
+            permutation.len() <= MAX_RENDER_PERMUTATION_ITEMS
+        }
+        _ => true,
+    }
+}
+
 use error::RenderError;
 pub use model::{MAX_QUESTION_BYTES, RenderLanguage, RenderMetadata, RenderedQuestion};
 

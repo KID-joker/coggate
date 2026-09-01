@@ -10,6 +10,7 @@ use super::{
         RenderPlan, TemplateFamily,
     },
     names::MAX_IDENTIFIER_BYTES,
+    render_collection_within_v1_bounds,
 };
 
 pub(super) const COMMON_QUESTION_BUDGET: usize = 2_048;
@@ -42,9 +43,23 @@ pub(super) fn validate_plan(
     }
 
     resolve_operation_inputs(&steps)?;
+    validate_render_collections(&steps)?;
     validate_length_bounds(fragments, plan, &steps)?;
     validate_semantic_correspondence(graph, &steps)?;
     validate_fragment_dependencies(plan, &steps)
+}
+
+fn validate_render_collections(
+    steps: &BTreeMap<NodeId, (&DisplayStep, usize)>,
+) -> Result<(), RenderError> {
+    for (step, _) in steps.values() {
+        if let DisplayStepKind::Operation { operation, inputs } = &step.kind {
+            if !render_collection_within_v1_bounds(operation, inputs.len()) {
+                return Err(RenderError::InvalidPlan);
+            }
+        }
+    }
+    Ok(())
 }
 
 fn validate_source_fragments(
@@ -325,6 +340,7 @@ fn validate_length_bounds(
         .iter()
         .map(|fragment| checked_add(FRAGMENT_WRAPPER_BUDGET, fragment.heading.len()))
         .collect::<Result<Vec<_>, _>>()?;
+    let mut seen_dependency_edges = BTreeSet::new();
 
     for (step, fragment_index) in steps.values() {
         let step_budget = step_budget(step, fragments, steps)?;
@@ -339,7 +355,9 @@ fn validate_length_bounds(
                 let (producer, producer_fragment) = steps
                     .get(input)
                     .ok_or(RenderError::MissingReference(*input))?;
-                if producer_fragment != fragment_index {
+                if producer_fragment != fragment_index
+                    && seen_dependency_edges.insert((step.node, *input))
+                {
                     let clue = checked_sum(&[
                         DEPENDENCY_CLUE_BUDGET,
                         producer.output_label.len(),
@@ -907,6 +925,55 @@ mod tests {
         assert_eq!(
             validate_plan(&graph, &fragments, &plan),
             Err(RenderError::LengthLimit)
+        );
+    }
+
+    #[test]
+    fn rejects_render_collections_beyond_v1_limits_before_semantic_matching() {
+        let (graph, fragments, mut plan) = fixture_plan();
+        let concat = effective_fragments(&mut plan)
+            .into_iter()
+            .flat_map(|fragment| &mut fragment.steps)
+            .find(|step| {
+                matches!(
+                    step.kind,
+                    DisplayStepKind::Operation {
+                        operation: Operation::Concat,
+                        ..
+                    }
+                )
+            })
+            .unwrap();
+        let repeated = match &concat.kind {
+            DisplayStepKind::Operation { inputs, .. } => inputs[0],
+            DisplayStepKind::Fragment { .. } => unreachable!(),
+        };
+        concat.kind = DisplayStepKind::Operation {
+            operation: Operation::Concat,
+            inputs: vec![repeated; 14],
+        };
+        assert_eq!(
+            validate_plan(&graph, &fragments, &plan),
+            Err(RenderError::InvalidPlan)
+        );
+
+        let (_, _, mut plan) = fixture_plan();
+        let operation = effective_fragments(&mut plan)
+            .into_iter()
+            .flat_map(|fragment| &mut fragment.steps)
+            .find(|step| matches!(step.kind, DisplayStepKind::Operation { .. }))
+            .unwrap();
+        let input = match &operation.kind {
+            DisplayStepKind::Operation { inputs, .. } => inputs[0],
+            DisplayStepKind::Fragment { .. } => unreachable!(),
+        };
+        operation.kind = DisplayStepKind::Operation {
+            operation: Operation::Permute((0..17).collect()),
+            inputs: vec![input],
+        };
+        assert_eq!(
+            validate_plan(&graph, &fragments, &plan),
+            Err(RenderError::InvalidPlan)
         );
     }
 }
