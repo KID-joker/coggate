@@ -36,8 +36,8 @@ impl<'a, R: RandomSource> NameAllocator<'a, R> {
             return Err(RenderError::NameExhausted);
         }
 
-        let start =
-            sample_below(self.random, MAX_ALLOCATED_NAMES).map_err(|_| RenderError::InvalidPlan)?;
+        let start = sample_below(self.random, MAX_ALLOCATED_NAMES)
+            .map_err(RenderError::from_generation_error)?;
 
         for offset in 0..MAX_ALLOCATED_NAMES {
             let index = (start + offset) % MAX_ALLOCATED_NAMES;

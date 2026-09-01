@@ -20,13 +20,13 @@ pub(super) fn plan_rendering(
 
     let language_count = 2 + sample(random, 2)?;
     let mut languages = RenderLanguage::ALL;
-    shuffle(random, &mut languages).map_err(|_| RenderError::InvalidPlan)?;
+    shuffle(random, &mut languages).map_err(RenderError::from_generation_error)?;
     let selected_languages = &languages[..language_count];
 
     let mut assigned_languages = (0..fragments.len())
         .map(|index| selected_languages[index % language_count])
         .collect::<Vec<_>>();
-    shuffle(random, &mut assigned_languages).map_err(|_| RenderError::InvalidPlan)?;
+    shuffle(random, &mut assigned_languages).map_err(RenderError::from_generation_error)?;
 
     let has_distractor = sample(random, 2)? == 1;
     let templates = (0..graph.topological_nodes().len())
@@ -79,7 +79,7 @@ pub(super) fn plan_rendering(
     let mut chunk_sizes = (0..fragment_count)
         .map(|index| base_chunk_size + usize::from(index < larger_chunk_count))
         .collect::<Vec<_>>();
-    shuffle(random, &mut chunk_sizes).map_err(|_| RenderError::InvalidPlan)?;
+    shuffle(random, &mut chunk_sizes).map_err(RenderError::from_generation_error)?;
     let mut steps = steps.into_iter();
     let mut display_fragments = Vec::with_capacity(fragment_count + usize::from(has_distractor));
 
@@ -111,7 +111,7 @@ pub(super) fn plan_rendering(
         return Err(RenderError::InvalidPlan);
     }
 
-    shuffle(random, &mut display_fragments).map_err(|_| RenderError::InvalidPlan)?;
+    shuffle(random, &mut display_fragments).map_err(RenderError::from_generation_error)?;
     Ok(RenderPlan {
         fragments: display_fragments,
         output: graph.output(),
@@ -147,7 +147,7 @@ fn validate_inputs(
 }
 
 fn sample(random: &mut impl RandomSource, upper: usize) -> Result<usize, RenderError> {
-    sample_below(random, upper).map_err(|_| RenderError::InvalidPlan)
+    sample_below(random, upper).map_err(RenderError::from_generation_error)
 }
 
 #[cfg(test)]
@@ -589,13 +589,13 @@ mod tests {
     }
 
     #[test]
-    fn maps_early_random_exhaustion_to_a_payload_safe_invalid_plan() {
+    fn preserves_early_random_exhaustion_as_a_terminal_renderer_error() {
         let graph = valid_graph();
         let fragments = fragments();
         let error =
             plan_rendering(&graph, &fragments, &mut FiniteRandom { remaining: 0 }).unwrap_err();
 
-        assert_eq!(error, RenderError::InvalidPlan);
+        assert_eq!(error, RenderError::RandomnessUnavailable);
         let display = error.to_string();
         let debug = format!("{error:?}");
         for fragment in fragments {

@@ -1,10 +1,12 @@
 use thiserror::Error;
 
-use crate::generation::NodeId;
+use crate::generation::{GenerationError, NodeId};
 
 #[derive(Debug, Eq, Error, PartialEq)]
 #[allow(dead_code)]
 pub(crate) enum RenderError {
+    #[error("cryptographic randomness is unavailable")]
+    RandomnessUnavailable,
     #[error("renderer identifier namespace exhausted")]
     NameExhausted,
     #[error("invalid render plan")]
@@ -25,6 +27,15 @@ pub(crate) enum RenderError {
     LengthLimit,
 }
 
+impl RenderError {
+    pub(super) fn from_generation_error(error: GenerationError) -> Self {
+        match error {
+            GenerationError::RandomnessUnavailable => Self::RandomnessUnavailable,
+            _ => Self::InvalidPlan,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::RenderError;
@@ -35,6 +46,7 @@ mod tests {
     #[test]
     fn every_error_has_safe_display_text() {
         let errors = [
+            RenderError::RandomnessUnavailable,
             RenderError::NameExhausted,
             RenderError::InvalidPlan,
             RenderError::MissingReference(NodeId(1)),

@@ -1,8 +1,3 @@
-#![allow(
-    dead_code,
-    reason = "crate-private candidate API is consumed by the Phase 4 service"
-)]
-
 use std::fmt;
 
 use agentgate_contracts::{MAX_SECRET_LENGTH, MIN_SECRET_LENGTH, fragment_count_for_secret_length};
@@ -12,7 +7,7 @@ use super::{
     GenerationError,
     planner::plan_with,
     random::RandomSource,
-    render::{MAX_QUESTION_BYTES, RenderMetadata, RenderedQuestion, render_with},
+    render::{MAX_QUESTION_BYTES, RenderError, RenderMetadata, RenderedQuestion, render_with},
     secret::generate_with,
 };
 
@@ -26,6 +21,10 @@ pub(crate) enum CandidateError {
     Exhausted,
 }
 
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "consumed by Phase 4 service orchestration")
+)]
 pub(crate) fn retry_candidates<T>(
     mut generate: impl FnMut() -> Result<T, CandidateError>,
 ) -> Result<(T, u8), CandidateError> {
@@ -49,6 +48,10 @@ pub(crate) struct ChallengeCandidate {
     operation_count: usize,
 }
 
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "consumed by Phase 4 service orchestration")
+)]
 impl ChallengeCandidate {
     pub(crate) fn question(&self) -> &str {
         self.question.question()
@@ -89,6 +92,10 @@ impl fmt::Debug for ChallengeCandidate {
     }
 }
 
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "consumed by Phase 4 service orchestration")
+)]
 pub(crate) fn generate_candidate_with(
     random: &mut impl RandomSource,
 ) -> Result<ChallengeCandidate, CandidateError> {
@@ -98,8 +105,8 @@ pub(crate) fn generate_candidate_with(
     let fragment_count = semantics.fragments().len();
     let operation_count = semantics.graph().operation_count();
     let answer = URL_SAFE_NO_PAD.encode(semantics.answer());
-    let question = render_with(semantics.graph(), semantics.fragments(), random)
-        .map_err(|_| CandidateError::Rejected)?;
+    let question =
+        render_with(semantics.graph(), semantics.fragments(), random).map_err(map_render_error)?;
 
     let candidate = ChallengeCandidate {
         question,
@@ -115,7 +122,22 @@ pub(crate) fn generate_candidate_with(
 fn map_generation_error(error: GenerationError) -> CandidateError {
     match error {
         GenerationError::RandomnessUnavailable => CandidateError::RandomnessUnavailable,
-        _ => CandidateError::Rejected,
+        _ => CandidateError::Internal,
+    }
+}
+
+fn map_render_error(error: RenderError) -> CandidateError {
+    match error {
+        RenderError::RandomnessUnavailable => CandidateError::RandomnessUnavailable,
+        RenderError::NameExhausted | RenderError::InvalidPlan | RenderError::LengthLimit => {
+            CandidateError::Rejected
+        }
+        RenderError::MissingReference(_)
+        | RenderError::DuplicateReference(_)
+        | RenderError::SemanticMismatch(_)
+        | RenderError::AmbiguousOutput
+        | RenderError::DistractorReferenced
+        | RenderError::UnsupportedTemplate => CandidateError::Internal,
     }
 }
 
@@ -152,9 +174,48 @@ mod tests {
 
     use super::{
         CandidateError, ChallengeCandidate, MAX_CANDIDATE_ATTEMPTS, generate_candidate_with,
-        retry_candidates,
+        map_generation_error, map_render_error, retry_candidates,
     };
-    use crate::generation::{MAX_QUESTION_BYTES, test_random::DeterministicRandom};
+    use crate::generation::{
+        GenerationError, MAX_QUESTION_BYTES, planner::plan_with, random::RandomSource,
+        render::RenderError, secret::generate_with, test_random::DeterministicRandom,
+    };
+
+    struct CountingRandom {
+        random: DeterministicRandom,
+        remaining: usize,
+        consumed: usize,
+    }
+
+    impl CountingRandom {
+        fn unbounded(seed: [u8; 32]) -> Self {
+            Self {
+                random: DeterministicRandom::new(seed),
+                remaining: usize::MAX,
+                consumed: 0,
+            }
+        }
+
+        fn with_budget(seed: [u8; 32], remaining: usize) -> Self {
+            Self {
+                random: DeterministicRandom::new(seed),
+                remaining,
+                consumed: 0,
+            }
+        }
+    }
+
+    impl RandomSource for CountingRandom {
+        fn fill(&mut self, destination: &mut [u8]) -> Result<(), GenerationError> {
+            if destination.len() > self.remaining {
+                return Err(GenerationError::RandomnessUnavailable);
+            }
+            self.random.fill(destination)?;
+            self.remaining -= destination.len();
+            self.consumed += destination.len();
+            Ok(())
+        }
+    }
 
     fn candidate_for_seed(seed: u8) -> ChallengeCandidate {
         let mut random = DeterministicRandom::new([seed; 32]);
@@ -215,6 +276,23 @@ mod tests {
     }
 
     #[test]
+    fn returns_success_on_the_eighth_attempt() {
+        let mut calls = 0_usize;
+
+        let result = retry_candidates(|| {
+            calls += 1;
+            if calls == usize::from(MAX_CANDIDATE_ATTEMPTS) {
+                Ok(41)
+            } else {
+                Err(CandidateError::Rejected)
+            }
+        });
+
+        assert_eq!(result, Ok((41, MAX_CANDIDATE_ATTEMPTS)));
+        assert_eq!(calls, usize::from(MAX_CANDIDATE_ATTEMPTS));
+    }
+
+    #[test]
     fn does_not_retry_terminal_errors() {
         for error in [
             CandidateError::RandomnessUnavailable,
@@ -229,6 +307,44 @@ mod tests {
             assert_eq!(result, Err(error));
             assert_eq!(calls, 1);
         }
+    }
+
+    #[test]
+    fn maps_planner_invariants_to_terminal_internal_errors() {
+        assert_eq!(
+            map_generation_error(GenerationError::InvalidOperation),
+            CandidateError::Internal
+        );
+    }
+
+    #[test]
+    fn maps_render_invariants_and_safe_rejections_separately() {
+        assert_eq!(
+            map_render_error(RenderError::MissingReference(crate::generation::NodeId(1))),
+            CandidateError::Internal
+        );
+        assert_eq!(
+            map_render_error(RenderError::LengthLimit),
+            CandidateError::Rejected
+        );
+    }
+
+    #[test]
+    fn preserves_renderer_randomness_exhaustion_as_a_terminal_candidate_error() {
+        let seed = [23; 32];
+        let mut measuring = CountingRandom::unbounded(seed);
+        let secret = generate_with(&mut measuring).unwrap();
+        plan_with(&secret, &mut measuring).unwrap();
+        let mut exhausted_at_rendering = CountingRandom::with_budget(seed, measuring.consumed);
+        let mut calls = 0;
+
+        let result = retry_candidates(|| {
+            calls += 1;
+            generate_candidate_with(&mut exhausted_at_rendering)
+        });
+
+        assert!(matches!(result, Err(CandidateError::RandomnessUnavailable)));
+        assert_eq!(calls, 1);
     }
 
     #[test]

@@ -10,7 +10,7 @@ mod validate;
 
 use crate::generation::{ValidatedSemanticGraph, random::RandomSource};
 
-use error::RenderError;
+pub(crate) use error::RenderError;
 pub use model::{MAX_QUESTION_BYTES, RenderLanguage, RenderMetadata, RenderedQuestion};
 
 pub(crate) fn render_with(
