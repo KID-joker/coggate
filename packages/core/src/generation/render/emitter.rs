@@ -38,8 +38,6 @@ const DEPENDENCY_CLUES_HEADER: &str = "Dependency clues:\n";
 const DISPLAY_ORDER_WARNING: &str = "Display order is not evaluation order.\n";
 const OUTPUT_REQUEST_PREFIX: &str = "The requested result is output label ";
 const OUTPUT_REQUEST_SUFFIX: &str = ". Submit its byte array as unpadded base64url.\n";
-// V1 emits at most six display fragments, so both one-based clue indices use one byte.
-pub(super) const DEPENDENCY_CLUE_FIXED_BYTES: usize = 102;
 
 #[cfg(test)]
 pub(super) fn common_question_bytes() -> usize {
@@ -60,7 +58,6 @@ pub(super) fn emit_question(
 
     let mut dependency_clues = Vec::new();
     let mut dependency_bytes_by_fragment = vec![0_usize; plan.fragments.len()];
-    let mut seen_dependency_edges = BTreeSet::new();
 
     for (display_index, display_fragment) in plan.fragments.iter().enumerate() {
         let mut rendered_fragment = String::new();
@@ -123,32 +120,33 @@ pub(super) fn emit_question(
                 push_with_limit(&mut rendered_fragment, "\n", MAX_FRAGMENT_BYTES)?;
 
                 if let DisplayStepKind::Operation { inputs, .. } = &step.kind {
+                    let mut seen_producers = BTreeSet::new();
+                    let mut producers = Vec::new();
                     for input in inputs {
                         let producer = locations
                             .get(input)
                             .ok_or(RenderError::MissingReference(*input))?;
-                        if producer.display_index != display_index
-                            && seen_dependency_edges.insert((step.node, *input))
+                        if producer.display_index != display_index && seen_producers.insert(*input)
                         {
-                            let clue = format_dependency_clue(
-                                &producer.output_label,
-                                producer.display_index,
-                                &step.output_label,
-                                display_index,
-                            );
-                            let clue_bytes = dependency_bytes_by_fragment[display_index]
-                                .checked_add(clue.len())
-                                .ok_or(RenderError::LengthLimit)?;
-                            let accounted_fragment_bytes = rendered_fragment
-                                .len()
-                                .checked_add(clue_bytes)
-                                .ok_or(RenderError::LengthLimit)?;
-                            if accounted_fragment_bytes > MAX_FRAGMENT_BYTES {
-                                return Err(RenderError::LengthLimit);
-                            }
-                            dependency_bytes_by_fragment[display_index] = clue_bytes;
-                            dependency_clues.push(clue);
+                            producers
+                                .push((producer.output_label.as_str(), producer.display_index));
                         }
+                    }
+                    if !producers.is_empty() {
+                        let clue =
+                            format_dependency_clue(&producers, &step.output_label, display_index)?;
+                        let clue_bytes = dependency_bytes_by_fragment[display_index]
+                            .checked_add(clue.len())
+                            .ok_or(RenderError::LengthLimit)?;
+                        let accounted_fragment_bytes = rendered_fragment
+                            .len()
+                            .checked_add(clue_bytes)
+                            .ok_or(RenderError::LengthLimit)?;
+                        if accounted_fragment_bytes > MAX_FRAGMENT_BYTES {
+                            return Err(RenderError::LengthLimit);
+                        }
+                        dependency_bytes_by_fragment[display_index] = clue_bytes;
+                        dependency_clues.push(clue);
                     }
                 }
             }
@@ -177,22 +175,36 @@ pub(super) fn emit_question(
     Ok(question)
 }
 
-fn format_dependency_clue(
-    producer_label: &str,
-    producer_display_index: usize,
+pub(super) fn format_dependency_clue(
+    producers: &[(&str, usize)],
     output_label: &str,
     output_display_index: usize,
-) -> String {
-    format!(
-        "Dependency: output label {producer_label} from display Fragment {} is an input to output label {output_label} in display Fragment {}.\n",
-        producer_display_index + 1,
-        output_display_index + 1
-    )
-}
+) -> Result<String, RenderError> {
+    if producers.is_empty() {
+        return Err(RenderError::InvalidPlan);
+    }
 
-#[cfg(test)]
-pub(super) fn emitted_dependency_clue_fixed_bytes() -> usize {
-    format_dependency_clue("", 5, "", 5).len()
+    let mut clue = String::new();
+    push_with_limit(&mut clue, "Dependency: output labels ", MAX_FRAGMENT_BYTES)?;
+    for (index, (label, display_index)) in producers.iter().enumerate() {
+        if index > 0 {
+            push_with_limit(&mut clue, ", ", MAX_FRAGMENT_BYTES)?;
+        }
+        push_with_limit(
+            &mut clue,
+            &format!("{label} (Fragment {})", display_index + 1),
+            MAX_FRAGMENT_BYTES,
+        )?;
+    }
+    push_with_limit(
+        &mut clue,
+        &format!(
+            " are inputs to output label {output_label} in Fragment {}.\n",
+            output_display_index + 1
+        ),
+        MAX_FRAGMENT_BYTES,
+    )?;
+    Ok(clue)
 }
 
 fn push_question_preamble(question: &mut String) -> Result<(), RenderError> {

@@ -4,8 +4,8 @@ use crate::generation::{NodeId, NodeKind, ValidatedSemanticGraph};
 
 use super::{
     emitter::{
-        DEPENDENCY_CLUE_FIXED_BYTES, MAX_STEP_BYTES, declared_template_max_bytes, emit_fragment,
-        emit_operation,
+        MAX_STEP_BYTES, declared_template_max_bytes, emit_fragment, emit_operation,
+        format_dependency_clue,
     },
     error::RenderError,
     model::{
@@ -323,7 +323,6 @@ fn validate_length_bounds(
         .iter()
         .map(|fragment| checked_add(FRAGMENT_WRAPPER_BUDGET, fragment.heading.len()))
         .collect::<Result<Vec<_>, _>>()?;
-    let mut seen_dependency_edges = BTreeSet::new();
 
     for (step, fragment_index) in steps.values() {
         let step_budget =
@@ -332,21 +331,20 @@ fn validate_length_bounds(
             checked_add(fragment_budgets[*fragment_index], step_budget)?;
 
         if let DisplayStepKind::Operation { inputs, .. } = &step.kind {
+            let mut seen_producers = BTreeSet::new();
+            let mut producers = Vec::new();
             for input in inputs {
                 let (producer, producer_fragment) = steps
                     .get(input)
                     .ok_or(RenderError::MissingReference(*input))?;
-                if producer_fragment != fragment_index
-                    && seen_dependency_edges.insert((step.node, *input))
-                {
-                    let clue = checked_sum(&[
-                        DEPENDENCY_CLUE_FIXED_BYTES,
-                        producer.output_label.len(),
-                        step.output_label.len(),
-                    ])?;
-                    fragment_budgets[*fragment_index] =
-                        checked_add(fragment_budgets[*fragment_index], clue)?;
+                if producer_fragment != fragment_index && seen_producers.insert(*input) {
+                    producers.push((producer.output_label.as_str(), *producer_fragment));
                 }
+            }
+            if !producers.is_empty() {
+                let clue = format_dependency_clue(&producers, &step.output_label, *fragment_index)?;
+                fragment_budgets[*fragment_index] =
+                    checked_add(fragment_budgets[*fragment_index], clue.len())?;
             }
         }
     }

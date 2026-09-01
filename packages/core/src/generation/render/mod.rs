@@ -333,7 +333,7 @@ mod tests {
         };
 
         let question = emitter::emit_question(&plan, &fragments).unwrap();
-        let clue = "Dependency: output label source_x from display Fragment 1 is an input to output label combined in display Fragment 2.";
+        let clue = "Dependency: output labels source_x (Fragment 1) are inputs to output label combined in Fragment 2.\n";
 
         assert!(question.contains("concat(source_x, source_x, source_y)"));
         assert_eq!(question.matches(clue).count(), 1);

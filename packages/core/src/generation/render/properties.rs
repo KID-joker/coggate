@@ -1,10 +1,8 @@
 use std::collections::BTreeSet;
 
 use super::{
-    emitter::{
-        self, common_question_bytes, declared_template_max_bytes,
-        emitted_dependency_clue_fixed_bytes,
-    },
+    emitter::{self, common_question_bytes, declared_template_max_bytes},
+    error::RenderError,
     model::{
         DisplayFragment, DisplayStep, DisplayStepKind, MAX_FRAGMENT_BYTES, MAX_QUESTION_BYTES,
         RenderLanguage, RenderPlan, TemplateFamily,
@@ -47,6 +45,47 @@ fn boundary_fixture(
     }
     builder.output(output);
     (builder.validate().unwrap(), fragments)
+}
+
+fn dense_dependency_fixture() -> (ValidatedSemanticGraph, Vec<Vec<u8>>) {
+    let fragments = [b"A0", b"B1", b"C2", b"D3", b"E4"]
+        .into_iter()
+        .map(|fragment| fragment.to_vec())
+        .collect::<Vec<_>>();
+    let mut builder = SemanticGraphBuilder::new(vec![2; 5]);
+    let sources = (0..5)
+        .map(|index| builder.fragment(index).unwrap())
+        .collect::<Vec<_>>();
+    let mut prior = Vec::new();
+    for operation_index in 0..8 {
+        let mut inputs = sources.clone();
+        inputs.extend(prior.clone());
+        assert!(inputs.len() <= MAX_CONCAT_INPUTS);
+        if operation_index == 7 {
+            assert_eq!(inputs.len(), 12);
+        }
+        prior.push(builder.operation(Operation::Concat, inputs));
+    }
+    builder.output(*prior.last().unwrap());
+
+    (builder.validate().unwrap(), fragments)
+}
+
+#[test]
+fn dense_legal_dependencies_render_for_every_stream_within_fixed_bounds() {
+    let (graph, fragments) = dense_dependency_fixture();
+    let expected = evaluate_semantic_graph(&graph, &fragment_slices(&fragments)).unwrap();
+    assert_eq!(graph.operation_count(), 8);
+
+    for seed in 0_u8..=127 {
+        let mut random = DeterministicRandom::new([seed; 32]);
+        let rendered = render_with(&graph, &fragments, &mut random).unwrap();
+        assert!(rendered.question().len() <= MAX_QUESTION_BYTES);
+        assert_eq!(
+            evaluate_semantic_graph(&graph, &fragment_slices(&fragments)).unwrap(),
+            expected
+        );
+    }
 }
 
 #[test]
@@ -348,8 +387,8 @@ fn worst_case_assembled_question_fits_actual_fragment_and_question_limits() {
 
     let question = emitter::emit_question(&plan, &fragments).unwrap();
     let expected_question_bytes = match usize::BITS {
-        64 => 5_954,
-        32 => 5_934,
+        64 => 5_390,
+        32 => 5_370,
         width => panic!("unsupported usize width {width}"),
     };
     assert_eq!(question.len(), expected_question_bytes);
@@ -367,20 +406,23 @@ fn worst_case_assembled_question_fits_actual_fragment_and_question_limits() {
         .lines()
         .filter(|line| line.starts_with("Dependency: "))
         .collect::<Vec<_>>();
-    assert_eq!(clues.len(), 12);
-    assert!(clues.iter().all(|clue| clue.len() + 1 == 134));
+    assert_eq!(clues.len(), 8);
+    assert_eq!(
+        clues.iter().map(|clue| clue.len() + 1).collect::<Vec<_>>(),
+        vec![115, 115, 115, 115, 115, 239, 115, 115]
+    );
     let target_clue_counts = (1..=5)
         .map(|target| {
-            let suffix = format!("in display Fragment {target}.");
+            let suffix = format!("in Fragment {target}.");
             clues.iter().filter(|clue| clue.ends_with(&suffix)).count()
         })
         .collect::<Vec<_>>();
-    assert_eq!(target_clue_counts, vec![0, 5, 5, 1, 1]);
+    assert_eq!(target_clue_counts, vec![0, 5, 1, 1, 1]);
     let dependency_start = question.find("Dependency clues:\n").unwrap();
     let dependency_end = question
         .find("Display order is not evaluation order.\n")
         .unwrap();
-    assert_eq!(dependency_end - dependency_start, 1_627);
+    assert_eq!(dependency_end - dependency_start, 1_063);
 
     assert_eq!(sections.len(), 6);
     let section_lengths = sections
@@ -396,12 +438,12 @@ fn worst_case_assembled_question_fits_actual_fragment_and_question_limits() {
     assert_eq!(section_lengths, expected_sections);
     let accounted_effective = section_lengths[..5]
         .iter()
-        .zip(&target_clue_counts)
-        .map(|(section, clue_count)| section + clue_count * 134)
+        .zip([0, 575, 239, 115, 115])
+        .map(|(section, clue_bytes)| section + clue_bytes)
         .collect::<Vec<_>>();
     let expected_accounted = match usize::BITS {
-        64 => vec![780, 1_602, 1_083, 359, 329],
-        32 => vec![780, 1_592, 1_083, 349, 329],
+        64 => vec![780, 1_507, 652, 340, 310],
+        32 => vec![780, 1_497, 652, 330, 310],
         _ => unreachable!(),
     };
     assert_eq!(accounted_effective, expected_accounted);
@@ -415,8 +457,8 @@ fn worst_case_assembled_question_fits_actual_fragment_and_question_limits() {
         .map(|bytes| MAX_FRAGMENT_BYTES - bytes)
         .collect::<Vec<_>>();
     let expected_margins = match usize::BITS {
-        64 => vec![1_268, 446, 965, 1_689, 1_719],
-        32 => vec![1_268, 456, 965, 1_699, 1_719],
+        64 => vec![1_268, 541, 1_396, 1_708, 1_738],
+        32 => vec![1_268, 551, 1_396, 1_718, 1_738],
         _ => unreachable!(),
     };
     assert_eq!(fragment_margins, expected_margins);
@@ -482,6 +524,16 @@ fn maximum_legal_v1_slice_index_fits_every_template_declaration() {
 }
 
 #[test]
-fn dependency_clue_budget_matches_the_real_emitter_format() {
-    assert_eq!(emitted_dependency_clue_fixed_bytes(), 102);
+fn grouped_dependency_clue_names_every_ordered_unique_producer() {
+    assert_eq!(
+        emitter::format_dependency_clue(&[], "result_x", 3),
+        Err(RenderError::InvalidPlan)
+    );
+    let clue = emitter::format_dependency_clue(&[("source_a", 0), ("source_b", 2)], "result_x", 3)
+        .unwrap();
+
+    assert_eq!(
+        clue,
+        "Dependency: output labels source_a (Fragment 1), source_b (Fragment 3) are inputs to output label result_x in Fragment 4.\n"
+    );
 }
