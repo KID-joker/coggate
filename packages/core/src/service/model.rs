@@ -49,7 +49,7 @@ impl<'a> IssueRequest<'a> {
         self.attempt_limit
     }
 
-    #[allow(dead_code)]
+    #[expect(dead_code, reason = "consumed by Phase 4 orchestration")]
     pub(crate) fn binding(&self) -> &[u8] {
         self.binding
     }
@@ -92,7 +92,7 @@ impl<'a> VerifyRequest<'a> {
         self.submission
     }
 
-    #[allow(dead_code)]
+    #[expect(dead_code, reason = "consumed by Phase 4 orchestration")]
     pub(crate) fn binding(&self) -> &[u8] {
         self.binding
     }
@@ -154,7 +154,6 @@ impl fmt::Debug for SubmissionIdentity<'_> {
     }
 }
 
-#[allow(dead_code)]
 pub struct PendingAttempt<T> {
     token: T,
     material: PrivateChallengeMaterial,
@@ -165,7 +164,7 @@ impl<T> PendingAttempt<T> {
         Self { token, material }
     }
 
-    #[allow(dead_code)]
+    #[expect(dead_code, reason = "consumed by Phase 4 orchestration")]
     pub(crate) fn into_parts(self) -> (T, PrivateChallengeMaterial) {
         (self.token, self.material)
     }

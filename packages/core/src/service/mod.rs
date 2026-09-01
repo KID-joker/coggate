@@ -18,7 +18,7 @@ pub use observer::{
     ServiceFailureEvent, ServiceStage, VerificationDisposition, VerificationEvent,
 };
 
-#[allow(dead_code)]
+#[expect(dead_code, reason = "consumed by Phase 4 orchestration")]
 pub struct ChallengeService<L, K, O = NoopObserver> {
     lifecycle: L,
     keys: K,

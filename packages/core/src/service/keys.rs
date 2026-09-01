@@ -26,7 +26,6 @@ impl fmt::Debug for MacKey {
     }
 }
 
-#[allow(dead_code)]
 pub struct ActiveMacKey {
     key_id: String,
     key: MacKey,
@@ -44,7 +43,7 @@ impl ActiveMacKey {
         Ok(Self { key_id, key })
     }
 
-    #[allow(dead_code)]
+    #[expect(dead_code, reason = "consumed by Phase 4 orchestration")]
     pub(crate) fn into_parts(self) -> (String, MacKey) {
         (self.key_id, self.key)
     }
@@ -63,4 +62,17 @@ impl fmt::Debug for ActiveMacKey {
 pub trait MacKeyProvider {
     fn active_key(&mut self) -> Result<ActiveMacKey, KeyProviderError>;
     fn key_by_id(&mut self, key_id: &str) -> Result<MacKey, KeyProviderError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ActiveMacKey, KeyProviderError, MacKey};
+
+    #[test]
+    fn active_key_rejects_short_key_material() {
+        assert_eq!(
+            ActiveMacKey::new("primary", MacKey(vec![0; 31])).map(|_| ()),
+            Err(KeyProviderError::InvalidMaterial)
+        );
+    }
 }
