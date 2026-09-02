@@ -9,7 +9,7 @@ mod version;
 use agentgate_contracts::{AnswerEncoding, PrivateChallengeMaterial, PublicChallenge};
 
 use crate::generation::{CandidateError, OsRandom, generate_candidate_with, retry_candidates};
-use crate::{MacContext, compute_answer_mac};
+use crate::{CoreError, MacContext, compute_answer_mac, verify_answer};
 
 pub use error::{
     BeginAttemptError, KeyProviderError, LifecycleAdapterError, LifecycleRejection, ServiceError,
@@ -131,6 +131,104 @@ where
 
         Ok(public)
     }
+
+    pub fn verify_submission(
+        &mut self,
+        request: VerifyRequest<'_>,
+    ) -> Result<VerificationOutcome, ServiceError> {
+        self.verify_with(request, runtime::unix_time_now)
+    }
+
+    fn verify_with(
+        &mut self,
+        request: VerifyRequest<'_>,
+        clock: impl FnOnce() -> Result<i64, ServiceError>,
+    ) -> Result<VerificationOutcome, ServiceError> {
+        request.validate()?;
+        let server_time = clock()?;
+        let pending = match self.lifecycle.begin_attempt(
+            SubmissionIdentity::from_submission(request.submission()),
+            request.binding(),
+            server_time,
+        ) {
+            Ok(pending) => pending,
+            Err(BeginAttemptError::Rejected(reason)) => {
+                return Ok(VerificationOutcome::Rejected(reason));
+            }
+            Err(BeginAttemptError::Adapter(_)) => return Err(ServiceError::InternalError),
+        };
+        let (token, material) = pending.into_parts();
+
+        if let Err(error) = version::dispatch_verify_version(&material.generator_version) {
+            return self.finish_verification(token, AttemptOutcome::SystemFailure, Err(error));
+        }
+        if !stored_material_has_valid_bounds(&material) {
+            return self.finish_verification(
+                token,
+                AttemptOutcome::SystemFailure,
+                Err(ServiceError::InvalidChallengeMaterial),
+            );
+        }
+
+        let key = match self.keys.key_by_id(&material.mac_key_id) {
+            Ok(key) => key,
+            Err(_) => {
+                return self.finish_verification(
+                    token,
+                    AttemptOutcome::SystemFailure,
+                    Err(ServiceError::InternalError),
+                );
+            }
+        };
+
+        match verify_answer(key.expose(), &material, request.submission()) {
+            Ok(()) => self.finish_verification(
+                token,
+                AttemptOutcome::Accepted,
+                Ok(VerificationOutcome::Accepted),
+            ),
+            Err(CoreError::InvalidAnswerEncoding) => self.finish_verification(
+                token,
+                AttemptOutcome::Rejected,
+                Err(ServiceError::InvalidAnswerEncoding),
+            ),
+            Err(CoreError::AnswerMismatch) => self.finish_verification(
+                token,
+                AttemptOutcome::Rejected,
+                Err(ServiceError::AnswerMismatch),
+            ),
+            Err(CoreError::InvalidChallengeMaterial) => self.finish_verification(
+                token,
+                AttemptOutcome::SystemFailure,
+                Err(ServiceError::InvalidChallengeMaterial),
+            ),
+        }
+    }
+
+    fn finish_verification(
+        &mut self,
+        token: L::AttemptToken,
+        outcome: AttemptOutcome,
+        result: Result<VerificationOutcome, ServiceError>,
+    ) -> Result<VerificationOutcome, ServiceError> {
+        self.lifecycle
+            .finish_attempt(token, outcome)
+            .map_err(|_| ServiceError::InternalError)?;
+        result
+    }
+}
+
+fn stored_material_has_valid_bounds(material: &PrivateChallengeMaterial) -> bool {
+    const MAX_CHALLENGE_ID_BYTES: usize = 128;
+    const MAX_NONCE_BYTES: usize = 256;
+
+    !material.challenge_id.is_empty()
+        && material.challenge_id.len() <= MAX_CHALLENGE_ID_BYTES
+        && !material.nonce.is_empty()
+        && material.nonce.len() <= MAX_NONCE_BYTES
+        && !material.mac_key_id.is_empty()
+        && material.mac_key_id.len() <= MAX_MAC_KEY_ID_BYTES
+        && material.expires_at >= material.issued_at
 }
 
 fn map_candidate_error(error: CandidateError) -> ServiceError {
@@ -405,6 +503,29 @@ mod tests {
             map_candidate_error(CandidateError::Internal),
             ServiceError::InternalError
         );
+    }
+
+    #[test]
+    fn verification_clock_failure_stops_before_lifecycle_and_keys() {
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let mut service = ChallengeService::new(
+            TrackingLifecycle(Rc::clone(&calls)),
+            TrackingKeys(Rc::clone(&calls)),
+        );
+        let submission = Submission {
+            challenge_id: "challenge-1".to_owned(),
+            nonce: "nonce-1".to_owned(),
+            answer: "YUI5MmtM".to_owned(),
+        };
+
+        assert_eq!(
+            service.verify_with(
+                VerifyRequest::new(&submission, b"binding").unwrap(),
+                || Err(ServiceError::InternalError),
+            ),
+            Err(ServiceError::InternalError)
+        );
+        assert!(calls.borrow().is_empty());
     }
 
     #[test]

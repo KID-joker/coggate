@@ -91,7 +91,6 @@ impl<'a> VerifyRequest<'a> {
         self.submission
     }
 
-    #[expect(dead_code, reason = "consumed by Phase 4 orchestration")]
     pub(crate) fn binding(&self) -> &[u8] {
         self.binding
     }
@@ -163,7 +162,6 @@ impl<T> PendingAttempt<T> {
         Self { token, material }
     }
 
-    #[expect(dead_code, reason = "consumed by Phase 4 orchestration")]
     pub(crate) fn into_parts(self) -> (T, PrivateChallengeMaterial) {
         (self.token, self.material)
     }
