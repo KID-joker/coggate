@@ -43,7 +43,6 @@ impl ActiveMacKey {
         Ok(Self { key_id, key })
     }
 
-    #[expect(dead_code, reason = "consumed by Phase 4 orchestration")]
     pub(crate) fn into_parts(self) -> (String, MacKey) {
         (self.key_id, self.key)
     }

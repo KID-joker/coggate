@@ -49,7 +49,6 @@ impl<'a> IssueRequest<'a> {
         self.attempt_limit
     }
 
-    #[expect(dead_code, reason = "consumed by Phase 4 orchestration")]
     pub(crate) fn binding(&self) -> &[u8] {
         self.binding
     }

@@ -21,10 +21,6 @@ pub(crate) enum CandidateError {
     Exhausted,
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "consumed by Phase 4 service orchestration")
-)]
 pub(crate) fn retry_candidates<T>(
     mut generate: impl FnMut() -> Result<T, CandidateError>,
 ) -> Result<(T, u8), CandidateError> {
@@ -48,10 +44,6 @@ pub(crate) struct ChallengeCandidate {
     operation_count: usize,
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "consumed by Phase 4 service orchestration")
-)]
 impl ChallengeCandidate {
     pub(crate) fn question(&self) -> &str {
         self.question.question()
@@ -65,14 +57,17 @@ impl ChallengeCandidate {
         &self.answer
     }
 
+    #[cfg_attr(not(test), expect(dead_code, reason = "used by candidate unit tests"))]
     pub(crate) fn secret_length(&self) -> usize {
         self.secret_length
     }
 
+    #[cfg_attr(not(test), expect(dead_code, reason = "used by candidate unit tests"))]
     pub(crate) fn fragment_count(&self) -> usize {
         self.fragment_count
     }
 
+    #[cfg_attr(not(test), expect(dead_code, reason = "used by candidate unit tests"))]
     pub(crate) fn operation_count(&self) -> usize {
         self.operation_count
     }
@@ -92,10 +87,6 @@ impl fmt::Debug for ChallengeCandidate {
     }
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "consumed by Phase 4 service orchestration")
-)]
 pub(crate) fn generate_candidate_with(
     random: &mut impl RandomSource,
 ) -> Result<ChallengeCandidate, CandidateError> {
