@@ -154,7 +154,8 @@ pub struct ServiceFailureEvent {
 /// Allowlisted metadata for a durably completed verification decision.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VerificationEvent {
-    /// Canonical challenge ID, or an empty string for a malformed submitted ID.
+    /// Canonical challenge ID, or an empty string when the submitted or stored
+    /// identifier is non-canonical.
     pub challenge_id: String,
     /// Supported stored generator version when private material was available.
     pub generator_version: Option<String>,

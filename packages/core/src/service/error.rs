@@ -59,7 +59,8 @@ pub enum LifecycleRejection {
     NotFound,
     /// The challenge has expired.
     Expired,
-    /// The challenge already reached a consumed terminal state.
+    /// The record is already consumed, or an attempt is currently reserved and
+    /// the same challenge cannot be reused while that attempt is in flight.
     AlreadyConsumed,
     /// The presented opaque binding does not exactly match the stored binding.
     BindingMismatch,
