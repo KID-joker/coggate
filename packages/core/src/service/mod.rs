@@ -82,13 +82,58 @@ where
         })
     }
 
+    #[cfg(test)]
+    fn issue_with_candidate_factory<R: crate::generation::RandomSource>(
+        &mut self,
+        request: IssueRequest<'_>,
+        random: &mut R,
+        clock: impl FnOnce() -> Result<i64, ServiceError>,
+        candidate_factory: impl FnMut(
+            &mut R,
+        )
+            -> Result<crate::generation::ChallengeCandidate, CandidateError>,
+    ) -> Result<PublicChallenge, ServiceError> {
+        self.issue_with_candidate_factory_timing(
+            request,
+            random,
+            clock,
+            Instant::now,
+            |started, finished| finished.saturating_duration_since(started),
+            candidate_factory,
+        )
+    }
+
     fn issue_with_timing<T: Copy>(
         &mut self,
         request: IssueRequest<'_>,
         random: &mut impl crate::generation::RandomSource,
         clock: impl FnOnce() -> Result<i64, ServiceError>,
+        now: impl FnMut() -> T,
+        duration_between: impl Fn(T, T) -> Duration,
+    ) -> Result<PublicChallenge, ServiceError> {
+        self.issue_with_candidate_factory_timing(
+            request,
+            random,
+            clock,
+            now,
+            duration_between,
+            generate_candidate_with,
+        )
+    }
+
+    fn issue_with_candidate_factory_timing<T: Copy, R: crate::generation::RandomSource>(
+        &mut self,
+        request: IssueRequest<'_>,
+        random: &mut R,
+        clock: impl FnOnce() -> Result<i64, ServiceError>,
         mut now: impl FnMut() -> T,
         duration_between: impl Fn(T, T) -> Duration,
+        mut candidate_factory: impl FnMut(
+            &mut R,
+        ) -> Result<
+            crate::generation::ChallengeCandidate,
+            CandidateError,
+        >,
     ) -> Result<PublicChallenge, ServiceError> {
         let operation_started = now();
         if let Err(error) = request.validate() {
@@ -114,7 +159,7 @@ where
 
         let candidate_started = now();
         let (candidate, candidate_attempts) =
-            match retry_candidates_with_attempts(|| generate_candidate_with(random)) {
+            match retry_candidates_with_attempts(|| candidate_factory(random)) {
                 Ok(success) => success,
                 Err((candidate_error, attempts)) => {
                     let error = map_candidate_error(candidate_error);
@@ -587,7 +632,7 @@ mod tests {
 
     use crate::{
         Submission,
-        generation::{GenerationError, RandomSource},
+        generation::{DeterministicRandom, GenerationError, MAX_QUESTION_BYTES, RandomSource},
         verify_answer,
     };
 
@@ -1097,5 +1142,420 @@ mod tests {
         };
 
         assert_eq!(verify_answer(&[0x42; 32], material, &submission), Ok(()));
+    }
+
+    #[test]
+    fn deterministic_issuance_preserves_all_v1_properties_across_seed_sweep() {
+        let mut representative_outputs = Vec::new();
+
+        for seed in 0_u8..=127 {
+            let seed = [seed; 32];
+            let mut replay_random = DeterministicRandom::new(seed);
+            let replay = generate_candidate_with(&mut replay_random).unwrap();
+
+            let issue_once = || {
+                let material = Rc::new(RefCell::new(None));
+                let events = Rc::new(RefCell::new(Vec::new()));
+                let mut service = ChallengeService::with_observer(
+                    CapturingLifecycle(Rc::clone(&material)),
+                    TrackingKeys(Rc::new(RefCell::new(Vec::new()))),
+                    CollectObserver(Rc::clone(&events)),
+                );
+                let mut random = DeterministicRandom::new(seed);
+                let public = service
+                    .issue_with_timing(
+                        IssueRequest::v1(b"binding").unwrap(),
+                        &mut random,
+                        || Ok(10_000),
+                        || (),
+                        |(), ()| Duration::ZERO,
+                    )
+                    .unwrap();
+                let material = material.borrow_mut().take().unwrap();
+                let event = events.borrow_mut().pop().unwrap();
+                (public, material, event)
+            };
+
+            let first = issue_once();
+            let second = issue_once();
+            assert_eq!(first, second, "seed {seed:?}");
+            let (public, material, event) = first;
+
+            assert_eq!(public.expires_at - public.issued_at, 15);
+            for token in [&public.challenge_id, &public.nonce] {
+                assert_eq!(URL_SAFE_NO_PAD.decode(token).unwrap().len(), 16);
+            }
+            assert_eq!(public.question, replay.question());
+            assert_eq!(material.challenge_id, public.challenge_id);
+            assert_eq!(material.nonce, public.nonce);
+            assert_eq!(material.expires_at, public.expires_at);
+            assert_eq!(
+                verify_answer(
+                    &[0x42; 32],
+                    &material,
+                    &Submission {
+                        challenge_id: material.challenge_id.clone(),
+                        nonce: material.nonce.clone(),
+                        answer: replay.answer().to_owned(),
+                    },
+                ),
+                Ok(())
+            );
+            assert!((8..=16).contains(&replay.secret_length()));
+            assert_eq!(
+                replay.fragment_count(),
+                usize::from(
+                    agentgate_contracts::fragment_count_for_secret_length(
+                        replay.secret_length() as u8,
+                    )
+                    .unwrap(),
+                )
+            );
+            assert!((4..=8).contains(&replay.operation_count()));
+            assert!((2..=3).contains(&replay.render_metadata().languages().len()));
+            assert!(public.question.len() <= MAX_QUESTION_BYTES);
+            let ServiceEvent::ChallengeIssued(metadata) = event else {
+                panic!("expected issued event")
+            };
+            assert_eq!(metadata.question_byte_length, public.question.len());
+            assert_eq!(metadata.fragment_count, replay.fragment_count());
+            assert_eq!(
+                metadata.render_languages,
+                replay.render_metadata().languages()
+            );
+            assert_eq!(metadata.candidate_attempts, 1);
+
+            if matches!(seed[0], 0 | 23 | 64 | 127) {
+                representative_outputs.push((
+                    public.question,
+                    public.challenge_id,
+                    public.nonce,
+                    material.answer_mac,
+                    metadata,
+                ));
+            }
+        }
+
+        assert!(
+            representative_outputs
+                .windows(2)
+                .any(|pair| pair[0] != pair[1]),
+            "representative seeds must vary at least one permitted output"
+        );
+    }
+
+    #[test]
+    fn service_retry_mapping_reports_success_on_exactly_eighth_attempt() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let mut service = ChallengeService::with_observer(
+            TrackingLifecycle(Rc::new(RefCell::new(Vec::new()))),
+            TrackingKeys(Rc::new(RefCell::new(Vec::new()))),
+            CollectObserver(Rc::clone(&events)),
+        );
+        let mut random = DeterministicRandom::new([31; 32]);
+        let mut calls = 0;
+
+        service
+            .issue_with_candidate_factory(
+                IssueRequest::v1(b"binding").unwrap(),
+                &mut random,
+                || Ok(10_000),
+                |random| {
+                    calls += 1;
+                    if calls < 8 {
+                        Err(CandidateError::Rejected)
+                    } else {
+                        generate_candidate_with(random)
+                    }
+                },
+            )
+            .unwrap();
+
+        assert_eq!(calls, 8);
+        assert!(matches!(
+            &events.borrow()[0],
+            ServiceEvent::ChallengeIssued(event) if event.candidate_attempts == 8
+        ));
+    }
+
+    #[test]
+    fn service_retry_mapping_exhausts_or_stops_terminal_failures_exactly() {
+        for (candidate_error, expected_calls, expected_attempts) in [
+            (CandidateError::Rejected, 8, 8),
+            (CandidateError::RandomnessUnavailable, 1, 1),
+        ] {
+            let events = Rc::new(RefCell::new(Vec::new()));
+            let mut service = ChallengeService::with_observer(
+                TrackingLifecycle(Rc::new(RefCell::new(Vec::new()))),
+                TrackingKeys(Rc::new(RefCell::new(Vec::new()))),
+                CollectObserver(Rc::clone(&events)),
+            );
+            let mut random = DeterministicRandom::new([41; 32]);
+            let mut calls = 0;
+
+            let result = service.issue_with_candidate_factory(
+                IssueRequest::v1(b"binding").unwrap(),
+                &mut random,
+                || Ok(10_000),
+                |_random| {
+                    calls += 1;
+                    Err(candidate_error)
+                },
+            );
+
+            assert_eq!(result, Err(ServiceError::GenerationFailed));
+            assert_eq!(calls, expected_calls);
+            assert!(matches!(
+                &events.borrow()[0],
+                ServiceEvent::IssueFailed(event)
+                    if event.stage == ServiceStage::Candidate
+                        && event.attempts == expected_attempts
+            ));
+        }
+    }
+
+    struct FailingActiveKeys;
+
+    impl MacKeyProvider for FailingActiveKeys {
+        fn active_key(&mut self) -> Result<ActiveMacKey, KeyProviderError> {
+            Err(KeyProviderError::Unavailable)
+        }
+
+        fn key_by_id(&mut self, _key_id: &str) -> Result<MacKey, KeyProviderError> {
+            unreachable!("issuance only reads active keys")
+        }
+    }
+
+    #[test]
+    fn key_and_storage_failures_do_not_restart_candidate_generation() {
+        let mut candidate_calls = 0;
+        let mut key_failing_service = ChallengeService::new(
+            TrackingLifecycle(Rc::new(RefCell::new(Vec::new()))),
+            FailingActiveKeys,
+        );
+        let mut random = DeterministicRandom::new([51; 32]);
+        assert_eq!(
+            key_failing_service.issue_with_candidate_factory(
+                IssueRequest::v1(b"binding").unwrap(),
+                &mut random,
+                || Ok(10_000),
+                |random| {
+                    candidate_calls += 1;
+                    generate_candidate_with(random)
+                },
+            ),
+            Err(ServiceError::InternalError)
+        );
+        assert_eq!(candidate_calls, 1);
+
+        let now = Rc::new(Cell::new(Duration::ZERO));
+        let mut store_failing_service = ChallengeService::new(
+            TimingLifecycle {
+                now: Rc::clone(&now),
+                store_error: Some(LifecycleAdapterError::Unavailable),
+            },
+            TrackingKeys(Rc::new(RefCell::new(Vec::new()))),
+        );
+        let mut random = DeterministicRandom::new([52; 32]);
+        assert_eq!(
+            store_failing_service.issue_with_candidate_factory(
+                IssueRequest::v1(b"binding").unwrap(),
+                &mut random,
+                || Ok(10_000),
+                |random| {
+                    candidate_calls += 1;
+                    generate_candidate_with(random)
+                },
+            ),
+            Err(ServiceError::InternalError)
+        );
+        assert_eq!(candidate_calls, 2);
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum SharedAttemptState {
+        Issued,
+        Reserved,
+        Used,
+    }
+
+    struct SharedLifecycleState {
+        state: SharedAttemptState,
+        material: PrivateChallengeMaterial,
+        finishes: Vec<AttemptOutcome>,
+    }
+
+    struct SharedLifecycle(std::sync::Arc<std::sync::Mutex<SharedLifecycleState>>);
+
+    impl LifecycleAdapter for SharedLifecycle {
+        type AttemptToken = ();
+
+        fn store_issued(
+            &mut self,
+            _material: PrivateChallengeMaterial,
+            _binding: &[u8],
+            _attempt_limit: AttemptLimit,
+        ) -> Result<(), LifecycleAdapterError> {
+            unreachable!("verification-only model")
+        }
+
+        fn begin_attempt(
+            &mut self,
+            _identity: SubmissionIdentity<'_>,
+            _binding: &[u8],
+            _server_time: i64,
+        ) -> Result<PendingAttempt<Self::AttemptToken>, BeginAttemptError> {
+            let mut shared = self.0.lock().unwrap();
+            if shared.state != SharedAttemptState::Issued {
+                return Err(LifecycleRejection::AlreadyConsumed.into());
+            }
+            shared.state = SharedAttemptState::Reserved;
+            Ok(PendingAttempt::new((), shared.material.clone()))
+        }
+
+        fn finish_attempt(
+            &mut self,
+            _token: Self::AttemptToken,
+            outcome: AttemptOutcome,
+        ) -> Result<(), LifecycleAdapterError> {
+            let mut shared = self.0.lock().unwrap();
+            assert_eq!(shared.state, SharedAttemptState::Reserved);
+            shared.state = SharedAttemptState::Used;
+            shared.finishes.push(outcome);
+            Ok(())
+        }
+    }
+
+    struct SharedLookupKeys {
+        calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        available: bool,
+    }
+
+    impl MacKeyProvider for SharedLookupKeys {
+        fn active_key(&mut self) -> Result<ActiveMacKey, KeyProviderError> {
+            unreachable!("verification only reads stored key IDs")
+        }
+
+        fn key_by_id(&mut self, _key_id: &str) -> Result<MacKey, KeyProviderError> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if self.available {
+                MacKey::new(vec![0x42; 32])
+            } else {
+                Err(KeyProviderError::Unavailable)
+            }
+        }
+    }
+
+    fn deterministic_material_and_submission() -> (PrivateChallengeMaterial, Submission) {
+        let captured = Rc::new(RefCell::new(None));
+        let mut issuer = ChallengeService::new(
+            CapturingLifecycle(Rc::clone(&captured)),
+            TrackingKeys(Rc::new(RefCell::new(Vec::new()))),
+        );
+        let mut issuance_random = DeterministicRandom::new([61; 32]);
+        issuer
+            .issue_with(
+                IssueRequest::v1(b"binding").unwrap(),
+                &mut issuance_random,
+                || Ok(10_000),
+            )
+            .unwrap();
+        let material = captured.borrow_mut().take().unwrap();
+        let mut replay_random = DeterministicRandom::new([61; 32]);
+        let candidate = generate_candidate_with(&mut replay_random).unwrap();
+        let submission = Submission {
+            challenge_id: material.challenge_id.clone(),
+            nonce: material.nonce.clone(),
+            answer: candidate.answer().to_owned(),
+        };
+        (material, submission)
+    }
+
+    #[test]
+    fn two_services_share_one_atomic_reservation_and_one_accepted_finish() {
+        let (material, submission) = deterministic_material_and_submission();
+        let state = std::sync::Arc::new(std::sync::Mutex::new(SharedLifecycleState {
+            state: SharedAttemptState::Issued,
+            material,
+            finishes: Vec::new(),
+        }));
+        let key_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut first = ChallengeService::new(
+            SharedLifecycle(std::sync::Arc::clone(&state)),
+            SharedLookupKeys {
+                calls: std::sync::Arc::clone(&key_calls),
+                available: true,
+            },
+        );
+        let mut second = ChallengeService::new(
+            SharedLifecycle(std::sync::Arc::clone(&state)),
+            SharedLookupKeys {
+                calls: std::sync::Arc::clone(&key_calls),
+                available: true,
+            },
+        );
+
+        assert_eq!(
+            first.verify_with(VerifyRequest::new(&submission, b"binding").unwrap(), || Ok(
+                10_001
+            ),),
+            Ok(VerificationOutcome::Accepted)
+        );
+        assert_eq!(
+            second.verify_with(VerifyRequest::new(&submission, b"binding").unwrap(), || Ok(
+                10_001
+            ),),
+            Ok(VerificationOutcome::Rejected(
+                LifecycleRejection::AlreadyConsumed
+            ))
+        );
+        assert_eq!(key_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let shared = state.lock().unwrap();
+        assert_eq!(shared.state, SharedAttemptState::Used);
+        assert_eq!(shared.finishes, [AttemptOutcome::Accepted]);
+    }
+
+    #[test]
+    fn reserved_attempt_stays_fail_closed_when_old_key_is_unavailable() {
+        let (material, submission) = deterministic_material_and_submission();
+        let state = std::sync::Arc::new(std::sync::Mutex::new(SharedLifecycleState {
+            state: SharedAttemptState::Issued,
+            material,
+            finishes: Vec::new(),
+        }));
+        let key_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut first = ChallengeService::new(
+            SharedLifecycle(std::sync::Arc::clone(&state)),
+            SharedLookupKeys {
+                calls: std::sync::Arc::clone(&key_calls),
+                available: false,
+            },
+        );
+        let mut second = ChallengeService::new(
+            SharedLifecycle(std::sync::Arc::clone(&state)),
+            SharedLookupKeys {
+                calls: std::sync::Arc::clone(&key_calls),
+                available: true,
+            },
+        );
+
+        assert_eq!(
+            first.verify_with(VerifyRequest::new(&submission, b"binding").unwrap(), || Ok(
+                10_001
+            ),),
+            Err(ServiceError::InternalError)
+        );
+        assert_eq!(
+            second.verify_with(VerifyRequest::new(&submission, b"binding").unwrap(), || Ok(
+                10_001
+            ),),
+            Ok(VerificationOutcome::Rejected(
+                LifecycleRejection::AlreadyConsumed
+            ))
+        );
+        assert_eq!(key_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let shared = state.lock().unwrap();
+        assert_eq!(shared.state, SharedAttemptState::Used);
+        assert_eq!(shared.finishes, [AttemptOutcome::SystemFailure]);
     }
 }

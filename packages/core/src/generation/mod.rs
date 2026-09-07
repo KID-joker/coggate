@@ -16,9 +16,12 @@ mod secret;
 #[cfg(test)]
 mod test_random;
 
+#[cfg(test)]
+pub(crate) use test_random::DeterministicRandom;
+
 pub use answer::evaluate_semantic_graph;
 pub(crate) use candidate::{
-    CandidateError, generate_candidate_with, retry_candidates_with_attempts,
+    CandidateError, ChallengeCandidate, generate_candidate_with, retry_candidates_with_attempts,
 };
 pub use error::GenerationError;
 pub use graph::{NodeId, NodeKind, SemanticGraphBuilder, SemanticNode, ValidatedSemanticGraph};
