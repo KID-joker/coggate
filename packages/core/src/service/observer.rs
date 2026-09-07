@@ -15,7 +15,7 @@ use super::{LifecycleRejection, ServiceError};
 ///
 /// Success and completion events are emitted only after the durable decision
 /// they describe; failure callbacks cannot change the operation result. Events
-/// never contain bindings, answers, nonces, MACs, key material or IDs, private
+/// never contain bindings, answers, nonces, MACs, key material or key IDs, private
 /// challenge material, complete questions, render plans, or adapter/provider
 /// error text. Implementations must preserve that boundary in their own
 /// enrichment and logging.
