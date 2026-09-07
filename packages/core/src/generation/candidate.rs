@@ -21,15 +21,22 @@ pub(crate) enum CandidateError {
     Exhausted,
 }
 
+#[cfg_attr(not(test), expect(dead_code, reason = "used by candidate unit tests"))]
 pub(crate) fn retry_candidates<T>(
     mut generate: impl FnMut() -> Result<T, CandidateError>,
 ) -> Result<(T, u8), CandidateError> {
+    retry_candidates_with_attempts(&mut generate).map_err(|(error, _attempts)| error)
+}
+
+pub(crate) fn retry_candidates_with_attempts<T>(
+    mut generate: impl FnMut() -> Result<T, CandidateError>,
+) -> Result<(T, u8), (CandidateError, u8)> {
     for attempt in 1..=MAX_CANDIDATE_ATTEMPTS {
         match generate() {
             Ok(candidate) => return Ok((candidate, attempt)),
             Err(CandidateError::Rejected) if attempt < MAX_CANDIDATE_ATTEMPTS => continue,
-            Err(CandidateError::Rejected) => return Err(CandidateError::Exhausted),
-            Err(error) => return Err(error),
+            Err(CandidateError::Rejected) => return Err((CandidateError::Exhausted, attempt)),
+            Err(error) => return Err((error, attempt)),
         }
     }
 
@@ -57,12 +64,10 @@ impl ChallengeCandidate {
         &self.answer
     }
 
-    #[cfg_attr(not(test), expect(dead_code, reason = "used by candidate unit tests"))]
     pub(crate) fn secret_length(&self) -> usize {
         self.secret_length
     }
 
-    #[cfg_attr(not(test), expect(dead_code, reason = "used by candidate unit tests"))]
     pub(crate) fn fragment_count(&self) -> usize {
         self.fragment_count
     }
@@ -165,7 +170,7 @@ mod tests {
 
     use super::{
         CandidateError, ChallengeCandidate, MAX_CANDIDATE_ATTEMPTS, generate_candidate_with,
-        map_generation_error, map_render_error, retry_candidates,
+        map_generation_error, map_render_error, retry_candidates, retry_candidates_with_attempts,
     };
     use crate::generation::{
         GenerationError, MAX_QUESTION_BYTES, planner::plan_with, random::RandomSource,
@@ -251,6 +256,29 @@ mod tests {
 
         assert_eq!(result, Ok((41, 3)));
         assert_eq!(calls, 3);
+    }
+
+    #[test]
+    fn detailed_retry_failure_reports_actual_attempt_count() {
+        let mut rejected_calls = 0;
+        assert_eq!(
+            retry_candidates_with_attempts(|| {
+                rejected_calls += 1;
+                Err::<(), _>(CandidateError::Rejected)
+            }),
+            Err((CandidateError::Exhausted, MAX_CANDIDATE_ATTEMPTS))
+        );
+        assert_eq!(rejected_calls, usize::from(MAX_CANDIDATE_ATTEMPTS));
+
+        let mut internal_calls = 0;
+        assert_eq!(
+            retry_candidates_with_attempts(|| {
+                internal_calls += 1;
+                Err::<(), _>(CandidateError::Internal)
+            }),
+            Err((CandidateError::Internal, 1))
+        );
+        assert_eq!(internal_calls, 1);
     }
 
     #[test]

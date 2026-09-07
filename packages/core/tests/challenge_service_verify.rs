@@ -3,9 +3,9 @@ use std::{cell::RefCell, rc::Rc};
 use agentgate_core::{
     ActiveMacKey, AttemptLimit, AttemptOutcome, BeginAttemptError, ChallengeService,
     KeyProviderError, LifecycleAdapter, LifecycleAdapterError, LifecycleRejection, MacContext,
-    MacKey, MacKeyProvider, PendingAttempt, PrivateChallengeMaterial, ServiceError, Submission,
-    SubmissionIdentity, VerificationOutcome, VerifyRequest, compute_answer_mac,
-    contracts::AnswerEncoding,
+    MacKey, MacKeyProvider, Observer, PendingAttempt, PrivateChallengeMaterial, ServiceError,
+    ServiceEvent, ServiceStage, Submission, SubmissionIdentity, VerificationDisposition,
+    VerificationOutcome, VerifyRequest, compute_answer_mac, contracts::AnswerEncoding,
 };
 
 const OLD_KEY: &[u8; 32] = b"0123456789abcdef0123456789abcdef";
@@ -217,6 +217,31 @@ struct ScenarioKeys {
     behavior: KeyBehavior,
 }
 
+struct RecordingObserver {
+    events: Rc<RefCell<Vec<ServiceEvent>>>,
+    calls: Rc<RefCell<Vec<String>>>,
+    panic: bool,
+}
+
+impl Observer for RecordingObserver {
+    fn observe(&mut self, event: &ServiceEvent) {
+        if matches!(
+            event,
+            ServiceEvent::VerificationCompleted(completed)
+                if !matches!(completed.disposition, VerificationDisposition::LifecycleRejected(_))
+        ) {
+            assert!(
+                self.calls
+                    .borrow()
+                    .iter()
+                    .any(|call| call.starts_with("finish:"))
+            );
+        }
+        self.events.borrow_mut().push(event.clone());
+        assert!(!self.panic, "observer sentinel panic");
+    }
+}
+
 impl MacKeyProvider for ScenarioKeys {
     fn active_key(&mut self) -> Result<ActiveMacKey, KeyProviderError> {
         *self.active_calls.borrow_mut() += 1;
@@ -263,6 +288,288 @@ fn run_scenario(
     let recorded_calls = calls.borrow().clone();
     let active_call_count = *active_calls.borrow();
     (result, recorded_calls, active_call_count)
+}
+
+fn run_observed_scenario(
+    begin: BeginBehavior,
+    key_behavior: KeyBehavior,
+    finish_error: Option<LifecycleAdapterError>,
+    submitted: &Submission,
+    panic: bool,
+) -> (
+    Result<VerificationOutcome, ServiceError>,
+    Vec<String>,
+    Vec<ServiceEvent>,
+) {
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let lifecycle = ScenarioLifecycle {
+        calls: Rc::clone(&calls),
+        begin: Some(begin),
+        finish_error,
+    };
+    let keys = ScenarioKeys {
+        calls: Rc::clone(&calls),
+        active_calls: Rc::new(RefCell::new(0)),
+        behavior: key_behavior,
+    };
+    let observer = RecordingObserver {
+        events: Rc::clone(&events),
+        calls: Rc::clone(&calls),
+        panic,
+    };
+    let mut service = ChallengeService::with_observer(lifecycle, keys, observer);
+    let result = service
+        .verify_submission(VerifyRequest::new(submitted, b"binding-secret-sentinel").unwrap());
+    let calls = calls.borrow().clone();
+    let events = events.borrow().clone();
+    (result, calls, events)
+}
+
+#[test]
+fn verification_observes_lifecycle_rejections_and_durable_core_outcomes() {
+    let scenarios = [
+        (
+            BeginBehavior::Rejected(LifecycleRejection::Expired),
+            submission(),
+            Ok(VerificationOutcome::Rejected(LifecycleRejection::Expired)),
+            VerificationDisposition::LifecycleRejected(LifecycleRejection::Expired),
+            false,
+        ),
+        (
+            BeginBehavior::Pending(material()),
+            submission(),
+            Ok(VerificationOutcome::Accepted),
+            VerificationDisposition::Accepted,
+            true,
+        ),
+        (
+            BeginBehavior::Pending(material()),
+            Submission {
+                answer: "not base64url!".to_owned(),
+                ..submission()
+            },
+            Err(ServiceError::InvalidAnswerEncoding),
+            VerificationDisposition::InvalidAnswerEncoding,
+            true,
+        ),
+        (
+            BeginBehavior::Pending(material()),
+            Submission {
+                answer: "YUI5MmtN".to_owned(),
+                ..submission()
+            },
+            Err(ServiceError::AnswerMismatch),
+            VerificationDisposition::AnswerMismatch,
+            true,
+        ),
+    ];
+
+    for (begin, submitted, expected, disposition, expects_finish) in scenarios {
+        let (result, calls, events) = run_observed_scenario(
+            begin,
+            KeyBehavior::Key(OLD_KEY.to_vec()),
+            None,
+            &submitted,
+            false,
+        );
+        assert_eq!(result, expected);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            &events[0],
+            ServiceEvent::VerificationCompleted(event)
+                if event.challenge_id == "challenge-1"
+                    && event.disposition == disposition
+                    && (event.generator_version.as_deref() == Some("1.0") || !expects_finish)
+                    && (event.elapsed_since_issue.is_some() || !expects_finish)
+        ));
+        if expects_finish {
+            let server_time = calls[0].rsplit(':').next().unwrap().parse::<i64>().unwrap();
+            let ServiceEvent::VerificationCompleted(event) = &events[0] else {
+                unreachable!()
+            };
+            assert_eq!(
+                event.elapsed_since_issue,
+                Some(std::time::Duration::from_secs(
+                    u64::try_from(server_time - material().issued_at).unwrap()
+                ))
+            );
+        }
+        assert_eq!(
+            calls.iter().any(|call| call.starts_with("finish:")),
+            expects_finish
+        );
+    }
+}
+
+#[test]
+fn verification_system_and_finish_failures_emit_only_safe_service_failures() {
+    let oversized_version = "version-secret-sentinel".repeat(4);
+    let mut invalid = material();
+    invalid.generator_version = oversized_version.clone();
+    let mut unsupported = material();
+    unsupported.generator_version = "1.1".to_owned();
+    let scenarios = [
+        (
+            BeginBehavior::Adapter(LifecycleAdapterError::Internal),
+            KeyBehavior::Key(OLD_KEY.to_vec()),
+            None,
+            ServiceStage::LifecycleBegin,
+            ServiceError::InternalError,
+        ),
+        (
+            BeginBehavior::Pending(invalid),
+            KeyBehavior::Key(OLD_KEY.to_vec()),
+            None,
+            ServiceStage::CoreVerification,
+            ServiceError::InvalidChallengeMaterial,
+        ),
+        (
+            BeginBehavior::Pending(unsupported),
+            KeyBehavior::Key(OLD_KEY.to_vec()),
+            None,
+            ServiceStage::VersionDispatch,
+            ServiceError::UnsupportedGeneratorVersion,
+        ),
+        (
+            BeginBehavior::Pending(material()),
+            KeyBehavior::Error(KeyProviderError::Unavailable),
+            None,
+            ServiceStage::KeyProvider,
+            ServiceError::InternalError,
+        ),
+        (
+            BeginBehavior::Pending(material()),
+            KeyBehavior::Key(OLD_KEY.to_vec()),
+            Some(LifecycleAdapterError::Unavailable),
+            ServiceStage::LifecycleFinish,
+            ServiceError::InternalError,
+        ),
+    ];
+
+    for (begin, key_behavior, finish_error, stage, expected_error) in scenarios {
+        let submitted = submission();
+        let (result, _calls, events) =
+            run_observed_scenario(begin, key_behavior, finish_error, &submitted, false);
+        assert_eq!(result, Err(expected_error));
+        assert_eq!(events.len(), 1);
+        let ServiceEvent::ServiceFailed(event) = &events[0] else {
+            panic!("unexpected event: {:?}", events[0]);
+        };
+        assert_eq!(event.stage, stage);
+        assert!(!format!("{event:?}").contains(&oversized_version));
+        assert_ne!(
+            event.generator_version.as_deref(),
+            Some(oversized_version.as_str())
+        );
+    }
+}
+
+#[test]
+fn observer_panic_does_not_change_system_failure_or_finished_state() {
+    let submitted = submission();
+    let (result, calls, events) = run_observed_scenario(
+        BeginBehavior::Pending(material()),
+        KeyBehavior::Error(KeyProviderError::Unavailable),
+        None,
+        &submitted,
+        true,
+    );
+    assert_eq!(result, Err(ServiceError::InternalError));
+    assert_eq!(
+        calls.last().map(String::as_str),
+        Some("finish:systemfailure")
+    );
+    assert_eq!(events.len(), 1);
+    assert!(matches!(events[0], ServiceEvent::ServiceFailed(_)));
+}
+
+#[test]
+fn observer_panics_do_not_change_verification_result_or_durable_finish() {
+    let submitted = submission();
+    let (result, calls, events) = run_observed_scenario(
+        BeginBehavior::Pending(material()),
+        KeyBehavior::Key(OLD_KEY.to_vec()),
+        None,
+        &submitted,
+        true,
+    );
+    assert_eq!(result, Ok(VerificationOutcome::Accepted));
+    assert_eq!(calls.last().map(String::as_str), Some("finish:accepted"));
+    assert_eq!(events.len(), 1);
+}
+
+#[test]
+fn verification_events_exclude_every_secret_and_omit_oversized_caller_identity() {
+    let stored = material();
+    let answer_mac = stored.answer_mac.clone();
+    let submitted = submission();
+    let (_result, _calls, events) = run_observed_scenario(
+        BeginBehavior::Pending(stored),
+        KeyBehavior::Key(OLD_KEY.to_vec()),
+        None,
+        &submitted,
+        false,
+    );
+    let formatted = format!("{:?}", events[0]);
+    for secret in [
+        "binding-secret-sentinel",
+        ANSWER,
+        "bm9uY2U",
+        "key-old",
+        std::str::from_utf8(OLD_KEY).unwrap(),
+        answer_mac.as_str(),
+    ] {
+        assert!(!formatted.contains(secret), "leaked {secret}");
+    }
+
+    let oversized_id = "challenge-private-material-sentinel".repeat(5);
+    let oversized = Submission {
+        challenge_id: oversized_id.clone(),
+        ..submission()
+    };
+    let (_result, _calls, events) = run_observed_scenario(
+        BeginBehavior::Rejected(LifecycleRejection::NotFound),
+        KeyBehavior::Key(OLD_KEY.to_vec()),
+        None,
+        &oversized,
+        false,
+    );
+    let ServiceEvent::VerificationCompleted(event) = &events[0] else {
+        panic!("unexpected event")
+    };
+    assert!(event.challenge_id.is_empty());
+    assert!(!format!("{event:?}").contains(&oversized_id));
+}
+
+#[test]
+fn elapsed_since_issue_is_omitted_when_stored_time_is_in_the_future() {
+    let mut stored = material();
+    stored.issued_at = i64::MAX - 1;
+    stored.expires_at = i64::MAX;
+    let context = MacContext {
+        challenge_id: stored.challenge_id.clone(),
+        generator_version: stored.generator_version.clone(),
+        nonce: stored.nonce.clone(),
+        issued_at: stored.issued_at,
+        expires_at: stored.expires_at,
+        mac_key_id: stored.mac_key_id.clone(),
+        answer_encoding: stored.answer_encoding,
+    };
+    stored.answer_mac = hex::encode(compute_answer_mac(OLD_KEY, &context, ANSWER).unwrap());
+    let submitted = submission();
+    let (result, _calls, events) = run_observed_scenario(
+        BeginBehavior::Pending(stored),
+        KeyBehavior::Key(OLD_KEY.to_vec()),
+        None,
+        &submitted,
+        false,
+    );
+    assert_eq!(result, Ok(VerificationOutcome::Accepted));
+    assert!(matches!(
+        &events[0],
+        ServiceEvent::VerificationCompleted(event) if event.elapsed_since_issue.is_none()
+    ));
 }
 
 #[test]

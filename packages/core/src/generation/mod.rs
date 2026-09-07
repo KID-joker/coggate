@@ -17,7 +17,9 @@ mod secret;
 mod test_random;
 
 pub use answer::evaluate_semantic_graph;
-pub(crate) use candidate::{CandidateError, generate_candidate_with, retry_candidates};
+pub(crate) use candidate::{
+    CandidateError, generate_candidate_with, retry_candidates_with_attempts,
+};
 pub use error::GenerationError;
 pub use graph::{NodeId, NodeKind, SemanticGraphBuilder, SemanticNode, ValidatedSemanticGraph};
 pub use operation::{MAX_CONCAT_INPUTS, MAX_PERMUTATION_LENGTH, MAX_XOR_KEY_LENGTH, Operation};

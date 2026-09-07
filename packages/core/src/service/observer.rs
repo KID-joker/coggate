@@ -1,4 +1,5 @@
 use std::time::Duration;
+use std::{panic::AssertUnwindSafe, panic::catch_unwind};
 
 use crate::generation::RenderLanguage;
 
@@ -13,6 +14,10 @@ pub struct NoopObserver;
 
 impl Observer for NoopObserver {
     fn observe(&mut self, _event: &ServiceEvent) {}
+}
+
+pub(super) fn observe_safely(observer: &mut impl Observer, event: &ServiceEvent) {
+    let _discarded_observer_panic = catch_unwind(AssertUnwindSafe(|| observer.observe(event)));
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

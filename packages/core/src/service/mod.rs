@@ -6,9 +6,13 @@ mod observer;
 mod runtime;
 mod version;
 
+use std::time::{Duration, Instant};
+
 use agentgate_contracts::{AnswerEncoding, PrivateChallengeMaterial, PublicChallenge};
 
-use crate::generation::{CandidateError, OsRandom, generate_candidate_with, retry_candidates};
+use crate::generation::{
+    CandidateError, OsRandom, generate_candidate_with, retry_candidates_with_attempts,
+};
 use crate::mac::validate_context_fields;
 use crate::{CoreError, MacContext, compute_answer_mac, verify_answer};
 
@@ -26,7 +30,6 @@ pub use observer::{
     ServiceFailureEvent, ServiceStage, VerificationDisposition, VerificationEvent,
 };
 
-#[expect(dead_code, reason = "consumed by Phase 4 orchestration")]
 pub struct ChallengeService<L, K, O = NoopObserver> {
     lifecycle: L,
     keys: K,
@@ -73,25 +76,123 @@ where
         random: &mut impl crate::generation::RandomSource,
         clock: impl FnOnce() -> Result<i64, ServiceError>,
     ) -> Result<PublicChallenge, ServiceError> {
-        request.validate()?;
-        version::dispatch_issue_version(request.version())?;
+        let started = Instant::now();
+        if let Err(error) = request.validate() {
+            self.observe_issue_failure(
+                started,
+                None,
+                safe_generator_version(request.version()),
+                ServiceStage::Request,
+                error,
+                0,
+            );
+            return Err(error);
+        }
+        if let Err(error) = version::dispatch_issue_version(request.version()) {
+            self.observe_issue_failure(
+                started,
+                None,
+                safe_generator_version(request.version()),
+                ServiceStage::VersionDispatch,
+                error,
+                0,
+            );
+            return Err(error);
+        }
 
-        let (candidate, _) =
-            retry_candidates(|| generate_candidate_with(random)).map_err(map_candidate_error)?;
+        let (candidate, candidate_attempts) =
+            match retry_candidates_with_attempts(|| generate_candidate_with(random)) {
+                Ok(success) => success,
+                Err((candidate_error, attempts)) => {
+                    let error = map_candidate_error(candidate_error);
+                    self.observe_issue_failure(
+                        started,
+                        None,
+                        safe_generator_version(request.version()),
+                        ServiceStage::Candidate,
+                        error,
+                        usize::from(attempts),
+                    );
+                    return Err(error);
+                }
+            };
 
-        let issued_at = clock()?;
-        let expires_at = issued_at
-            .checked_add(i64::from(agentgate_contracts::CHALLENGE_TTL_SECONDS))
-            .ok_or(ServiceError::InternalError)?;
-        let challenge_id =
-            runtime::random_token(random).map_err(|_| ServiceError::GenerationFailed)?;
-        let nonce = runtime::random_token(random).map_err(|_| ServiceError::GenerationFailed)?;
+        let issued_at = match clock() {
+            Ok(issued_at) => issued_at,
+            Err(error) => {
+                self.observe_issue_failure(
+                    started,
+                    None,
+                    safe_generator_version(request.version()),
+                    ServiceStage::Clock,
+                    error,
+                    usize::from(candidate_attempts),
+                );
+                return Err(error);
+            }
+        };
+        let expires_at =
+            match issued_at.checked_add(i64::from(agentgate_contracts::CHALLENGE_TTL_SECONDS)) {
+                Some(expires_at) => expires_at,
+                None => {
+                    let error = ServiceError::InternalError;
+                    self.observe_issue_failure(
+                        started,
+                        None,
+                        safe_generator_version(request.version()),
+                        ServiceStage::Clock,
+                        error,
+                        usize::from(candidate_attempts),
+                    );
+                    return Err(error);
+                }
+            };
+        let challenge_id = match runtime::random_token(random) {
+            Ok(challenge_id) => challenge_id,
+            Err(_) => {
+                let error = ServiceError::GenerationFailed;
+                self.observe_issue_failure(
+                    started,
+                    None,
+                    safe_generator_version(request.version()),
+                    ServiceStage::Candidate,
+                    error,
+                    usize::from(candidate_attempts),
+                );
+                return Err(error);
+            }
+        };
+        let nonce = match runtime::random_token(random) {
+            Ok(nonce) => nonce,
+            Err(_) => {
+                let error = ServiceError::GenerationFailed;
+                self.observe_issue_failure(
+                    started,
+                    safe_challenge_id_option(&challenge_id),
+                    safe_generator_version(request.version()),
+                    ServiceStage::Candidate,
+                    error,
+                    usize::from(candidate_attempts),
+                );
+                return Err(error);
+            }
+        };
 
-        let (mac_key_id, mac_key) = self
-            .keys
-            .active_key()
-            .map_err(map_active_key_error)?
-            .into_parts();
+        let (mac_key_id, mac_key) = match self.keys.active_key() {
+            Ok(active) => active.into_parts(),
+            Err(key_error) => {
+                let error = map_active_key_error(key_error);
+                self.observe_issue_failure(
+                    started,
+                    safe_challenge_id_option(&challenge_id),
+                    safe_generator_version(request.version()),
+                    ServiceStage::KeyProvider,
+                    error,
+                    usize::from(candidate_attempts),
+                );
+                return Err(error);
+            }
+        };
         let answer_encoding = AnswerEncoding::Base64Url;
         let context = MacContext {
             challenge_id: challenge_id.clone(),
@@ -102,8 +203,21 @@ where
             mac_key_id: mac_key_id.clone(),
             answer_encoding,
         };
-        let answer_mac = compute_answer_mac(mac_key.expose(), &context, candidate.answer())
-            .map_err(|_| ServiceError::InternalError)?;
+        let answer_mac = match compute_answer_mac(mac_key.expose(), &context, candidate.answer()) {
+            Ok(answer_mac) => answer_mac,
+            Err(_) => {
+                let error = ServiceError::InternalError;
+                self.observe_issue_failure(
+                    started,
+                    safe_challenge_id_option(&challenge_id),
+                    safe_generator_version(request.version()),
+                    ServiceStage::CoreVerification,
+                    error,
+                    usize::from(candidate_attempts),
+                );
+                return Err(error);
+            }
+        };
         let answer_mac = hex::encode(answer_mac);
         let generator_version = request.version().to_owned();
         let public = PublicChallenge {
@@ -126,11 +240,62 @@ where
             answer_encoding,
         };
 
-        self.lifecycle
+        if self
+            .lifecycle
             .store_issued(private, request.binding(), request.attempt_limit())
-            .map_err(|_| ServiceError::InternalError)?;
+            .is_err()
+        {
+            let error = ServiceError::InternalError;
+            self.observe_issue_failure(
+                started,
+                safe_challenge_id_option(&public.challenge_id),
+                safe_generator_version(&public.generator_version),
+                ServiceStage::LifecycleStore,
+                error,
+                usize::from(candidate_attempts),
+            );
+            return Err(error);
+        }
+
+        let metadata = candidate.render_metadata();
+        observer::observe_safely(
+            &mut self.observer,
+            &ServiceEvent::ChallengeIssued(ChallengeIssuedEvent {
+                challenge_id: public.challenge_id.clone(),
+                generator_version: public.generator_version.clone(),
+                secret_length_bucket: secret_length_bucket(candidate.secret_length()),
+                fragment_count: candidate.fragment_count(),
+                question_byte_length: metadata.byte_length(),
+                render_languages: metadata.languages().to_vec(),
+                has_distractor: metadata.has_distractor(),
+                candidate_attempts: usize::from(candidate_attempts),
+                duration: started.elapsed(),
+            }),
+        );
 
         Ok(public)
+    }
+
+    fn observe_issue_failure(
+        &mut self,
+        started: Instant,
+        challenge_id: Option<String>,
+        generator_version: Option<String>,
+        stage: ServiceStage,
+        error: ServiceError,
+        attempts: usize,
+    ) {
+        observer::observe_safely(
+            &mut self.observer,
+            &ServiceEvent::IssueFailed(ServiceFailureEvent {
+                challenge_id,
+                generator_version,
+                stage,
+                error,
+                attempts,
+                duration: started.elapsed(),
+            }),
+        );
     }
 
     pub fn verify_submission(
@@ -145,8 +310,29 @@ where
         request: VerifyRequest<'_>,
         clock: impl FnOnce() -> Result<i64, ServiceError>,
     ) -> Result<VerificationOutcome, ServiceError> {
-        request.validate()?;
-        let server_time = clock()?;
+        if let Err(error) = request.validate() {
+            self.observe_service_failure(
+                safe_challenge_id_option(&request.submission().challenge_id),
+                None,
+                ServiceStage::Request,
+                error,
+                Duration::ZERO,
+            );
+            return Err(error);
+        }
+        let server_time = match clock() {
+            Ok(server_time) => server_time,
+            Err(error) => {
+                self.observe_service_failure(
+                    safe_challenge_id_option(&request.submission().challenge_id),
+                    None,
+                    ServiceStage::Clock,
+                    error,
+                    Duration::ZERO,
+                );
+                return Err(error);
+            }
+        };
         let pending = match self.lifecycle.begin_attempt(
             SubmissionIdentity::from_submission(request.submission()),
             request.binding(),
@@ -154,68 +340,233 @@ where
         ) {
             Ok(pending) => pending,
             Err(BeginAttemptError::Rejected(reason)) => {
+                observer::observe_safely(
+                    &mut self.observer,
+                    &ServiceEvent::VerificationCompleted(VerificationEvent {
+                        challenge_id: safe_challenge_id(&request.submission().challenge_id),
+                        generator_version: None,
+                        disposition: VerificationDisposition::LifecycleRejected(reason),
+                        elapsed_since_issue: None,
+                        duration: Duration::ZERO,
+                    }),
+                );
                 return Ok(VerificationOutcome::Rejected(reason));
             }
-            Err(BeginAttemptError::Adapter(_)) => return Err(ServiceError::InternalError),
+            Err(BeginAttemptError::Adapter(_)) => {
+                let error = ServiceError::InternalError;
+                self.observe_service_failure(
+                    safe_challenge_id_option(&request.submission().challenge_id),
+                    None,
+                    ServiceStage::LifecycleBegin,
+                    error,
+                    Duration::ZERO,
+                );
+                return Err(error);
+            }
         };
         let (token, material) = pending.into_parts();
+        let challenge_id = safe_challenge_id(&material.challenge_id);
+        let generator_version = safe_generator_version(&material.generator_version);
+        let elapsed_since_issue = elapsed_since_issue(server_time, material.issued_at);
 
         if stored_material_is_invalid(&material) {
-            return self.finish_verification(
+            return self.finish_failed_verification(
                 token,
-                AttemptOutcome::SystemFailure,
-                Err(ServiceError::InvalidChallengeMaterial),
+                challenge_id,
+                generator_version,
+                ServiceStage::CoreVerification,
+                ServiceError::InvalidChallengeMaterial,
+                Duration::ZERO,
             );
         }
         if let Err(error) = version::dispatch_verify_version(&material.generator_version) {
-            return self.finish_verification(token, AttemptOutcome::SystemFailure, Err(error));
+            return self.finish_failed_verification(
+                token,
+                challenge_id,
+                generator_version,
+                ServiceStage::VersionDispatch,
+                error,
+                Duration::ZERO,
+            );
         }
 
         let key = match self.keys.key_by_id(&material.mac_key_id) {
             Ok(key) => key,
             Err(_) => {
-                return self.finish_verification(
+                return self.finish_failed_verification(
                     token,
-                    AttemptOutcome::SystemFailure,
-                    Err(ServiceError::InternalError),
+                    challenge_id,
+                    generator_version,
+                    ServiceStage::KeyProvider,
+                    ServiceError::InternalError,
+                    Duration::ZERO,
                 );
             }
         };
 
-        match verify_answer(key.expose(), &material, request.submission()) {
-            Ok(()) => self.finish_verification(
+        let core_started = Instant::now();
+        let core_result = verify_answer(key.expose(), &material, request.submission());
+        let core_duration = core_started.elapsed();
+        match core_result {
+            Ok(()) => self.finish_completed_verification(
                 token,
                 AttemptOutcome::Accepted,
                 Ok(VerificationOutcome::Accepted),
+                VerificationEvent {
+                    challenge_id,
+                    generator_version,
+                    disposition: VerificationDisposition::Accepted,
+                    elapsed_since_issue,
+                    duration: core_duration,
+                },
             ),
-            Err(CoreError::InvalidAnswerEncoding) => self.finish_verification(
+            Err(CoreError::InvalidAnswerEncoding) => self.finish_completed_verification(
                 token,
                 AttemptOutcome::Rejected,
                 Err(ServiceError::InvalidAnswerEncoding),
+                VerificationEvent {
+                    challenge_id,
+                    generator_version,
+                    disposition: VerificationDisposition::InvalidAnswerEncoding,
+                    elapsed_since_issue,
+                    duration: core_duration,
+                },
             ),
-            Err(CoreError::AnswerMismatch) => self.finish_verification(
+            Err(CoreError::AnswerMismatch) => self.finish_completed_verification(
                 token,
                 AttemptOutcome::Rejected,
                 Err(ServiceError::AnswerMismatch),
+                VerificationEvent {
+                    challenge_id,
+                    generator_version,
+                    disposition: VerificationDisposition::AnswerMismatch,
+                    elapsed_since_issue,
+                    duration: core_duration,
+                },
             ),
-            Err(CoreError::InvalidChallengeMaterial) => self.finish_verification(
+            Err(CoreError::InvalidChallengeMaterial) => self.finish_failed_verification(
                 token,
-                AttemptOutcome::SystemFailure,
-                Err(ServiceError::InvalidChallengeMaterial),
+                challenge_id,
+                generator_version,
+                ServiceStage::CoreVerification,
+                ServiceError::InvalidChallengeMaterial,
+                core_duration,
             ),
         }
     }
 
-    fn finish_verification(
+    fn finish_completed_verification(
         &mut self,
         token: L::AttemptToken,
         outcome: AttemptOutcome,
         result: Result<VerificationOutcome, ServiceError>,
+        event: VerificationEvent,
     ) -> Result<VerificationOutcome, ServiceError> {
-        self.lifecycle
-            .finish_attempt(token, outcome)
-            .map_err(|_| ServiceError::InternalError)?;
+        if self.lifecycle.finish_attempt(token, outcome).is_err() {
+            let error = ServiceError::InternalError;
+            self.observe_service_failure(
+                nonempty_option(event.challenge_id),
+                event.generator_version,
+                ServiceStage::LifecycleFinish,
+                error,
+                event.duration,
+            );
+            return Err(error);
+        }
+        observer::observe_safely(
+            &mut self.observer,
+            &ServiceEvent::VerificationCompleted(event),
+        );
         result
+    }
+
+    fn finish_failed_verification(
+        &mut self,
+        token: L::AttemptToken,
+        challenge_id: String,
+        generator_version: Option<String>,
+        stage: ServiceStage,
+        error: ServiceError,
+        duration: Duration,
+    ) -> Result<VerificationOutcome, ServiceError> {
+        if self
+            .lifecycle
+            .finish_attempt(token, AttemptOutcome::SystemFailure)
+            .is_err()
+        {
+            let finish_error = ServiceError::InternalError;
+            self.observe_service_failure(
+                nonempty_option(challenge_id),
+                generator_version,
+                ServiceStage::LifecycleFinish,
+                finish_error,
+                duration,
+            );
+            return Err(finish_error);
+        }
+        self.observe_service_failure(
+            nonempty_option(challenge_id),
+            generator_version,
+            stage,
+            error,
+            duration,
+        );
+        Err(error)
+    }
+
+    fn observe_service_failure(
+        &mut self,
+        challenge_id: Option<String>,
+        generator_version: Option<String>,
+        stage: ServiceStage,
+        error: ServiceError,
+        duration: Duration,
+    ) {
+        observer::observe_safely(
+            &mut self.observer,
+            &ServiceEvent::ServiceFailed(ServiceFailureEvent {
+                challenge_id,
+                generator_version,
+                stage,
+                error,
+                attempts: 0,
+                duration,
+            }),
+        );
+    }
+}
+
+fn safe_challenge_id(value: &str) -> String {
+    safe_challenge_id_option(value).unwrap_or_default()
+}
+
+fn safe_challenge_id_option(value: &str) -> Option<String> {
+    (!value.is_empty() && validate_context_fields(value, "", "", "").is_ok())
+        .then(|| value.to_owned())
+}
+
+fn safe_generator_version(value: &str) -> Option<String> {
+    (!value.is_empty() && validate_context_fields("", value, "", "").is_ok())
+        .then(|| value.to_owned())
+}
+
+fn nonempty_option(value: String) -> Option<String> {
+    (!value.is_empty()).then_some(value)
+}
+
+fn elapsed_since_issue(server_time: i64, issued_at: i64) -> Option<Duration> {
+    server_time
+        .checked_sub(issued_at)
+        .and_then(|seconds| u64::try_from(seconds).ok())
+        .map(Duration::from_secs)
+}
+
+fn secret_length_bucket(secret_length: usize) -> SecretLengthBucket {
+    match secret_length {
+        8..=10 => SecretLengthBucket::EightToTen,
+        11..=13 => SecretLengthBucket::ElevenToThirteen,
+        14..=16 => SecretLengthBucket::FourteenToSixteen,
+        _ => unreachable!("validated candidate secret length"),
     }
 }
 
@@ -379,6 +730,14 @@ mod tests {
         }
     }
 
+    struct CollectObserver(Rc<RefCell<Vec<ServiceEvent>>>);
+
+    impl Observer for CollectObserver {
+        fn observe(&mut self, event: &ServiceEvent) {
+            self.0.borrow_mut().push(event.clone());
+        }
+    }
+
     #[test]
     fn candidate_precedes_clock_and_tokens_key_and_single_store_follow_in_order() {
         let calls = Rc::new(RefCell::new(Vec::new()));
@@ -493,6 +852,51 @@ mod tests {
     }
 
     #[test]
+    fn token_and_clock_failures_emit_exact_stages_and_candidate_attempts() {
+        for clock_fails in [false, true] {
+            let calls = Rc::new(RefCell::new(Vec::new()));
+            let events = Rc::new(RefCell::new(Vec::new()));
+            let mut service = ChallengeService::with_observer(
+                TrackingLifecycle(Rc::clone(&calls)),
+                TrackingKeys(Rc::clone(&calls)),
+                CollectObserver(Rc::clone(&events)),
+            );
+            let mut random = TokenFailingRandom {
+                calls: Rc::clone(&calls),
+            };
+
+            let result =
+                service.issue_with(IssueRequest::v1(b"binding").unwrap(), &mut random, || {
+                    calls.borrow_mut().push(Call::Clock);
+                    if clock_fails {
+                        Err(ServiceError::InternalError)
+                    } else {
+                        Ok(1_000)
+                    }
+                });
+            assert_eq!(
+                result,
+                Err(if clock_fails {
+                    ServiceError::InternalError
+                } else {
+                    ServiceError::GenerationFailed
+                })
+            );
+            let events = events.borrow();
+            assert_eq!(events.len(), 1);
+            assert!(matches!(
+                &events[0],
+                ServiceEvent::IssueFailed(event)
+                    if event.stage == (if clock_fails {
+                        ServiceStage::Clock
+                    } else {
+                        ServiceStage::Candidate
+                    }) && event.attempts == 1
+            ));
+        }
+    }
+
+    #[test]
     fn candidate_errors_map_to_stable_service_categories() {
         for error in [
             CandidateError::Exhausted,
@@ -505,6 +909,20 @@ mod tests {
             map_candidate_error(CandidateError::Internal),
             ServiceError::InternalError
         );
+    }
+
+    #[test]
+    fn secret_length_buckets_cover_every_supported_boundary() {
+        for (length, expected) in [
+            (8, SecretLengthBucket::EightToTen),
+            (10, SecretLengthBucket::EightToTen),
+            (11, SecretLengthBucket::ElevenToThirteen),
+            (13, SecretLengthBucket::ElevenToThirteen),
+            (14, SecretLengthBucket::FourteenToSixteen),
+            (16, SecretLengthBucket::FourteenToSixteen),
+        ] {
+            assert_eq!(secret_length_bucket(length), expected);
+        }
     }
 
     #[test]

@@ -231,23 +231,107 @@ fn public_observer_and_event_surfaces_are_usable() {
         ServiceEvent::VerificationCompleted(verified),
         ServiceEvent::ServiceFailed(failure),
     ];
+    for event in &events {
+        let formatted = format!("{event:?}");
+        for secret in [
+            "tenant-binding",
+            "nonce-sentinel",
+            "answer-sentinel",
+            "key-id-sentinel",
+            "mac-sentinel",
+            "token-sentinel",
+        ] {
+            assert!(!formatted.contains(secret));
+        }
+    }
+    for error in [
+        ServiceError::InvalidConfiguration,
+        ServiceError::GenerationFailed,
+        ServiceError::InvalidChallengeMaterial,
+        ServiceError::InvalidAnswerEncoding,
+        ServiceError::AnswerMismatch,
+        ServiceError::UnsupportedGeneratorVersion,
+        ServiceError::InternalError,
+    ] {
+        let formatted = format!("{error:?} {error}");
+        assert!(!formatted.contains("adapter-arbitrary-text-sentinel"));
+        assert!(!formatted.contains("private-material-sentinel"));
+    }
     let mut observer = RecordingObserver::default();
     for event in &events {
         observer.observe(event);
     }
     assert_eq!(observer.event_count, 4);
-    assert!(matches!(
-        &events[0],
-        ServiceEvent::ChallengeIssued(event)
-            if event.fragment_count == 2 && event.render_languages == vec![RenderLanguage::Rust]
-    ));
-    assert!(matches!(
-        &events[2],
-        ServiceEvent::VerificationCompleted(VerificationEvent {
-            disposition: VerificationDisposition::LifecycleRejected(LifecycleRejection::Expired),
-            ..
+    let ServiceEvent::ChallengeIssued(ChallengeIssuedEvent {
+        challenge_id,
+        generator_version,
+        secret_length_bucket,
+        fragment_count,
+        question_byte_length,
+        render_languages,
+        has_distractor,
+        candidate_attempts,
+        duration,
+    }) = &events[0]
+    else {
+        panic!("expected issued event")
+    };
+    assert_eq!(challenge_id, "challenge-1");
+    assert_eq!(generator_version, "1.0");
+    assert_eq!(*secret_length_bucket, SecretLengthBucket::EightToTen);
+    assert_eq!(*fragment_count, 2);
+    assert_eq!(*question_byte_length, 64);
+    assert_eq!(render_languages, &[RenderLanguage::Rust]);
+    assert!(!has_distractor);
+    assert_eq!(*candidate_attempts, 1);
+    assert_eq!(*duration, Duration::from_millis(5));
+
+    let ServiceEvent::VerificationCompleted(VerificationEvent {
+        challenge_id,
+        generator_version,
+        disposition,
+        elapsed_since_issue,
+        duration,
+    }) = &events[2]
+    else {
+        panic!("expected verification event")
+    };
+    assert_eq!(challenge_id, "challenge-1");
+    assert_eq!(generator_version.as_deref(), Some("1.0"));
+    assert_eq!(
+        *disposition,
+        VerificationDisposition::LifecycleRejected(LifecycleRejection::Expired)
+    );
+    assert_eq!(*elapsed_since_issue, Some(Duration::from_secs(1)));
+    assert_eq!(*duration, Duration::from_millis(7));
+
+    for event in [&events[1], &events[3]] {
+        let (ServiceEvent::IssueFailed(ServiceFailureEvent {
+            challenge_id,
+            generator_version,
+            stage,
+            error,
+            attempts,
+            duration,
         })
-    ));
+        | ServiceEvent::ServiceFailed(ServiceFailureEvent {
+            challenge_id,
+            generator_version,
+            stage,
+            error,
+            attempts,
+            duration,
+        })) = event
+        else {
+            panic!("expected failure event")
+        };
+        assert_eq!(challenge_id.as_deref(), Some("challenge-1"));
+        assert_eq!(generator_version.as_deref(), Some("1.0"));
+        assert_eq!(*stage, ServiceStage::LifecycleStore);
+        assert_eq!(*error, ServiceError::InternalError);
+        assert_eq!(*attempts, 2);
+        assert_eq!(*duration, Duration::from_millis(6));
+    }
 
     let _with_observer = ChallengeService::with_observer(MemoryLifecycle, StaticKeys, observer);
     let _with_noop_observer =
