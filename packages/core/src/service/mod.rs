@@ -12,7 +12,8 @@ use agentgate_contracts::{AnswerEncoding, PrivateChallengeMaterial, PublicChalle
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 
 use crate::generation::{
-    CandidateError, OsRandom, generate_candidate_with, retry_candidates_with_attempts,
+    CandidateError, OsRandom, RenderMetadata, generate_candidate_with,
+    retry_candidates_with_attempts,
 };
 use crate::mac::validate_context_fields;
 use crate::{CoreError, MacContext, compute_answer_mac, verify_answer};
@@ -30,6 +31,27 @@ pub use observer::{
     ChallengeIssuedEvent, NoopObserver, Observer, SecretLengthBucket, ServiceEvent,
     ServiceFailureEvent, ServiceStage, VerificationDisposition, VerificationEvent,
 };
+
+struct PreparedCandidate {
+    question: String,
+    answer: String,
+    secret_length: usize,
+    fragment_count: usize,
+    render_metadata: RenderMetadata,
+}
+
+fn generate_issue_candidate(
+    random: &mut impl crate::generation::RandomSource,
+) -> Result<PreparedCandidate, CandidateError> {
+    let candidate = generate_candidate_with(random)?;
+    Ok(PreparedCandidate {
+        question: candidate.question().to_owned(),
+        answer: candidate.answer().to_owned(),
+        secret_length: candidate.secret_length(),
+        fragment_count: candidate.fragment_count(),
+        render_metadata: candidate.render_metadata().clone(),
+    })
+}
 
 pub struct ChallengeService<L, K, O = NoopObserver> {
     lifecycle: L,
@@ -82,58 +104,13 @@ where
         })
     }
 
-    #[cfg(test)]
-    fn issue_with_candidate_factory<R: crate::generation::RandomSource>(
-        &mut self,
-        request: IssueRequest<'_>,
-        random: &mut R,
-        clock: impl FnOnce() -> Result<i64, ServiceError>,
-        candidate_factory: impl FnMut(
-            &mut R,
-        )
-            -> Result<crate::generation::ChallengeCandidate, CandidateError>,
-    ) -> Result<PublicChallenge, ServiceError> {
-        self.issue_with_candidate_factory_timing(
-            request,
-            random,
-            clock,
-            Instant::now,
-            |started, finished| finished.saturating_duration_since(started),
-            candidate_factory,
-        )
-    }
-
     fn issue_with_timing<T: Copy>(
         &mut self,
         request: IssueRequest<'_>,
         random: &mut impl crate::generation::RandomSource,
         clock: impl FnOnce() -> Result<i64, ServiceError>,
-        now: impl FnMut() -> T,
-        duration_between: impl Fn(T, T) -> Duration,
-    ) -> Result<PublicChallenge, ServiceError> {
-        self.issue_with_candidate_factory_timing(
-            request,
-            random,
-            clock,
-            now,
-            duration_between,
-            generate_candidate_with,
-        )
-    }
-
-    fn issue_with_candidate_factory_timing<T: Copy, R: crate::generation::RandomSource>(
-        &mut self,
-        request: IssueRequest<'_>,
-        random: &mut R,
-        clock: impl FnOnce() -> Result<i64, ServiceError>,
         mut now: impl FnMut() -> T,
         duration_between: impl Fn(T, T) -> Duration,
-        mut candidate_factory: impl FnMut(
-            &mut R,
-        ) -> Result<
-            crate::generation::ChallengeCandidate,
-            CandidateError,
-        >,
     ) -> Result<PublicChallenge, ServiceError> {
         let operation_started = now();
         if let Err(error) = request.validate() {
@@ -159,7 +136,7 @@ where
 
         let candidate_started = now();
         let (candidate, candidate_attempts) =
-            match retry_candidates_with_attempts(|| candidate_factory(random)) {
+            match retry_candidates_with_attempts(|| generate_issue_candidate(random)) {
                 Ok(success) => success,
                 Err((candidate_error, attempts)) => {
                     let error = map_candidate_error(candidate_error);
@@ -175,6 +152,91 @@ where
             };
         let candidate_duration = duration_between(candidate_started, now());
 
+        self.complete_issue(
+            request,
+            random,
+            clock,
+            (now, duration_between, operation_started),
+            (candidate, candidate_attempts, candidate_duration),
+        )
+    }
+
+    #[cfg(test)]
+    fn issue_with_candidate_factory<R: crate::generation::RandomSource>(
+        &mut self,
+        request: IssueRequest<'_>,
+        random: &mut R,
+        clock: impl FnOnce() -> Result<i64, ServiceError>,
+        mut candidate_factory: impl FnMut(&mut R) -> Result<PreparedCandidate, CandidateError>,
+    ) -> Result<PublicChallenge, ServiceError> {
+        let operation_started = Instant::now();
+        if let Err(error) = request.validate() {
+            self.observe_issue_failure(
+                operation_started.elapsed(),
+                safe_generator_version(request.version()),
+                ServiceStage::Request,
+                error,
+                0,
+            );
+            return Err(error);
+        }
+        if let Err(error) = version::dispatch_issue_version(request.version()) {
+            self.observe_issue_failure(
+                operation_started.elapsed(),
+                safe_generator_version(request.version()),
+                ServiceStage::VersionDispatch,
+                error,
+                0,
+            );
+            return Err(error);
+        }
+
+        let candidate_started = Instant::now();
+        let (candidate, candidate_attempts) =
+            match retry_candidates_with_attempts(|| candidate_factory(random)) {
+                Ok(success) => success,
+                Err((candidate_error, attempts)) => {
+                    let error = map_candidate_error(candidate_error);
+                    self.observe_issue_failure(
+                        operation_started.elapsed(),
+                        safe_generator_version(request.version()),
+                        ServiceStage::Candidate,
+                        error,
+                        usize::from(attempts),
+                    );
+                    return Err(error);
+                }
+            };
+        let candidate_duration = candidate_started.elapsed();
+
+        self.complete_issue(
+            request,
+            random,
+            clock,
+            (
+                Instant::now,
+                |started, finished| finished.saturating_duration_since(started),
+                operation_started,
+            ),
+            (candidate, candidate_attempts, candidate_duration),
+        )
+    }
+
+    fn complete_issue<
+        T: Copy,
+        R: crate::generation::RandomSource,
+        N: FnMut() -> T,
+        D: Fn(T, T) -> Duration,
+    >(
+        &mut self,
+        request: IssueRequest<'_>,
+        random: &mut R,
+        clock: impl FnOnce() -> Result<i64, ServiceError>,
+        timing: (N, D, T),
+        candidate_result: (PreparedCandidate, u8, Duration),
+    ) -> Result<PublicChallenge, ServiceError> {
+        let (mut now, duration_between, operation_started) = timing;
+        let (candidate, candidate_attempts, candidate_duration) = candidate_result;
         let issued_at = match clock() {
             Ok(issued_at) => issued_at,
             Err(error) => {
@@ -256,7 +318,7 @@ where
             mac_key_id: mac_key_id.clone(),
             answer_encoding,
         };
-        let answer_mac = match compute_answer_mac(mac_key.expose(), &context, candidate.answer()) {
+        let answer_mac = match compute_answer_mac(mac_key.expose(), &context, &candidate.answer) {
             Ok(answer_mac) => answer_mac,
             Err(_) => {
                 let error = ServiceError::InternalError;
@@ -278,7 +340,7 @@ where
             nonce: nonce.clone(),
             issued_at,
             expires_at,
-            question: candidate.question().to_owned(),
+            question: candidate.question.clone(),
             answer_encoding,
         };
         let private = PrivateChallengeMaterial {
@@ -308,14 +370,14 @@ where
             return Err(error);
         }
 
-        let metadata = candidate.render_metadata();
+        let metadata = &candidate.render_metadata;
         observer::observe_safely(
             &mut self.observer,
             &ServiceEvent::ChallengeIssued(ChallengeIssuedEvent {
                 challenge_id: public.challenge_id.clone(),
                 generator_version: public.generator_version.clone(),
-                secret_length_bucket: secret_length_bucket(candidate.secret_length()),
-                fragment_count: candidate.fragment_count(),
+                secret_length_bucket: secret_length_bucket(candidate.secret_length),
+                fragment_count: candidate.fragment_count,
                 question_byte_length: metadata.byte_length(),
                 render_languages: metadata.languages().to_vec(),
                 has_distractor: metadata.has_distractor(),
@@ -1147,11 +1209,14 @@ mod tests {
     #[test]
     fn deterministic_issuance_preserves_all_v1_properties_across_seed_sweep() {
         let mut representative_outputs = Vec::new();
+        let mut covered_secret_lengths = std::collections::BTreeSet::new();
 
         for seed in 0_u8..=127 {
             let seed = [seed; 32];
             let mut replay_random = DeterministicRandom::new(seed);
             let replay = generate_candidate_with(&mut replay_random).unwrap();
+            let expected_challenge_id = runtime::random_token(&mut replay_random).unwrap();
+            let expected_nonce = runtime::random_token(&mut replay_random).unwrap();
 
             let issue_once = || {
                 let material = Rc::new(RefCell::new(None));
@@ -1182,6 +1247,8 @@ mod tests {
             let (public, material, event) = first;
 
             assert_eq!(public.expires_at - public.issued_at, 15);
+            assert_eq!(public.challenge_id, expected_challenge_id);
+            assert_eq!(public.nonce, expected_nonce);
             for token in [&public.challenge_id, &public.nonce] {
                 assert_eq!(URL_SAFE_NO_PAD.decode(token).unwrap().len(), 16);
             }
@@ -1202,6 +1269,7 @@ mod tests {
                 Ok(())
             );
             assert!((8..=16).contains(&replay.secret_length()));
+            covered_secret_lengths.insert(replay.secret_length());
             assert_eq!(
                 replay.fragment_count(),
                 usize::from(
@@ -1220,8 +1288,16 @@ mod tests {
             assert_eq!(metadata.question_byte_length, public.question.len());
             assert_eq!(metadata.fragment_count, replay.fragment_count());
             assert_eq!(
+                metadata.secret_length_bucket,
+                secret_length_bucket(replay.secret_length())
+            );
+            assert_eq!(
                 metadata.render_languages,
                 replay.render_metadata().languages()
+            );
+            assert_eq!(
+                metadata.has_distractor,
+                replay.render_metadata().has_distractor()
             );
             assert_eq!(metadata.candidate_attempts, 1);
 
@@ -1236,11 +1312,24 @@ mod tests {
             }
         }
 
+        assert_eq!(covered_secret_lengths, (8_usize..=16).collect());
         assert!(
             representative_outputs
                 .windows(2)
-                .any(|pair| pair[0] != pair[1]),
-            "representative seeds must vary at least one permitted output"
+                .any(|pair| pair[0].0 != pair[1].0),
+            "representative seeds must vary rendered questions"
+        );
+        assert!(
+            representative_outputs
+                .windows(2)
+                .any(|pair| pair[0].1 != pair[1].1),
+            "representative seeds must vary challenge IDs"
+        );
+        assert!(
+            representative_outputs
+                .windows(2)
+                .any(|pair| pair[0].2 != pair[1].2),
+            "representative seeds must vary nonces"
         );
     }
 
@@ -1265,7 +1354,7 @@ mod tests {
                     if calls < 8 {
                         Err(CandidateError::Rejected)
                     } else {
-                        generate_candidate_with(random)
+                        generate_issue_candidate(random)
                     }
                 },
             )
@@ -1328,7 +1417,7 @@ mod tests {
 
     #[test]
     fn key_and_storage_failures_do_not_restart_candidate_generation() {
-        let mut candidate_calls = 0;
+        let mut key_failure_candidate_calls = 0;
         let mut key_failing_service = ChallengeService::new(
             TrackingLifecycle(Rc::new(RefCell::new(Vec::new()))),
             FailingActiveKeys,
@@ -1340,14 +1429,15 @@ mod tests {
                 &mut random,
                 || Ok(10_000),
                 |random| {
-                    candidate_calls += 1;
-                    generate_candidate_with(random)
+                    key_failure_candidate_calls += 1;
+                    generate_issue_candidate(random)
                 },
             ),
             Err(ServiceError::InternalError)
         );
-        assert_eq!(candidate_calls, 1);
+        assert_eq!(key_failure_candidate_calls, 1);
 
+        let mut store_failure_candidate_calls = 0;
         let now = Rc::new(Cell::new(Duration::ZERO));
         let mut store_failing_service = ChallengeService::new(
             TimingLifecycle {
@@ -1363,13 +1453,13 @@ mod tests {
                 &mut random,
                 || Ok(10_000),
                 |random| {
-                    candidate_calls += 1;
-                    generate_candidate_with(random)
+                    store_failure_candidate_calls += 1;
+                    generate_issue_candidate(random)
                 },
             ),
             Err(ServiceError::InternalError)
         );
-        assert_eq!(candidate_calls, 2);
+        assert_eq!(store_failure_candidate_calls, 1);
     }
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
