@@ -1,5 +1,5 @@
 [workspace]
-members = ["packages/contracts", "packages/core"]
+members = ["packages/contracts", "packages/core", "packages/ffi"]
 resolver = "2"
 
 [workspace.package]
