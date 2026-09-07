@@ -384,6 +384,24 @@ fn unsupported_stored_versions_are_exact_and_fail_before_key_lookup() {
 }
 
 #[test]
+fn oversized_stored_generator_version_is_invalid_before_dispatch_or_key_lookup() {
+    let mut stored = material();
+    stored.generator_version = "v".repeat(33);
+    let submitted = submission();
+
+    let (result, calls, active_calls) = run_scenario(
+        BeginBehavior::Pending(stored),
+        KeyBehavior::Key(OLD_KEY.to_vec()),
+        None,
+        &submitted,
+    );
+
+    assert_eq!(result, Err(ServiceError::InvalidChallengeMaterial));
+    assert_eq!(calls[1..], ["finish:systemfailure"]);
+    assert_eq!(active_calls, 0);
+}
+
+#[test]
 fn old_key_lookup_failures_never_fall_back_to_the_active_key() {
     for error in [
         KeyProviderError::Unavailable,
@@ -413,20 +431,23 @@ fn finish_failure_overrides_accepted_rejected_and_system_results() {
             BeginBehavior::Pending(material()),
             KeyBehavior::Key(OLD_KEY.to_vec()),
             submitted,
+            "finish:accepted",
         ),
         (
             BeginBehavior::Pending(material()),
             KeyBehavior::Key(OLD_KEY.to_vec()),
             wrong,
+            "finish:rejected",
         ),
         (
             BeginBehavior::Pending(material()),
             KeyBehavior::Error(KeyProviderError::Unavailable),
             submission(),
+            "finish:systemfailure",
         ),
     ];
 
-    for (begin, keys, submitted) in scenarios {
+    for (begin, keys, submitted, expected_finish) in scenarios {
         let (result, calls, active_calls) = run_scenario(
             begin,
             keys,
@@ -434,7 +455,7 @@ fn finish_failure_overrides_accepted_rejected_and_system_results() {
             &submitted,
         );
         assert_eq!(result, Err(ServiceError::InternalError));
-        assert!(calls.last().unwrap().starts_with("finish:"));
+        assert_eq!(calls.last().map(String::as_str), Some(expected_finish));
         assert_eq!(active_calls, 0);
     }
 }

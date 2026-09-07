@@ -9,6 +9,7 @@ mod version;
 use agentgate_contracts::{AnswerEncoding, PrivateChallengeMaterial, PublicChallenge};
 
 use crate::generation::{CandidateError, OsRandom, generate_candidate_with, retry_candidates};
+use crate::mac::validate_context_fields;
 use crate::{CoreError, MacContext, compute_answer_mac, verify_answer};
 
 pub use error::{
@@ -159,15 +160,15 @@ where
         };
         let (token, material) = pending.into_parts();
 
-        if let Err(error) = version::dispatch_verify_version(&material.generator_version) {
-            return self.finish_verification(token, AttemptOutcome::SystemFailure, Err(error));
-        }
-        if !stored_material_has_valid_bounds(&material) {
+        if stored_material_is_invalid(&material) {
             return self.finish_verification(
                 token,
                 AttemptOutcome::SystemFailure,
                 Err(ServiceError::InvalidChallengeMaterial),
             );
+        }
+        if let Err(error) = version::dispatch_verify_version(&material.generator_version) {
+            return self.finish_verification(token, AttemptOutcome::SystemFailure, Err(error));
         }
 
         let key = match self.keys.key_by_id(&material.mac_key_id) {
@@ -218,17 +219,18 @@ where
     }
 }
 
-fn stored_material_has_valid_bounds(material: &PrivateChallengeMaterial) -> bool {
-    const MAX_CHALLENGE_ID_BYTES: usize = 128;
-    const MAX_NONCE_BYTES: usize = 256;
-
-    !material.challenge_id.is_empty()
-        && material.challenge_id.len() <= MAX_CHALLENGE_ID_BYTES
-        && !material.nonce.is_empty()
-        && material.nonce.len() <= MAX_NONCE_BYTES
-        && !material.mac_key_id.is_empty()
-        && material.mac_key_id.len() <= MAX_MAC_KEY_ID_BYTES
-        && material.expires_at >= material.issued_at
+fn stored_material_is_invalid(material: &PrivateChallengeMaterial) -> bool {
+    validate_context_fields(
+        &material.challenge_id,
+        &material.generator_version,
+        &material.nonce,
+        &material.mac_key_id,
+    )
+    .is_err()
+        || material.challenge_id.is_empty()
+        || material.nonce.is_empty()
+        || material.mac_key_id.is_empty()
+        || material.expires_at < material.issued_at
 }
 
 fn map_candidate_error(error: CandidateError) -> ServiceError {

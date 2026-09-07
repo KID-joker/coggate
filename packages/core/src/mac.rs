@@ -8,7 +8,7 @@ const DOMAIN: &[u8] = b"agentgate-answer-v1";
 const MAX_CHALLENGE_ID_BYTES: usize = 128;
 const MAX_GENERATOR_VERSION_BYTES: usize = 32;
 const MAX_NONCE_BYTES: usize = 256;
-const MAX_MAC_KEY_ID_BYTES: usize = 128;
+pub(crate) const MAX_MAC_KEY_ID_BYTES: usize = 128;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MacContext {
@@ -27,15 +27,17 @@ fn answer_encoding_label(encoding: AnswerEncoding) -> &'static [u8] {
     }
 }
 
-fn validate_context(context: &MacContext) -> Result<(), CoreError> {
+pub(crate) fn validate_context_fields(
+    challenge_id: &str,
+    generator_version: &str,
+    nonce: &str,
+    mac_key_id: &str,
+) -> Result<(), CoreError> {
     let fields = [
-        (context.challenge_id.as_bytes(), MAX_CHALLENGE_ID_BYTES),
-        (
-            context.generator_version.as_bytes(),
-            MAX_GENERATOR_VERSION_BYTES,
-        ),
-        (context.nonce.as_bytes(), MAX_NONCE_BYTES),
-        (context.mac_key_id.as_bytes(), MAX_MAC_KEY_ID_BYTES),
+        (challenge_id.as_bytes(), MAX_CHALLENGE_ID_BYTES),
+        (generator_version.as_bytes(), MAX_GENERATOR_VERSION_BYTES),
+        (nonce.as_bytes(), MAX_NONCE_BYTES),
+        (mac_key_id.as_bytes(), MAX_MAC_KEY_ID_BYTES),
     ];
 
     fields
@@ -61,7 +63,12 @@ pub fn compute_answer_mac(
         return Err(CoreError::InvalidChallengeMaterial);
     }
 
-    validate_context(context)?;
+    validate_context_fields(
+        &context.challenge_id,
+        &context.generator_version,
+        &context.nonce,
+        &context.mac_key_id,
+    )?;
     let canonical_answer = canonicalize_answer(context.answer_encoding, answer)?;
     let answer_encoding = answer_encoding_label(context.answer_encoding);
     let mut mac =

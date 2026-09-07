@@ -2,7 +2,7 @@ use std::fmt;
 
 use super::KeyProviderError;
 
-pub const MAX_MAC_KEY_ID_BYTES: usize = 128;
+pub const MAX_MAC_KEY_ID_BYTES: usize = crate::mac::MAX_MAC_KEY_ID_BYTES;
 pub const MIN_MAC_KEY_BYTES: usize = 32;
 
 pub struct MacKey(Vec<u8>);
