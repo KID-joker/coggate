@@ -147,6 +147,34 @@ fn request_constructors_enforce_exact_binding_boundaries() {
 }
 
 #[test]
+fn verify_request_rejects_oversized_submission_identity_fields() {
+    let oversized_id = Submission {
+        challenge_id: "c".repeat(129),
+        ..submission()
+    };
+    assert_eq!(
+        VerifyRequest::new(&oversized_id, b"tenant-binding").map(|_| ()),
+        Err(ServiceError::InvalidChallengeMaterial)
+    );
+
+    let oversized_nonce = Submission {
+        nonce: "n".repeat(257),
+        ..submission()
+    };
+    assert_eq!(
+        VerifyRequest::new(&oversized_nonce, b"tenant-binding").map(|_| ()),
+        Err(ServiceError::InvalidChallengeMaterial)
+    );
+
+    let bounded = Submission {
+        challenge_id: "c".repeat(128),
+        nonce: "n".repeat(256),
+        ..submission()
+    };
+    assert!(VerifyRequest::new(&bounded, b"tenant-binding").is_ok());
+}
+
+#[test]
 fn public_key_constructors_enforce_exact_boundaries_and_redact_values() {
     assert_eq!(
         MacKey::new(vec![1; 31]).map(|_| ()),

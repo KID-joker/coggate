@@ -633,7 +633,7 @@ where
 }
 
 fn safe_challenge_id(value: &str) -> String {
-    if !is_canonical_challenge_id_with(value, |value, decoded| {
+    if !is_canonical_random_token_with(value, |value, decoded| {
         URL_SAFE_NO_PAD.decode_slice(value, decoded) == Ok(decoded.len())
     }) {
         return String::new();
@@ -642,7 +642,7 @@ fn safe_challenge_id(value: &str) -> String {
     value.to_owned()
 }
 
-fn is_canonical_challenge_id_with(
+fn is_canonical_random_token_with(
     value: &str,
     decode: impl FnOnce(&str, &mut [u8; 16]) -> bool,
 ) -> bool {
@@ -698,6 +698,17 @@ fn stored_material_is_invalid(material: &PrivateChallengeMaterial) -> bool {
         || material.challenge_id.is_empty()
         || material.nonce.is_empty()
         || material.mac_key_id.is_empty()
+        || !is_canonical_random_token_with(&material.challenge_id, |value, decoded| {
+            URL_SAFE_NO_PAD.decode_slice(value, decoded) == Ok(decoded.len())
+        })
+        || !is_canonical_random_token_with(&material.nonce, |value, decoded| {
+            URL_SAFE_NO_PAD.decode_slice(value, decoded) == Ok(decoded.len())
+        })
+        || material.answer_mac.len() != 64
+        || !material
+            .answer_mac
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
         || material.expires_at < material.issued_at
 }
 
@@ -1173,7 +1184,7 @@ mod tests {
     #[test]
     fn oversized_observer_token_is_rejected_in_constant_bounded_time() {
         let oversized = "A".repeat(1024 * 1024);
-        assert!(!is_canonical_challenge_id_with(
+        assert!(!is_canonical_random_token_with(
             &oversized,
             |_value, _decoded| panic!("oversized IDs must be rejected before decoding")
         ));

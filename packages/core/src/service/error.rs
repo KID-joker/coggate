@@ -12,7 +12,8 @@ pub enum ServiceError {
     InvalidConfiguration,
     /// Challenge generation or its cryptographic randomness failed.
     GenerationFailed,
-    /// Persisted private challenge material is malformed or inconsistent.
+    /// Submitted identity or persisted private challenge material is malformed
+    /// or inconsistent.
     InvalidChallengeMaterial,
     /// The submitted answer is not canonical unpadded base64url.
     InvalidAnswerEncoding,

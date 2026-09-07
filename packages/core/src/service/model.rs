@@ -88,14 +88,17 @@ impl fmt::Debug for IssueRequest<'_> {
 /// Borrowed parameters for verifying a submission.
 ///
 /// The binding must contain 1 through [`MAX_BINDING_BYTES`] bytes and must
-/// exactly match the value stored during issuance. It is redacted from `Debug`.
+/// exactly match the value stored during issuance. Challenge IDs are bounded to
+/// 128 bytes and nonces to 256 bytes before the lifecycle adapter is called. The
+/// binding is redacted from `Debug`.
 pub struct VerifyRequest<'a> {
     submission: &'a Submission,
     binding: &'a [u8],
 }
 
 impl<'a> VerifyRequest<'a> {
-    /// Creates a verification request after validating the binding.
+    /// Creates a verification request after validating binding and identity
+    /// field bounds.
     pub fn new(submission: &'a Submission, binding: &'a [u8]) -> Result<Self, ServiceError> {
         let request = Self {
             submission,
@@ -117,6 +120,11 @@ impl<'a> VerifyRequest<'a> {
     pub(crate) fn validate(&self) -> Result<(), ServiceError> {
         if self.binding.is_empty() || self.binding.len() > MAX_BINDING_BYTES {
             return Err(ServiceError::InvalidConfiguration);
+        }
+        if self.submission.challenge_id.len() > crate::mac::MAX_CHALLENGE_ID_BYTES
+            || self.submission.nonce.len() > crate::mac::MAX_NONCE_BYTES
+        {
+            return Err(ServiceError::InvalidChallengeMaterial);
         }
         Ok(())
     }

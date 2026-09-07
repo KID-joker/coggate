@@ -5,9 +5,9 @@ use sha2::Sha256;
 use crate::{CoreError, canonicalize_answer};
 
 const DOMAIN: &[u8] = b"agentgate-answer-v1";
-const MAX_CHALLENGE_ID_BYTES: usize = 128;
+pub(crate) const MAX_CHALLENGE_ID_BYTES: usize = 128;
 const MAX_GENERATOR_VERSION_BYTES: usize = 32;
-const MAX_NONCE_BYTES: usize = 256;
+pub(crate) const MAX_NONCE_BYTES: usize = 256;
 pub(crate) const MAX_MAC_KEY_ID_BYTES: usize = 128;
 
 #[derive(Clone, Debug, Eq, PartialEq)]

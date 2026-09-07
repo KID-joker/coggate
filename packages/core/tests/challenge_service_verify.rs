@@ -11,12 +11,13 @@ use agentgate_core::{
 const OLD_KEY: &[u8; 32] = b"0123456789abcdef0123456789abcdef";
 const ANSWER: &str = "YUI5MmtM";
 const CHALLENGE_ID: &str = "Y2hhbGxlbmdlLTEyMzQ1Ng";
+const NONCE: &str = "bm9uY2UtMTIzNDU2Nzg5MA";
 
 fn material() -> PrivateChallengeMaterial {
     let context = MacContext {
         challenge_id: CHALLENGE_ID.to_owned(),
         generator_version: "1.0".to_owned(),
-        nonce: "bm9uY2U".to_owned(),
+        nonce: NONCE.to_owned(),
         issued_at: 1_788_062_400,
         expires_at: 1_788_062_408,
         mac_key_id: "key-old".to_owned(),
@@ -37,7 +38,7 @@ fn material() -> PrivateChallengeMaterial {
 fn submission() -> Submission {
     Submission {
         challenge_id: CHALLENGE_ID.to_owned(),
-        nonce: "bm9uY2U".to_owned(),
+        nonce: NONCE.to_owned(),
         answer: ANSWER.to_owned(),
     }
 }
@@ -66,7 +67,7 @@ impl LifecycleAdapter for RecordingLifecycle {
         _server_time: i64,
     ) -> Result<PendingAttempt<Self::AttemptToken>, BeginAttemptError> {
         assert_eq!(identity.challenge_id(), CHALLENGE_ID);
-        assert_eq!(identity.nonce(), "bm9uY2U");
+        assert_eq!(identity.nonce(), NONCE);
         assert_eq!(binding, b"tenant-binding");
         self.calls.borrow_mut().push("begin".to_owned());
         Ok(self.pending.take().unwrap())
@@ -527,7 +528,7 @@ fn observer_panics_do_not_change_verification_result_or_durable_finish() {
 }
 
 #[test]
-fn verification_events_exclude_every_secret_and_omit_oversized_caller_identity() {
+fn verification_events_exclude_every_secret_and_requests_reject_oversized_caller_identity() {
     let stored = material();
     let answer_mac = stored.answer_mac.clone();
     let submitted = submission();
@@ -542,7 +543,7 @@ fn verification_events_exclude_every_secret_and_omit_oversized_caller_identity()
     for secret in [
         "binding-secret-sentinel",
         ANSWER,
-        "bm9uY2U",
+        NONCE,
         "key-old",
         std::str::from_utf8(OLD_KEY).unwrap(),
         answer_mac.as_str(),
@@ -555,18 +556,10 @@ fn verification_events_exclude_every_secret_and_omit_oversized_caller_identity()
         challenge_id: oversized_id.clone(),
         ..submission()
     };
-    let (_result, _calls, events) = run_observed_scenario(
-        BeginBehavior::Rejected(LifecycleRejection::NotFound),
-        KeyBehavior::Key(OLD_KEY.to_vec()),
-        None,
-        &oversized,
-        false,
+    assert_eq!(
+        VerifyRequest::new(&oversized, b"tenant-binding").map(|_| ()),
+        Err(ServiceError::InvalidChallengeMaterial)
     );
-    let ServiceEvent::VerificationCompleted(event) = &events[0] else {
-        panic!("unexpected event")
-    };
-    assert!(event.challenge_id.is_empty());
-    assert!(!format!("{event:?}").contains(&oversized_id));
 }
 
 #[test]
@@ -616,7 +609,7 @@ fn lifecycle_rejection_omits_noncanonical_and_log_injection_challenge_ids() {
 }
 
 #[test]
-fn accepted_completion_omits_a_noncanonical_stored_challenge_id() {
+fn noncanonical_stored_challenge_id_fails_before_key_lookup() {
     let mut stored = material();
     stored.challenge_id = "short".to_owned();
     let context = MacContext {
@@ -634,7 +627,7 @@ fn accepted_completion_omits_a_noncanonical_stored_challenge_id() {
         ..submission()
     };
 
-    let (result, _calls, events) = run_observed_scenario(
+    let (result, calls, events) = run_observed_scenario(
         BeginBehavior::Pending(stored),
         KeyBehavior::Key(OLD_KEY.to_vec()),
         None,
@@ -642,13 +635,46 @@ fn accepted_completion_omits_a_noncanonical_stored_challenge_id() {
         false,
     );
 
-    assert_eq!(result, Ok(VerificationOutcome::Accepted));
+    assert_eq!(result, Err(ServiceError::InvalidChallengeMaterial));
+    assert_eq!(calls[1..], ["finish:systemfailure"]);
     assert!(matches!(
         &events[0],
-        ServiceEvent::VerificationCompleted(event)
-            if event.challenge_id.is_empty()
-                && event.generator_version.as_deref() == Some("1.0")
+        ServiceEvent::ServiceFailed(event)
+            if event.challenge_id.is_none()
+                && event.generator_version.is_none()
+                && event.error == ServiceError::InvalidChallengeMaterial
     ));
+}
+
+#[test]
+fn noncanonical_stored_nonce_fails_before_key_lookup() {
+    let mut stored = material();
+    stored.nonce = "short".to_owned();
+    let context = MacContext {
+        challenge_id: stored.challenge_id.clone(),
+        generator_version: stored.generator_version.clone(),
+        nonce: stored.nonce.clone(),
+        issued_at: stored.issued_at,
+        expires_at: stored.expires_at,
+        mac_key_id: stored.mac_key_id.clone(),
+        answer_encoding: stored.answer_encoding,
+    };
+    stored.answer_mac = hex::encode(compute_answer_mac(OLD_KEY, &context, ANSWER).unwrap());
+    let submitted = Submission {
+        nonce: "short".to_owned(),
+        ..submission()
+    };
+
+    let (result, calls, active_calls) = run_scenario(
+        BeginBehavior::Pending(stored),
+        KeyBehavior::Key(OLD_KEY.to_vec()),
+        None,
+        &submitted,
+    );
+
+    assert_eq!(result, Err(ServiceError::InvalidChallengeMaterial));
+    assert_eq!(calls[1..], ["finish:systemfailure"]);
+    assert_eq!(active_calls, 0);
 }
 
 #[test]
@@ -701,7 +727,7 @@ fn maps_every_lifecycle_rejection_without_key_lookup_or_finish() {
 
         assert_eq!(result, Ok(VerificationOutcome::Rejected(reason)));
         assert_eq!(calls.len(), 1);
-        assert!(calls[0].starts_with(&format!("begin:{CHALLENGE_ID}:bm9uY2U:tenant-binding:")));
+        assert!(calls[0].starts_with(&format!("begin:{CHALLENGE_ID}:{NONCE}:tenant-binding:")));
         assert_eq!(active_calls, 0);
     }
 }
@@ -754,20 +780,10 @@ fn malformed_mac_and_oversized_material_finish_as_system_failures() {
     malformed_mac.answer_mac = "not-hex".to_owned();
     let mut oversized_nonce = material();
     oversized_nonce.nonce = "n".repeat(257);
-    let mut oversized_submission = submission();
-    oversized_submission.nonce = oversized_nonce.nonce.clone();
 
     for (stored, submitted, expected_suffix) in [
-        (
-            malformed_mac,
-            submission(),
-            vec!["key:key-old", "finish:systemfailure"],
-        ),
-        (
-            oversized_nonce,
-            oversized_submission,
-            vec!["finish:systemfailure"],
-        ),
+        (malformed_mac, submission(), vec!["finish:systemfailure"]),
+        (oversized_nonce, submission(), vec!["finish:systemfailure"]),
     ] {
         let (result, calls, active_calls) = run_scenario(
             BeginBehavior::Pending(stored),
@@ -881,8 +897,8 @@ fn mismatched_adapter_identity_material_is_never_accepted() {
     for mutate in ["challenge_id", "nonce"] {
         let mut stored = material();
         match mutate {
-            "challenge_id" => stored.challenge_id = "other-challenge".to_owned(),
-            "nonce" => stored.nonce = "other-nonce".to_owned(),
+            "challenge_id" => stored.challenge_id = "Y2hhbGxlbmdlLTY1NDMyMQ".to_owned(),
+            "nonce" => stored.nonce = "bm9uY2UtMDk4NzY1NDMyMQ".to_owned(),
             _ => unreachable!(),
         }
         let submitted = submission();
@@ -941,7 +957,7 @@ fn begin_attempt_receives_identity_and_binding_but_not_the_submitted_answer() {
         Ok(VerificationOutcome::Rejected(LifecycleRejection::Expired))
     );
     assert_eq!(calls.len(), 1);
-    assert!(calls[0].starts_with(&format!("begin:{CHALLENGE_ID}:bm9uY2U:tenant-binding:")));
+    assert!(calls[0].starts_with(&format!("begin:{CHALLENGE_ID}:{NONCE}:tenant-binding:")));
     assert!(!calls[0].contains("answer-sentinel"));
     assert_eq!(active_calls, 0);
 }
