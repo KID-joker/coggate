@@ -396,7 +396,7 @@ fn failed_store_emits_one_safe_failure_and_observer_panic_does_not_change_result
                 ServiceEvent::IssueFailed(event)
                     if event.stage == ServiceStage::LifecycleStore
                         && event.error == agentgate_core::ServiceError::InternalError
-                        && event.challenge_id.is_some()
+                        && event.challenge_id.is_none()
                         && event.generator_version.as_deref() == Some("1.0")
                         && event.attempts == 1
             ));
@@ -410,6 +410,13 @@ fn issue_failures_report_bounded_identifiers_stable_stages_and_errors() {
     for (version, behavior, expected_stage, expected_error, expected_version) in [
         (
             oversized_version.as_str(),
+            KeyBehavior::Available,
+            ServiceStage::VersionDispatch,
+            agentgate_core::ServiceError::UnsupportedGeneratorVersion,
+            None,
+        ),
+        (
+            "V1",
             KeyBehavior::Available,
             ServiceStage::VersionDispatch,
             agentgate_core::ServiceError::UnsupportedGeneratorVersion,
@@ -453,6 +460,7 @@ fn issue_failures_report_bounded_identifiers_stable_stages_and_errors() {
         };
         assert_eq!(event.stage, expected_stage);
         assert_eq!(event.error, expected_error);
+        assert!(event.challenge_id.is_none());
         assert_eq!(event.generator_version.as_deref(), expected_version);
         assert_eq!(
             event.attempts,

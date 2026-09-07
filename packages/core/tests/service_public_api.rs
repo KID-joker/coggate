@@ -199,8 +199,9 @@ fn public_debug_contracts_redact_identity_and_pending_attempt_secrets() {
 
 #[test]
 fn public_observer_and_event_surfaces_are_usable() {
+    let canonical_challenge_id = "Y2hhbGxlbmdlLTEyMzQ1Ng";
     let issued = ChallengeIssuedEvent {
-        challenge_id: "challenge-1".to_owned(),
+        challenge_id: canonical_challenge_id.to_owned(),
         generator_version: "1.0".to_owned(),
         secret_length_bucket: SecretLengthBucket::EightToTen,
         fragment_count: 2,
@@ -211,16 +212,16 @@ fn public_observer_and_event_surfaces_are_usable() {
         duration: Duration::from_millis(5),
     };
     let failure = ServiceFailureEvent {
-        challenge_id: Some("challenge-1".to_owned()),
-        generator_version: Some("1.0".to_owned()),
+        challenge_id: None,
+        generator_version: None,
         stage: ServiceStage::LifecycleStore,
         error: ServiceError::InternalError,
         attempts: 2,
         duration: Duration::from_millis(6),
     };
     let verified = VerificationEvent {
-        challenge_id: "challenge-1".to_owned(),
-        generator_version: Some("1.0".to_owned()),
+        challenge_id: canonical_challenge_id.to_owned(),
+        generator_version: None,
         disposition: VerificationDisposition::LifecycleRejected(LifecycleRejection::Expired),
         elapsed_since_issue: Some(Duration::from_secs(1)),
         duration: Duration::from_millis(7),
@@ -276,7 +277,7 @@ fn public_observer_and_event_surfaces_are_usable() {
     else {
         panic!("expected issued event")
     };
-    assert_eq!(challenge_id, "challenge-1");
+    assert_eq!(challenge_id, canonical_challenge_id);
     assert_eq!(generator_version, "1.0");
     assert_eq!(*secret_length_bucket, SecretLengthBucket::EightToTen);
     assert_eq!(*fragment_count, 2);
@@ -296,8 +297,8 @@ fn public_observer_and_event_surfaces_are_usable() {
     else {
         panic!("expected verification event")
     };
-    assert_eq!(challenge_id, "challenge-1");
-    assert_eq!(generator_version.as_deref(), Some("1.0"));
+    assert_eq!(challenge_id, canonical_challenge_id);
+    assert!(generator_version.is_none());
     assert_eq!(
         *disposition,
         VerificationDisposition::LifecycleRejected(LifecycleRejection::Expired)
@@ -325,8 +326,8 @@ fn public_observer_and_event_surfaces_are_usable() {
         else {
             panic!("expected failure event")
         };
-        assert_eq!(challenge_id.as_deref(), Some("challenge-1"));
-        assert_eq!(generator_version.as_deref(), Some("1.0"));
+        assert!(challenge_id.is_none());
+        assert!(generator_version.is_none());
         assert_eq!(*stage, ServiceStage::LifecycleStore);
         assert_eq!(*error, ServiceError::InternalError);
         assert_eq!(*attempts, 2);

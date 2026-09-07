@@ -10,10 +10,11 @@ use agentgate_core::{
 
 const OLD_KEY: &[u8; 32] = b"0123456789abcdef0123456789abcdef";
 const ANSWER: &str = "YUI5MmtM";
+const CHALLENGE_ID: &str = "Y2hhbGxlbmdlLTEyMzQ1Ng";
 
 fn material() -> PrivateChallengeMaterial {
     let context = MacContext {
-        challenge_id: "challenge-1".to_owned(),
+        challenge_id: CHALLENGE_ID.to_owned(),
         generator_version: "1.0".to_owned(),
         nonce: "bm9uY2U".to_owned(),
         issued_at: 1_788_062_400,
@@ -35,7 +36,7 @@ fn material() -> PrivateChallengeMaterial {
 
 fn submission() -> Submission {
     Submission {
-        challenge_id: "challenge-1".to_owned(),
+        challenge_id: CHALLENGE_ID.to_owned(),
         nonce: "bm9uY2U".to_owned(),
         answer: ANSWER.to_owned(),
     }
@@ -64,7 +65,7 @@ impl LifecycleAdapter for RecordingLifecycle {
         binding: &[u8],
         _server_time: i64,
     ) -> Result<PendingAttempt<Self::AttemptToken>, BeginAttemptError> {
-        assert_eq!(identity.challenge_id(), "challenge-1");
+        assert_eq!(identity.challenge_id(), CHALLENGE_ID);
         assert_eq!(identity.nonce(), "bm9uY2U");
         assert_eq!(binding, b"tenant-binding");
         self.calls.borrow_mut().push("begin".to_owned());
@@ -378,9 +379,13 @@ fn verification_observes_lifecycle_rejections_and_durable_core_outcomes() {
         assert!(matches!(
             &events[0],
             ServiceEvent::VerificationCompleted(event)
-                if event.challenge_id == "challenge-1"
+                if event.challenge_id == CHALLENGE_ID
                     && event.disposition == disposition
-                    && (event.generator_version.as_deref() == Some("1.0") || !expects_finish)
+                    && event.generator_version.as_deref() == if expects_finish {
+                        Some("1.0")
+                    } else {
+                        None
+                    }
                     && (event.elapsed_since_issue.is_some() || !expects_finish)
         ));
         if expects_finish {
@@ -409,6 +414,8 @@ fn verification_system_and_finish_failures_emit_only_safe_service_failures() {
     invalid.generator_version = oversized_version.clone();
     let mut unsupported = material();
     unsupported.generator_version = "1.1".to_owned();
+    let mut malformed_mac = material();
+    malformed_mac.answer_mac = "not-hex".to_owned();
     let scenarios = [
         (
             BeginBehavior::Adapter(LifecycleAdapterError::Internal),
@@ -416,6 +423,7 @@ fn verification_system_and_finish_failures_emit_only_safe_service_failures() {
             None,
             ServiceStage::LifecycleBegin,
             ServiceError::InternalError,
+            Some(std::time::Duration::ZERO),
         ),
         (
             BeginBehavior::Pending(invalid),
@@ -423,6 +431,7 @@ fn verification_system_and_finish_failures_emit_only_safe_service_failures() {
             None,
             ServiceStage::CoreVerification,
             ServiceError::InvalidChallengeMaterial,
+            Some(std::time::Duration::ZERO),
         ),
         (
             BeginBehavior::Pending(unsupported),
@@ -430,6 +439,7 @@ fn verification_system_and_finish_failures_emit_only_safe_service_failures() {
             None,
             ServiceStage::VersionDispatch,
             ServiceError::UnsupportedGeneratorVersion,
+            Some(std::time::Duration::ZERO),
         ),
         (
             BeginBehavior::Pending(material()),
@@ -437,6 +447,15 @@ fn verification_system_and_finish_failures_emit_only_safe_service_failures() {
             None,
             ServiceStage::KeyProvider,
             ServiceError::InternalError,
+            Some(std::time::Duration::ZERO),
+        ),
+        (
+            BeginBehavior::Pending(malformed_mac),
+            KeyBehavior::Key(OLD_KEY.to_vec()),
+            None,
+            ServiceStage::CoreVerification,
+            ServiceError::InvalidChallengeMaterial,
+            None,
         ),
         (
             BeginBehavior::Pending(material()),
@@ -444,10 +463,11 @@ fn verification_system_and_finish_failures_emit_only_safe_service_failures() {
             Some(LifecycleAdapterError::Unavailable),
             ServiceStage::LifecycleFinish,
             ServiceError::InternalError,
+            None,
         ),
     ];
 
-    for (begin, key_behavior, finish_error, stage, expected_error) in scenarios {
+    for (begin, key_behavior, finish_error, stage, expected_error, expected_duration) in scenarios {
         let submitted = submission();
         let (result, _calls, events) =
             run_observed_scenario(begin, key_behavior, finish_error, &submitted, false);
@@ -457,6 +477,13 @@ fn verification_system_and_finish_failures_emit_only_safe_service_failures() {
             panic!("unexpected event: {:?}", events[0]);
         };
         assert_eq!(event.stage, stage);
+        assert_eq!(event.error, expected_error);
+        assert_eq!(event.attempts, 0);
+        if let Some(expected_duration) = expected_duration {
+            assert_eq!(event.duration, expected_duration);
+        }
+        assert!(event.challenge_id.is_none());
+        assert!(event.generator_version.is_none());
         assert!(!format!("{event:?}").contains(&oversized_version));
         assert_ne!(
             event.generator_version.as_deref(),
@@ -543,6 +570,88 @@ fn verification_events_exclude_every_secret_and_omit_oversized_caller_identity()
 }
 
 #[test]
+fn lifecycle_rejection_omits_noncanonical_and_log_injection_challenge_ids() {
+    for challenge_id in [
+        "short",
+        "control\u{0007}token",
+        "line-one\nforged-log-entry",
+        "Y2hhbGxlbmdlLTEyMzQ1Ng==",
+        "!!!!!!!!!!!!!!!!!!!!!!",
+    ] {
+        let submitted = Submission {
+            challenge_id: challenge_id.to_owned(),
+            ..submission()
+        };
+        let (result, _calls, events) = run_observed_scenario(
+            BeginBehavior::Rejected(LifecycleRejection::NotFound),
+            KeyBehavior::Key(OLD_KEY.to_vec()),
+            None,
+            &submitted,
+            false,
+        );
+        assert_eq!(
+            result,
+            Ok(VerificationOutcome::Rejected(LifecycleRejection::NotFound))
+        );
+        let ServiceEvent::VerificationCompleted(event) = &events[0] else {
+            panic!("unexpected event")
+        };
+        assert!(event.challenge_id.is_empty());
+        assert!(!format!("{event:?}").contains(challenge_id));
+
+        let (_result, _calls, events) = run_observed_scenario(
+            BeginBehavior::Adapter(LifecycleAdapterError::Internal),
+            KeyBehavior::Key(OLD_KEY.to_vec()),
+            None,
+            &submitted,
+            false,
+        );
+        let ServiceEvent::ServiceFailed(event) = &events[0] else {
+            panic!("unexpected event")
+        };
+        assert!(event.challenge_id.is_none());
+        assert!(event.generator_version.is_none());
+        assert!(!format!("{event:?}").contains(challenge_id));
+    }
+}
+
+#[test]
+fn accepted_completion_omits_a_noncanonical_stored_challenge_id() {
+    let mut stored = material();
+    stored.challenge_id = "short".to_owned();
+    let context = MacContext {
+        challenge_id: stored.challenge_id.clone(),
+        generator_version: stored.generator_version.clone(),
+        nonce: stored.nonce.clone(),
+        issued_at: stored.issued_at,
+        expires_at: stored.expires_at,
+        mac_key_id: stored.mac_key_id.clone(),
+        answer_encoding: stored.answer_encoding,
+    };
+    stored.answer_mac = hex::encode(compute_answer_mac(OLD_KEY, &context, ANSWER).unwrap());
+    let submitted = Submission {
+        challenge_id: "short".to_owned(),
+        ..submission()
+    };
+
+    let (result, _calls, events) = run_observed_scenario(
+        BeginBehavior::Pending(stored),
+        KeyBehavior::Key(OLD_KEY.to_vec()),
+        None,
+        &submitted,
+        false,
+    );
+
+    assert_eq!(result, Ok(VerificationOutcome::Accepted));
+    assert!(matches!(
+        &events[0],
+        ServiceEvent::VerificationCompleted(event)
+            if event.challenge_id.is_empty()
+                && event.generator_version.as_deref() == Some("1.0")
+    ));
+}
+
+#[test]
 fn elapsed_since_issue_is_omitted_when_stored_time_is_in_the_future() {
     let mut stored = material();
     stored.issued_at = i64::MAX - 1;
@@ -592,7 +701,7 @@ fn maps_every_lifecycle_rejection_without_key_lookup_or_finish() {
 
         assert_eq!(result, Ok(VerificationOutcome::Rejected(reason)));
         assert_eq!(calls.len(), 1);
-        assert!(calls[0].starts_with("begin:challenge-1:bm9uY2U:tenant-binding:"));
+        assert!(calls[0].starts_with(&format!("begin:{CHALLENGE_ID}:bm9uY2U:tenant-binding:")));
         assert_eq!(active_calls, 0);
     }
 }
@@ -832,7 +941,7 @@ fn begin_attempt_receives_identity_and_binding_but_not_the_submitted_answer() {
         Ok(VerificationOutcome::Rejected(LifecycleRejection::Expired))
     );
     assert_eq!(calls.len(), 1);
-    assert!(calls[0].starts_with("begin:challenge-1:bm9uY2U:tenant-binding:"));
+    assert!(calls[0].starts_with(&format!("begin:{CHALLENGE_ID}:bm9uY2U:tenant-binding:")));
     assert!(!calls[0].contains("answer-sentinel"));
     assert_eq!(active_calls, 0);
 }
