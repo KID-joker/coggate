@@ -76,10 +76,23 @@ where
         random: &mut impl crate::generation::RandomSource,
         clock: impl FnOnce() -> Result<i64, ServiceError>,
     ) -> Result<PublicChallenge, ServiceError> {
-        let started = Instant::now();
+        self.issue_with_timing(request, random, clock, Instant::now, |started, finished| {
+            finished.saturating_duration_since(started)
+        })
+    }
+
+    fn issue_with_timing<T: Copy>(
+        &mut self,
+        request: IssueRequest<'_>,
+        random: &mut impl crate::generation::RandomSource,
+        clock: impl FnOnce() -> Result<i64, ServiceError>,
+        mut now: impl FnMut() -> T,
+        duration_between: impl Fn(T, T) -> Duration,
+    ) -> Result<PublicChallenge, ServiceError> {
+        let operation_started = now();
         if let Err(error) = request.validate() {
             self.observe_issue_failure(
-                started,
+                duration_between(operation_started, now()),
                 None,
                 safe_generator_version(request.version()),
                 ServiceStage::Request,
@@ -90,7 +103,7 @@ where
         }
         if let Err(error) = version::dispatch_issue_version(request.version()) {
             self.observe_issue_failure(
-                started,
+                duration_between(operation_started, now()),
                 None,
                 safe_generator_version(request.version()),
                 ServiceStage::VersionDispatch,
@@ -100,13 +113,14 @@ where
             return Err(error);
         }
 
+        let candidate_started = now();
         let (candidate, candidate_attempts) =
             match retry_candidates_with_attempts(|| generate_candidate_with(random)) {
                 Ok(success) => success,
                 Err((candidate_error, attempts)) => {
                     let error = map_candidate_error(candidate_error);
                     self.observe_issue_failure(
-                        started,
+                        duration_between(operation_started, now()),
                         None,
                         safe_generator_version(request.version()),
                         ServiceStage::Candidate,
@@ -116,12 +130,13 @@ where
                     return Err(error);
                 }
             };
+        let candidate_duration = duration_between(candidate_started, now());
 
         let issued_at = match clock() {
             Ok(issued_at) => issued_at,
             Err(error) => {
                 self.observe_issue_failure(
-                    started,
+                    duration_between(operation_started, now()),
                     None,
                     safe_generator_version(request.version()),
                     ServiceStage::Clock,
@@ -137,7 +152,7 @@ where
                 None => {
                     let error = ServiceError::InternalError;
                     self.observe_issue_failure(
-                        started,
+                        duration_between(operation_started, now()),
                         None,
                         safe_generator_version(request.version()),
                         ServiceStage::Clock,
@@ -152,7 +167,7 @@ where
             Err(_) => {
                 let error = ServiceError::GenerationFailed;
                 self.observe_issue_failure(
-                    started,
+                    duration_between(operation_started, now()),
                     None,
                     safe_generator_version(request.version()),
                     ServiceStage::Candidate,
@@ -167,7 +182,7 @@ where
             Err(_) => {
                 let error = ServiceError::GenerationFailed;
                 self.observe_issue_failure(
-                    started,
+                    duration_between(operation_started, now()),
                     safe_challenge_id_option(&challenge_id),
                     safe_generator_version(request.version()),
                     ServiceStage::Candidate,
@@ -183,7 +198,7 @@ where
             Err(key_error) => {
                 let error = map_active_key_error(key_error);
                 self.observe_issue_failure(
-                    started,
+                    duration_between(operation_started, now()),
                     safe_challenge_id_option(&challenge_id),
                     safe_generator_version(request.version()),
                     ServiceStage::KeyProvider,
@@ -208,7 +223,7 @@ where
             Err(_) => {
                 let error = ServiceError::InternalError;
                 self.observe_issue_failure(
-                    started,
+                    duration_between(operation_started, now()),
                     safe_challenge_id_option(&challenge_id),
                     safe_generator_version(request.version()),
                     ServiceStage::CoreVerification,
@@ -247,7 +262,7 @@ where
         {
             let error = ServiceError::InternalError;
             self.observe_issue_failure(
-                started,
+                duration_between(operation_started, now()),
                 safe_challenge_id_option(&public.challenge_id),
                 safe_generator_version(&public.generator_version),
                 ServiceStage::LifecycleStore,
@@ -269,7 +284,7 @@ where
                 render_languages: metadata.languages().to_vec(),
                 has_distractor: metadata.has_distractor(),
                 candidate_attempts: usize::from(candidate_attempts),
-                duration: started.elapsed(),
+                duration: candidate_duration,
             }),
         );
 
@@ -278,7 +293,7 @@ where
 
     fn observe_issue_failure(
         &mut self,
-        started: Instant,
+        duration: Duration,
         challenge_id: Option<String>,
         generator_version: Option<String>,
         stage: ServiceStage,
@@ -293,7 +308,7 @@ where
                 stage,
                 error,
                 attempts,
-                duration: started.elapsed(),
+                duration,
             }),
         );
     }
@@ -602,7 +617,10 @@ fn map_active_key_error(error: KeyProviderError) -> ServiceError {
 
 #[cfg(test)]
 mod tests {
-    use std::{cell::RefCell, rc::Rc};
+    use std::{
+        cell::{Cell, RefCell},
+        rc::Rc,
+    };
 
     use crate::{
         Submission,
@@ -736,6 +754,131 @@ mod tests {
         fn observe(&mut self, event: &ServiceEvent) {
             self.0.borrow_mut().push(event.clone());
         }
+    }
+
+    struct TimingLifecycle {
+        now: Rc<Cell<Duration>>,
+        store_error: Option<LifecycleAdapterError>,
+    }
+
+    struct TimingRandom {
+        now: Rc<Cell<Duration>>,
+    }
+
+    impl RandomSource for TimingRandom {
+        fn fill(&mut self, destination: &mut [u8]) -> Result<(), GenerationError> {
+            self.now.set(self.now.get() + Duration::from_millis(1));
+            destination.fill(0);
+            Ok(())
+        }
+    }
+
+    impl LifecycleAdapter for TimingLifecycle {
+        type AttemptToken = ();
+
+        fn store_issued(
+            &mut self,
+            _material: PrivateChallengeMaterial,
+            _binding: &[u8],
+            _attempt_limit: AttemptLimit,
+        ) -> Result<(), LifecycleAdapterError> {
+            self.now.set(self.now.get() + Duration::from_secs(200));
+            self.store_error.map_or(Ok(()), Err)
+        }
+
+        fn begin_attempt(
+            &mut self,
+            _identity: SubmissionIdentity<'_>,
+            _binding: &[u8],
+            _server_time: i64,
+        ) -> Result<PendingAttempt<Self::AttemptToken>, BeginAttemptError> {
+            unreachable!("issuance does not begin attempts")
+        }
+
+        fn finish_attempt(
+            &mut self,
+            _token: Self::AttemptToken,
+            _outcome: AttemptOutcome,
+        ) -> Result<(), LifecycleAdapterError> {
+            unreachable!("issuance does not finish attempts")
+        }
+    }
+
+    #[test]
+    fn issued_duration_freezes_before_clock_key_and_store_work() {
+        let now = Rc::new(Cell::new(Duration::from_millis(10)));
+        let expected_candidate_duration = Rc::new(Cell::new(Duration::ZERO));
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let mut service = ChallengeService::with_observer(
+            TimingLifecycle {
+                now: Rc::clone(&now),
+                store_error: None,
+            },
+            TrackingKeys(calls),
+            CollectObserver(Rc::clone(&events)),
+        );
+        let mut random = TimingRandom {
+            now: Rc::clone(&now),
+        };
+
+        service
+            .issue_with_timing(
+                IssueRequest::v1(b"binding").unwrap(),
+                &mut random,
+                || {
+                    expected_candidate_duration.set(now.get() - Duration::from_millis(10));
+                    now.set(now.get() + Duration::from_secs(100));
+                    Ok(1_000)
+                },
+                || now.get(),
+                |started, finished| finished.saturating_sub(started),
+            )
+            .unwrap();
+
+        assert!(expected_candidate_duration.get() > Duration::ZERO);
+        let ServiceEvent::ChallengeIssued(event) = &events.borrow()[0] else {
+            panic!("unexpected event")
+        };
+        assert_eq!(event.duration, expected_candidate_duration.get());
+        assert!(now.get() >= event.duration + Duration::from_secs(300));
+    }
+
+    #[test]
+    fn issue_failure_duration_keeps_full_operation_timing() {
+        let now = Rc::new(Cell::new(Duration::from_millis(10)));
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let mut service = ChallengeService::with_observer(
+            TimingLifecycle {
+                now: Rc::clone(&now),
+                store_error: Some(LifecycleAdapterError::Unavailable),
+            },
+            TrackingKeys(Rc::new(RefCell::new(Vec::new()))),
+            CollectObserver(Rc::clone(&events)),
+        );
+        let mut random = TimingRandom {
+            now: Rc::clone(&now),
+        };
+
+        assert_eq!(
+            service.issue_with_timing(
+                IssueRequest::v1(b"binding").unwrap(),
+                &mut random,
+                || {
+                    now.set(now.get() + Duration::from_secs(100));
+                    Ok(1_000)
+                },
+                || now.get(),
+                |started, finished| finished.saturating_sub(started),
+            ),
+            Err(ServiceError::InternalError)
+        );
+
+        let ServiceEvent::IssueFailed(event) = &events.borrow()[0] else {
+            panic!("unexpected event")
+        };
+        assert_eq!(event.stage, ServiceStage::LifecycleStore);
+        assert_eq!(event.duration, now.get() - Duration::from_millis(10));
     }
 
     #[test]
