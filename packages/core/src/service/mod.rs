@@ -1,3 +1,10 @@
+//! One-shot challenge issuance and verification orchestration.
+//!
+//! This module composes generation, MAC verification, caller-provided durable
+//! lifecycle storage, key lookup, and secret-safe observations. It does not
+//! implement storage, sessions, distributed rate limits, recovery, or business
+//! admission policy; hosts must supply and enforce those controls.
+
 mod error;
 mod keys;
 mod lifecycle;
@@ -53,6 +60,17 @@ fn generate_issue_candidate(
     })
 }
 
+/// Orchestrates persisted challenge issuance and one-shot verification.
+///
+/// `L` owns durable lifecycle and concurrency semantics, `K` owns protected key
+/// storage and rotation, and `O` receives allowlisted diagnostics. Observer
+/// callbacks are isolated from authorization: they cannot change a returned or
+/// durable result, and an unwind from a callback is discarded in unwind-capable
+/// builds.
+///
+/// This service does not provide storage, sessions, rate limiting, recovery, or
+/// application-specific admission. See [`LifecycleAdapter`] and
+/// [`MacKeyProvider`] for the host's security obligations.
 pub struct ChallengeService<L, K, O = NoopObserver> {
     lifecycle: L,
     keys: K,
@@ -60,6 +78,7 @@ pub struct ChallengeService<L, K, O = NoopObserver> {
 }
 
 impl<L, K> ChallengeService<L, K, NoopObserver> {
+    /// Creates a service with the default no-op observer and system runtime.
     pub fn new(lifecycle: L, keys: K) -> Self {
         Self {
             lifecycle,
@@ -70,6 +89,7 @@ impl<L, K> ChallengeService<L, K, NoopObserver> {
 }
 
 impl<L, K, O> ChallengeService<L, K, O> {
+    /// Creates a service with an explicit observer and the system runtime.
     pub fn with_observer(lifecycle: L, keys: K, observer: O) -> Self {
         Self {
             lifecycle,
@@ -85,6 +105,12 @@ where
     K: MacKeyProvider,
     O: Observer,
 {
+    /// Generates, authenticates, and durably stores a public challenge.
+    ///
+    /// The public challenge is returned only after `store_issued` reports
+    /// definite success. Candidate rejection is retried within the fixed V1
+    /// bound, but storage and other infrastructure operations are never retried
+    /// automatically. A failure returns only a stable [`ServiceError`].
     pub fn issue_challenge(
         &mut self,
         request: IssueRequest<'_>,
@@ -410,6 +436,12 @@ where
         );
     }
 
+    /// Verifies a submission through an atomic, fail-closed lifecycle attempt.
+    ///
+    /// Dispatch uses the stored generator version and exact stored key ID; no
+    /// active-key or version fallback occurs. Once `begin_attempt` succeeds, a
+    /// later system failure still consumes the reserved attempt. `Accepted` is
+    /// returned only after the lifecycle adapter durably commits acceptance.
     pub fn verify_submission(
         &mut self,
         request: VerifyRequest<'_>,
