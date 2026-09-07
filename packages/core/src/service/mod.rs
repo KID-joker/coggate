@@ -1431,6 +1431,12 @@ mod tests {
         available: bool,
     }
 
+    struct BlockingLookupKeys {
+        calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        entered: std::sync::mpsc::SyncSender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+    }
+
     impl MacKeyProvider for SharedLookupKeys {
         fn active_key(&mut self) -> Result<ActiveMacKey, KeyProviderError> {
             unreachable!("verification only reads stored key IDs")
@@ -1443,6 +1449,23 @@ mod tests {
             } else {
                 Err(KeyProviderError::Unavailable)
             }
+        }
+    }
+
+    impl MacKeyProvider for BlockingLookupKeys {
+        fn active_key(&mut self) -> Result<ActiveMacKey, KeyProviderError> {
+            unreachable!("verification only reads stored key IDs")
+        }
+
+        fn key_by_id(&mut self, _key_id: &str) -> Result<MacKey, KeyProviderError> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.entered
+                .send(())
+                .map_err(|_| KeyProviderError::Unavailable)?;
+            self.release
+                .recv_timeout(Duration::from_secs(2))
+                .map_err(|_| KeyProviderError::Unavailable)?;
+            MacKey::new(vec![0x42; 32])
         }
     }
 
@@ -1472,44 +1495,82 @@ mod tests {
     }
 
     #[test]
-    fn two_services_share_one_atomic_reservation_and_one_accepted_finish() {
+    fn second_service_is_rejected_during_the_first_services_reserved_window() {
         let (material, submission) = deterministic_material_and_submission();
         let state = std::sync::Arc::new(std::sync::Mutex::new(SharedLifecycleState {
             state: SharedAttemptState::Issued,
             material,
             finishes: Vec::new(),
         }));
-        let key_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let first_key_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let second_key_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (entered_sender, entered_receiver) = std::sync::mpsc::sync_channel(0);
+        let (release_sender, release_receiver) = std::sync::mpsc::sync_channel(0);
         let mut first = ChallengeService::new(
             SharedLifecycle(std::sync::Arc::clone(&state)),
-            SharedLookupKeys {
-                calls: std::sync::Arc::clone(&key_calls),
-                available: true,
+            BlockingLookupKeys {
+                calls: std::sync::Arc::clone(&first_key_calls),
+                entered: entered_sender,
+                release: release_receiver,
             },
         );
         let mut second = ChallengeService::new(
             SharedLifecycle(std::sync::Arc::clone(&state)),
             SharedLookupKeys {
-                calls: std::sync::Arc::clone(&key_calls),
+                calls: std::sync::Arc::clone(&second_key_calls),
                 available: true,
             },
         );
 
+        std::thread::scope(|scope| {
+            let first_submission = &submission;
+            let first_handle = scope.spawn(move || {
+                first.verify_with(
+                    VerifyRequest::new(first_submission, b"binding").unwrap(),
+                    || Ok(10_001),
+                )
+            });
+
+            entered_receiver
+                .recv_timeout(Duration::from_secs(2))
+                .expect("first service must reach key lookup");
+            {
+                let shared = state.lock().unwrap();
+                assert_eq!(shared.state, SharedAttemptState::Reserved);
+                assert!(shared.finishes.is_empty());
+            }
+            assert_eq!(
+                second.verify_with(VerifyRequest::new(&submission, b"binding").unwrap(), || Ok(
+                    10_001
+                ),),
+                Ok(VerificationOutcome::Rejected(
+                    LifecycleRejection::AlreadyConsumed
+                ))
+            );
+            assert_eq!(
+                second_key_calls.load(std::sync::atomic::Ordering::SeqCst),
+                0
+            );
+            {
+                let shared = state.lock().unwrap();
+                assert_eq!(shared.state, SharedAttemptState::Reserved);
+                assert!(shared.finishes.is_empty());
+            }
+
+            release_sender
+                .send(())
+                .expect("release first service key lookup");
+            assert_eq!(
+                first_handle.join().unwrap(),
+                Ok(VerificationOutcome::Accepted)
+            );
+        });
+
+        assert_eq!(first_key_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
         assert_eq!(
-            first.verify_with(VerifyRequest::new(&submission, b"binding").unwrap(), || Ok(
-                10_001
-            ),),
-            Ok(VerificationOutcome::Accepted)
+            second_key_calls.load(std::sync::atomic::Ordering::SeqCst),
+            0
         );
-        assert_eq!(
-            second.verify_with(VerifyRequest::new(&submission, b"binding").unwrap(), || Ok(
-                10_001
-            ),),
-            Ok(VerificationOutcome::Rejected(
-                LifecycleRejection::AlreadyConsumed
-            ))
-        );
-        assert_eq!(key_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
         let shared = state.lock().unwrap();
         assert_eq!(shared.state, SharedAttemptState::Used);
         assert_eq!(shared.finishes, [AttemptOutcome::Accepted]);
