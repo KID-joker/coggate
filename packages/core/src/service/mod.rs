@@ -494,12 +494,36 @@ where
 }
 
 fn safe_challenge_id(value: &str) -> String {
-    URL_SAFE_NO_PAD
-        .decode(value)
-        .ok()
-        .filter(|decoded| decoded.len() == 16 && URL_SAFE_NO_PAD.encode(decoded) == value)
-        .map(|_| value.to_owned())
-        .unwrap_or_default()
+    if !is_canonical_challenge_id_with(value, |value, decoded| {
+        URL_SAFE_NO_PAD.decode_slice(value, decoded) == Ok(decoded.len())
+    }) {
+        return String::new();
+    }
+
+    value.to_owned()
+}
+
+fn is_canonical_challenge_id_with(
+    value: &str,
+    decode: impl FnOnce(&str, &mut [u8; 16]) -> bool,
+) -> bool {
+    if value.len() != 22 {
+        return false;
+    }
+
+    let mut decoded = [0_u8; 16];
+    if !decode(value, &mut decoded) {
+        return false;
+    }
+
+    let mut canonical = [0_u8; 22];
+    if URL_SAFE_NO_PAD.encode_slice(decoded, &mut canonical) != Ok(canonical.len())
+        || canonical != value.as_bytes()
+    {
+        return false;
+    }
+
+    true
 }
 
 fn safe_generator_version(value: &str) -> Option<String> {
@@ -1005,6 +1029,16 @@ mod tests {
         ] {
             assert_eq!(secret_length_bucket(length), expected);
         }
+    }
+
+    #[test]
+    fn oversized_observer_token_is_rejected_in_constant_bounded_time() {
+        let oversized = "A".repeat(1024 * 1024);
+        assert!(!is_canonical_challenge_id_with(
+            &oversized,
+            |_value, _decoded| panic!("oversized IDs must be rejected before decoding")
+        ));
+        assert!(safe_challenge_id(&oversized).is_empty());
     }
 
     #[test]
