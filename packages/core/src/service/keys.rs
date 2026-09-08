@@ -1,5 +1,7 @@
 use std::fmt;
 
+use zeroize::Zeroizing;
+
 use super::KeyProviderError;
 
 /// Maximum UTF-8 byte length accepted for a MAC key identifier.
@@ -11,7 +13,7 @@ pub const MIN_MAC_KEY_BYTES: usize = 32;
 ///
 /// Providers remain responsible for protecting key bytes at rest, in transit,
 /// in process memory, and in their own diagnostics.
-pub struct MacKey(Vec<u8>);
+pub struct MacKey(Zeroizing<Vec<u8>>);
 
 impl MacKey {
     /// Validates and wraps key bytes.
@@ -22,11 +24,11 @@ impl MacKey {
         if key.len() < MIN_MAC_KEY_BYTES {
             return Err(KeyProviderError::InvalidMaterial);
         }
-        Ok(Self(key))
+        Ok(Self(Zeroizing::new(key)))
     }
 
     pub(crate) fn expose(&self) -> &[u8] {
-        &self.0
+        self.0.as_slice()
     }
 }
 
@@ -92,12 +94,20 @@ pub trait MacKeyProvider {
 
 #[cfg(test)]
 mod tests {
-    use super::{ActiveMacKey, KeyProviderError, MacKey};
+    use super::{ActiveMacKey, KeyProviderError, MIN_MAC_KEY_BYTES, MacKey};
+    use zeroize::Zeroizing;
+
+    #[test]
+    fn mac_key_uses_zeroizing_owned_storage() {
+        let key = MacKey::new(vec![7; MIN_MAC_KEY_BYTES]).unwrap();
+        assert_eq!(key.expose(), &[7; MIN_MAC_KEY_BYTES]);
+        assert!(std::any::type_name_of_val(&key.0).contains("Zeroizing"));
+    }
 
     #[test]
     fn active_key_rejects_short_key_material() {
         assert_eq!(
-            ActiveMacKey::new("primary", MacKey(vec![0; 31])).map(|_| ()),
+            ActiveMacKey::new("primary", MacKey(Zeroizing::new(vec![0; 31]))).map(|_| ()),
             Err(KeyProviderError::InvalidMaterial)
         );
     }
