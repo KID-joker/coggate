@@ -58,6 +58,23 @@ impl AgService {
     }
 }
 
+/// Checks the caller-owned output slot without extending a reference across
+/// input copying, core execution, or host callbacks.
+///
+/// # Safety
+///
+/// A non-null pointer must be aligned and readable for one initialized
+/// [`AgOwnedBuffer`] for the duration of this function call.
+unsafe fn validate_empty_output(out: *const AgOwnedBuffer) -> Result<(), AgStatus> {
+    let Some(out) = (unsafe { out.as_ref() }) else {
+        return Err(AgStatus::InvalidArgument);
+    };
+    if !out.data.is_null() || out.len != 0 || out.capacity != 0 {
+        return Err(AgStatus::InvalidArgument);
+    }
+    Ok(())
+}
+
 /// Issues and durably stores one challenge, returning its public JSON form.
 ///
 /// Calls through the same service handle are serialized. Host callbacks must
@@ -80,7 +97,8 @@ impl AgService {
 /// non-null slice pointer must be readable for its declared length and not
 /// concurrently mutated during this call; null is valid only with length zero.
 /// `out` may be null. Otherwise it must be aligned, valid, and writable for one
-/// [`AgOwnedBuffer`] and must not be concurrently accessed.
+/// [`AgOwnedBuffer`] and must not be concurrently accessed, including by host
+/// callbacks. Its storage must not overlap the live `service` handle.
 /// The caller must also uphold all callback lifetime, synchronization,
 /// ownership, unwind, and reentrancy requirements from service creation.
 /// Runtime checks cannot establish pointer provenance, allocation ownership,
@@ -94,11 +112,8 @@ pub unsafe extern "C" fn ag_service_issue(
     out: *mut AgOwnedBuffer,
 ) -> AgStatus {
     catch_status(|| {
-        let Some(out) = (unsafe { out.as_mut() }) else {
-            return AgStatus::InvalidArgument;
-        };
-        if !out.data.is_null() || out.len != 0 || out.capacity != 0 {
-            return AgStatus::InvalidArgument;
+        if let Err(status) = unsafe { validate_empty_output(out) } {
+            return status;
         }
         let Some(service) = (unsafe { service.as_ref() }) else {
             return AgStatus::InvalidArgument;
@@ -134,7 +149,7 @@ pub unsafe extern "C" fn ag_service_issue(
             Err(_) => return AgStatus::InternalError,
         };
 
-        *out = AgOwnedBuffer::from_vec(json);
+        unsafe { out.write(AgOwnedBuffer::from_vec(json)) };
         AgStatus::Ok
     })
 }
@@ -162,7 +177,8 @@ pub unsafe extern "C" fn ag_service_issue(
 /// non-null slice pointer must be readable for its declared length and not
 /// concurrently mutated during this call; null is valid only with length zero.
 /// `out` may be null. Otherwise it must be aligned, valid, and writable for one
-/// [`AgOwnedBuffer`] and must not be concurrently accessed.
+/// [`AgOwnedBuffer`] and must not be concurrently accessed, including by host
+/// callbacks. Its storage must not overlap the live `service` handle.
 /// The caller must also uphold all callback lifetime, synchronization,
 /// ownership, unwind, and reentrancy requirements from service creation.
 /// Runtime checks cannot establish pointer provenance, allocation ownership,
@@ -175,11 +191,8 @@ pub unsafe extern "C" fn ag_service_verify(
     out: *mut AgOwnedBuffer,
 ) -> AgStatus {
     catch_status(|| {
-        let Some(out) = (unsafe { out.as_mut() }) else {
-            return AgStatus::InvalidArgument;
-        };
-        if !out.data.is_null() || out.len != 0 || out.capacity != 0 {
-            return AgStatus::InvalidArgument;
+        if let Err(status) = unsafe { validate_empty_output(out) } {
+            return status;
         }
         let Some(service) = (unsafe { service.as_ref() }) else {
             return AgStatus::InvalidArgument;
@@ -210,7 +223,7 @@ pub unsafe extern "C" fn ag_service_verify(
             Err(()) => return AgStatus::InternalError,
         };
 
-        *out = AgOwnedBuffer::from_vec(json);
+        unsafe { out.write(AgOwnedBuffer::from_vec(json)) };
         AgStatus::Ok
     })
 }
@@ -322,10 +335,10 @@ mod tests {
 
     use agentgate_core::ServiceError;
 
-    use super::{AgService, ag_service_create};
+    use super::{AgService, ag_service_create, validate_empty_output};
     use crate::{
         AG_ABI_VERSION_1, AgBeginStatus, AgByteSlice, AgHostBuffer, AgKeyCallbacks, AgKeyStatus,
-        AgLifecycleCallbacks, AgLifecycleStatus, AgStatus,
+        AgLifecycleCallbacks, AgLifecycleStatus, AgOwnedBuffer, AgStatus,
     };
 
     unsafe extern "C" fn store(_: *mut c_void, _: AgByteSlice, _: AgByteSlice, _: u32) -> i32 {
@@ -377,6 +390,24 @@ mod tests {
             AgStatus::Ok
         );
         unsafe { Box::from_raw(service) }
+    }
+
+    #[test]
+    fn output_validation_accepts_only_nonnull_canonical_empty_buffers() {
+        assert_eq!(
+            unsafe { validate_empty_output(ptr::null()) },
+            Err(AgStatus::InvalidArgument)
+        );
+
+        let empty = AgOwnedBuffer::empty();
+        assert_eq!(unsafe { validate_empty_output(&empty) }, Ok(()));
+
+        let occupied = AgOwnedBuffer::from_vec(b"occupied".to_vec());
+        assert_eq!(
+            unsafe { validate_empty_output(&occupied) },
+            Err(AgStatus::InvalidArgument)
+        );
+        drop(unsafe { Vec::from_raw_parts(occupied.data, occupied.len, occupied.capacity) });
     }
 
     #[test]

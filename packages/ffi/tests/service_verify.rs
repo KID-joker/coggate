@@ -41,6 +41,8 @@ struct Fixture {
     finish_outcomes: Mutex<Vec<i32>>,
     key_status: AtomicI32,
     key_calls: AtomicUsize,
+    active_key_status: AtomicI32,
+    active_key_calls: AtomicUsize,
     material_json: Mutex<Vec<u8>>,
     begin_output_behavior: AtomicI32,
     release_calls: AtomicUsize,
@@ -79,6 +81,8 @@ impl Fixture {
             finish_outcomes: Mutex::new(Vec::new()),
             key_status: AtomicI32::new(AgKeyStatus::Ok as i32),
             key_calls: AtomicUsize::new(0),
+            active_key_status: AtomicI32::new(AgKeyStatus::Unavailable as i32),
+            active_key_calls: AtomicUsize::new(0),
             material_json: Mutex::new(serde_json::to_vec(&material).unwrap()),
             begin_output_behavior: AtomicI32::new(BeginOutputBehavior::Normal as i32),
             release_calls: AtomicUsize::new(0),
@@ -186,6 +190,7 @@ impl Harness {
 
 impl Drop for Harness {
     fn drop(&mut self) {
+        assert_eq!(self.fixture.active_key_calls.load(Ordering::SeqCst), 0);
         assert_eq!(unsafe { ag_service_destroy(self.service) }, AgStatus::Ok);
     }
 }
@@ -290,8 +295,14 @@ unsafe extern "C" fn finish_attempt(
     fixture.finish_status.load(Ordering::SeqCst)
 }
 
-unsafe extern "C" fn active_key(_: *mut c_void, _: *mut AgHostBuffer, _: *mut AgHostBuffer) -> i32 {
-    unreachable!("verification does not request active key")
+unsafe extern "C" fn active_key(
+    user_data: *mut c_void,
+    _: *mut AgHostBuffer,
+    _: *mut AgHostBuffer,
+) -> i32 {
+    let fixture = unsafe { &*user_data.cast::<Fixture>() };
+    fixture.active_key_calls.fetch_add(1, Ordering::SeqCst);
+    fixture.active_key_status.load(Ordering::SeqCst)
 }
 
 unsafe extern "C" fn key_by_id(
