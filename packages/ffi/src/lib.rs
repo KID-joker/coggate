@@ -13,7 +13,9 @@ pub use callbacks::{
     AgLifecycleStatus, AgObserveCallback, AgObserverCallbacks, AgStoreIssuedCallback,
 };
 pub use memory::{AgByteSlice, AgHostBuffer, AgHostRelease, AgOwnedBuffer, ag_buffer_free};
-pub use service::{AgService, ag_service_create, ag_service_destroy};
+pub use service::{
+    AgAttemptLimit, AgService, ag_service_create, ag_service_destroy, ag_service_issue,
+};
 pub use status::AgStatus;
 
 use std::panic::{AssertUnwindSafe, catch_unwind};

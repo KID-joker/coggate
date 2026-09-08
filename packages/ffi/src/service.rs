@@ -3,16 +3,28 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-use agentgate_core::{ChallengeService, ServiceError};
+use agentgate_core::{AttemptLimit, ChallengeService, IssueRequest, ServiceError};
 
 use crate::{
-    AgKeyCallbacks, AgLifecycleCallbacks, AgObserverCallbacks, AgStatus,
+    AgByteSlice, AgKeyCallbacks, AgLifecycleCallbacks, AgObserverCallbacks, AgOwnedBuffer,
+    AgStatus,
     adapters::{CallbackKeys, CallbackLifecycle, CallbackObserver},
     callbacks::{read_key_callbacks, read_lifecycle_callbacks, read_observer_callbacks},
     catch_status,
 };
 
 type CoreService = ChallengeService<CallbackLifecycle, CallbackKeys, CallbackObserver>;
+
+/// Closed challenge verification-attempt budgets exposed as ABI constants.
+///
+/// Functions accept the underlying `u32` rather than this enum so that foreign
+/// callers cannot create an invalid Rust enum value.
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AgAttemptLimit {
+    One = 1,
+    Two = 2,
+}
 
 /// Opaque, synchronized challenge-service handle for the C ABI.
 #[repr(C)]
@@ -23,27 +35,107 @@ pub struct AgService {
 
 impl AgService {
     /// Runs one serialized core operation and resolves callback ABI violations.
-    #[allow(dead_code)]
-    pub(crate) fn call(
+    pub(crate) fn call<T>(
         &self,
-        operation: impl FnOnce(&mut CoreService) -> Result<(), ServiceError>,
-    ) -> AgStatus {
+        operation: impl FnOnce(&mut CoreService) -> Result<T, ServiceError>,
+    ) -> Result<T, AgStatus> {
         let mut service = match self.service.lock() {
             Ok(service) => service,
-            Err(_) => return AgStatus::InternalError,
+            Err(_) => return Err(AgStatus::InternalError),
         };
 
         self.protocol_violation.store(false, Ordering::SeqCst);
         let result = operation(&mut service);
         let violated = self.protocol_violation.swap(false, Ordering::SeqCst);
-        let status = if violated {
-            AgStatus::CallbackFailed
+        let result = if violated {
+            Err(AgStatus::CallbackFailed)
         } else {
-            result.map_or_else(AgStatus::from, |()| AgStatus::Ok)
+            result.map_err(AgStatus::from)
         };
         drop(service);
-        status
+        result
     }
+}
+
+/// Issues and durably stores one challenge, returning its public JSON form.
+///
+/// Calls through the same service handle are serialized. Host callbacks must
+/// not reenter that handle. `version` and `binding` are copied synchronously;
+/// their pointers are not retained. `version` must be strict UTF-8, `binding`
+/// must contain 1 through 256 bytes, and `attempt_limit` must be `1` or `2`.
+///
+/// `out` must contain the canonical empty buffer at entry. This prevents an
+/// existing allocation from being overwritten or leaked. Once `out` has been
+/// validated, it remains canonical empty on every failure. On success ownership
+/// of its allocation transfers to the caller for exactly one [`crate::ag_buffer_free`]
+/// call. The public result is not published until durable storage reports
+/// success.
+///
+/// # Safety
+///
+/// `service` may be null. Otherwise it must be the exact live pointer returned
+/// by [`ag_service_create`], with no concurrent destruction. Calls may be made
+/// concurrently through that handle subject to serialization above. Each
+/// non-null slice pointer must be readable for its declared length and not
+/// concurrently mutated during this call; null is valid only with length zero.
+/// `out` may be null. Otherwise it must be aligned, valid, and writable for one
+/// [`AgOwnedBuffer`] and must not be concurrently accessed.
+/// The caller must also uphold all callback lifetime, synchronization,
+/// ownership, unwind, and reentrancy requirements from service creation.
+/// Runtime checks cannot establish pointer provenance, allocation ownership,
+/// exact handle identity, or the absence of concurrent access.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ag_service_issue(
+    service: *mut AgService,
+    version: AgByteSlice,
+    binding: AgByteSlice,
+    attempt_limit: u32,
+    out: *mut AgOwnedBuffer,
+) -> AgStatus {
+    catch_status(|| {
+        let Some(out) = (unsafe { out.as_mut() }) else {
+            return AgStatus::InvalidArgument;
+        };
+        if !out.data.is_null() || out.len != 0 || out.capacity != 0 {
+            return AgStatus::InvalidArgument;
+        }
+        let Some(service) = (unsafe { service.as_ref() }) else {
+            return AgStatus::InvalidArgument;
+        };
+
+        let version = match unsafe { version.copy_bytes() } {
+            Ok(version) => version,
+            Err(status) => return status,
+        };
+        let binding = match unsafe { binding.copy_bytes() } {
+            Ok(binding) => binding,
+            Err(status) => return status,
+        };
+        let version = match String::from_utf8(version) {
+            Ok(version) => version,
+            Err(_) => return AgStatus::InvalidArgument,
+        };
+        let attempt_limit = match attempt_limit {
+            x if x == AgAttemptLimit::One as u32 => AttemptLimit::One,
+            x if x == AgAttemptLimit::Two as u32 => AttemptLimit::Two,
+            _ => return AgStatus::InvalidArgument,
+        };
+        let request = match IssueRequest::new(&version, &binding, attempt_limit) {
+            Ok(request) => request,
+            Err(error) => return AgStatus::from(error),
+        };
+        let public = match service.call(|service| service.issue_challenge(request)) {
+            Ok(public) => public,
+            Err(status) => return status,
+        };
+        let json = match serde_json::to_vec(&public) {
+            Ok(json) => json,
+            Err(_) => return AgStatus::InternalError,
+        };
+
+        *out = AgOwnedBuffer::from_vec(json);
+        AgStatus::Ok
+    })
 }
 
 /// Creates a synchronized challenge-service handle from host callback tables.
@@ -225,7 +317,7 @@ mod tests {
                 invoked = true;
                 Ok(())
             }),
-            AgStatus::InternalError
+            Err(AgStatus::InternalError)
         );
         assert!(!invoked);
     }
@@ -235,21 +327,35 @@ mod tests {
         let service = service();
 
         service.protocol_violation.store(true, Ordering::SeqCst);
-        assert_eq!(service.call(|_| Ok(())), AgStatus::Ok);
+        assert_eq!(service.call(|_| Ok(())), Ok(()));
 
         let flag = service.protocol_violation.clone();
         assert_eq!(
             service.call(|_| {
                 flag.store(true, Ordering::SeqCst);
-                Err(ServiceError::InvalidConfiguration)
+                Err::<(), _>(ServiceError::InvalidConfiguration)
             }),
-            AgStatus::CallbackFailed
+            Err(AgStatus::CallbackFailed)
         );
 
         assert_eq!(
-            service.call(|_| Err(ServiceError::GenerationFailed)),
-            AgStatus::GenerationFailed
+            service.call(|_| Err::<(), _>(ServiceError::GenerationFailed)),
+            Err(AgStatus::GenerationFailed)
         );
-        assert_eq!(service.call(|_| Ok(())), AgStatus::Ok);
+        assert_eq!(service.call(|_| Ok(())), Ok(()));
+    }
+
+    #[test]
+    fn successful_value_is_discarded_when_callback_protocol_was_violated() {
+        let service = service();
+        let flag = service.protocol_violation.clone();
+
+        assert_eq!(
+            service.call(|_| {
+                flag.store(true, Ordering::SeqCst);
+                Ok(42_u32)
+            }),
+            Err(AgStatus::CallbackFailed)
+        );
     }
 }
