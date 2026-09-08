@@ -15,6 +15,12 @@ use agentgate_ffi::{
     ag_buffer_free, ag_service_create, ag_service_destroy, ag_service_issue,
 };
 
+const VERSION: &[u8] = b"1.0";
+const KEY_ID_SENTINEL: &str = "KEY_ID_SENTINEL_private_identifier";
+const KEY_SENTINEL: &[u8] = b"KEY_SENTINEL_private_material_0123456789";
+const ANSWER_SENTINEL: &str = "ANSWER_SENTINEL_not_a_canonical_answer";
+const BINDING_SENTINEL: &[u8] = b"BINDING_SENTINEL_ANSWER_SENTINEL_not_a_canonical_answer";
+
 #[derive(Clone, Copy)]
 #[repr(i32)]
 enum ActiveBehavior {
@@ -25,6 +31,7 @@ enum ActiveBehavior {
 }
 
 struct StoreRecord {
+    private_json: Vec<u8>,
     private: PrivateChallengeMaterial,
     binding: Vec<u8>,
     attempt_limit: u32,
@@ -33,6 +40,7 @@ struct StoreRecord {
 struct Fixture {
     active_status: AtomicI32,
     active_behavior: AtomicI32,
+    active_calls: AtomicUsize,
     store_status: AtomicI32,
     store_calls: AtomicUsize,
     stores: Mutex<Vec<StoreRecord>>,
@@ -43,6 +51,7 @@ impl Fixture {
         Self {
             active_status: AtomicI32::new(AgKeyStatus::Ok as i32),
             active_behavior: AtomicI32::new(ActiveBehavior::Valid as i32),
+            active_calls: AtomicUsize::new(0),
             store_status: AtomicI32::new(AgLifecycleStatus::Ok as i32),
             store_calls: AtomicUsize::new(0),
             stores: Mutex::new(Vec::new()),
@@ -136,13 +145,14 @@ unsafe extern "C" fn store_issued(
 ) -> i32 {
     let fixture = unsafe { &*user_data.cast::<Fixture>() };
     fixture.store_calls.fetch_add(1, Ordering::SeqCst);
-    let private =
-        serde_json::from_slice(&unsafe { copied(private_json) }).expect("valid private JSON");
+    let private_json = unsafe { copied(private_json) };
+    let private = serde_json::from_slice(&private_json).expect("valid private JSON");
     fixture
         .stores
         .lock()
         .expect("stores lock")
         .push(StoreRecord {
+            private_json,
             private,
             binding: unsafe { copied(binding) },
             attempt_limit,
@@ -171,6 +181,7 @@ unsafe extern "C" fn active_key(
     key_out: *mut AgHostBuffer,
 ) -> i32 {
     let fixture = unsafe { &*user_data.cast::<Fixture>() };
+    fixture.active_calls.fetch_add(1, Ordering::SeqCst);
     let status = fixture.active_status.load(Ordering::SeqCst);
     if status != AgKeyStatus::Ok as i32 {
         return status;
@@ -180,12 +191,12 @@ unsafe extern "C" fn active_key(
     let key_id = match behavior {
         x if x == ActiveBehavior::EmptyId as i32 => Vec::new(),
         x if x == ActiveBehavior::InvalidUtf8Id as i32 => vec![0xff],
-        _ => b"active-key".to_vec(),
+        _ => KEY_ID_SENTINEL.as_bytes().to_vec(),
     };
     let key = if behavior == ActiveBehavior::ShortKey as i32 {
         vec![7; 31]
     } else {
-        vec![7; 32]
+        KEY_SENTINEL.to_vec()
     };
     unsafe {
         write_host_buffer(key_id_out, key_id);
@@ -209,34 +220,48 @@ fn canonical_empty(buffer: &AgOwnedBuffer) -> bool {
     buffer.data.is_null() && buffer.len == 0 && buffer.capacity == 0
 }
 
-fn parse_and_free(out: &mut AgOwnedBuffer) -> PublicChallenge {
-    let public = serde_json::from_slice(unsafe { slice::from_raw_parts(out.data, out.len) })
-        .expect("valid public challenge JSON");
+fn copy_parse_and_free(out: &mut AgOwnedBuffer) -> (Vec<u8>, PublicChallenge) {
+    let json = unsafe { slice::from_raw_parts(out.data, out.len) }.to_vec();
+    let public = serde_json::from_slice(&json).expect("valid public challenge JSON");
     assert_eq!(unsafe { ag_buffer_free(out) }, AgStatus::Ok);
-    public
+    (json, public)
+}
+
+fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack
+        .windows(needle.len())
+        .any(|candidate| candidate == needle)
+}
+
+fn assert_sensitive_value_absent(haystack: &[u8], needle: &[u8]) {
+    assert!(!needle.is_empty());
+    assert!(!contains_bytes(haystack, needle));
 }
 
 #[test]
 fn successful_issue_returns_public_json_only_after_private_storage() {
+    assert!(KEY_SENTINEL.len() >= 32);
     let harness = Harness::new();
     let mut out = AgOwnedBuffer::empty();
-
-    assert_eq!(
-        harness.issue(
-            b"1.0",
-            b"tenant-binding",
-            AgAttemptLimit::Two as u32,
-            &mut out
-        ),
-        AgStatus::Ok
+    let status = harness.issue(
+        VERSION,
+        BINDING_SENTINEL,
+        AgAttemptLimit::Two as u32,
+        &mut out,
     );
+    assert_eq!(status, AgStatus::Ok);
+    assert_eq!(harness.fixture.active_calls.load(Ordering::SeqCst), 1);
     assert_eq!(harness.fixture.store_calls.load(Ordering::SeqCst), 1);
-    let public = parse_and_free(&mut out);
+    let (public_json, public) = copy_parse_and_free(&mut out);
     assert_eq!(public.generator_version, "1.0");
+    let public_value: serde_json::Value =
+        serde_json::from_slice(&public_json).expect("valid public JSON value");
+    assert!(public_value.get("mac_key_id").is_none());
+    assert!(public_value.get("answer_mac").is_none());
 
     let stores = harness.fixture.stores.lock().expect("stores lock");
     assert_eq!(stores.len(), 1);
-    assert_eq!(stores[0].binding, b"tenant-binding");
+    assert_eq!(stores[0].binding, BINDING_SENTINEL);
     assert_eq!(stores[0].attempt_limit, 2);
     assert_eq!(stores[0].private.challenge_id, public.challenge_id);
     assert_eq!(stores[0].private.nonce, public.nonce);
@@ -244,6 +269,19 @@ fn successful_issue_returns_public_json_only_after_private_storage() {
         stores[0].private.generator_version,
         public.generator_version
     );
+
+    let debug = format!("{status:?} {public:?}");
+    for needle in [
+        KEY_ID_SENTINEL.as_bytes(),
+        KEY_SENTINEL,
+        ANSWER_SENTINEL.as_bytes(),
+        stores[0].private.answer_mac.as_bytes(),
+        stores[0].private.mac_key_id.as_bytes(),
+        stores[0].private_json.as_slice(),
+    ] {
+        assert_sensitive_value_absent(&public_json, needle);
+        assert_sensitive_value_absent(debug.as_bytes(), needle);
+    }
 }
 
 #[test]
@@ -450,22 +488,33 @@ fn store_failures_are_single_shot_and_publish_no_output() {
 }
 
 #[test]
-fn failure_surfaces_do_not_expose_input_sentinels() {
+fn store_failure_surfaces_do_not_expose_private_or_input_sentinels() {
     let harness = Harness::new();
     harness
         .fixture
-        .active_status
-        .store(AgKeyStatus::Unavailable as i32, Ordering::SeqCst);
+        .store_status
+        .store(AgLifecycleStatus::Internal as i32, Ordering::SeqCst);
     let mut out = AgOwnedBuffer::empty();
-    let status = harness.issue(
-        b"unsupported-version-sentinel",
-        b"binding-secret-sentinel",
-        1,
-        &mut out,
-    );
-    assert_eq!(status, AgStatus::UnsupportedGeneratorVersion);
+    let status = harness.issue(VERSION, BINDING_SENTINEL, 1, &mut out);
+
+    assert_eq!(status, AgStatus::InternalError);
     assert!(canonical_empty(&out));
+    assert_eq!(harness.fixture.active_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(harness.fixture.store_calls.load(Ordering::SeqCst), 1);
+    let stores = harness.fixture.stores.lock().expect("stores lock");
+    assert_eq!(stores.len(), 1);
+
     let debug = format!("{status:?}");
-    assert!(!debug.contains("unsupported-version-sentinel"));
-    assert!(!debug.contains("binding-secret-sentinel"));
+    for needle in [
+        VERSION,
+        BINDING_SENTINEL,
+        KEY_ID_SENTINEL.as_bytes(),
+        KEY_SENTINEL,
+        ANSWER_SENTINEL.as_bytes(),
+        stores[0].private.answer_mac.as_bytes(),
+        stores[0].private.mac_key_id.as_bytes(),
+        stores[0].private_json.as_slice(),
+    ] {
+        assert_sensitive_value_absent(debug.as_bytes(), needle);
+    }
 }
