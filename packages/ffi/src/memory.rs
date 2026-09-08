@@ -38,7 +38,7 @@ pub struct AgOwnedBuffer {
 }
 
 impl AgOwnedBuffer {
-    pub fn empty() -> Self {
+    pub const fn empty() -> Self {
         Self {
             data: ptr::null_mut(),
             len: 0,
@@ -68,7 +68,7 @@ pub struct AgHostBuffer {
 }
 
 impl AgHostBuffer {
-    pub fn empty() -> Self {
+    pub const fn empty() -> Self {
         Self {
             data: ptr::null_mut(),
             len: 0,
@@ -82,9 +82,18 @@ impl AgHostBuffer {
 ///
 /// # Safety
 ///
-/// `buffer` must either be null or point to a writable `AgOwnedBuffer`. A
-/// non-empty buffer must have been created by [`AgOwnedBuffer::from_vec`] and
-/// must not have been freed previously.
+/// `buffer` must either be null or point to a valid, writable
+/// [`AgOwnedBuffer`]. For every non-null `data` pointer, including one with
+/// `len == 0` and `capacity > 0`, the complete `(data, len, capacity)` triple
+/// must be exact and unchanged from [`AgOwnedBuffer::from_vec`]. The allocation
+/// must remain uniquely owned by that buffer and must not have been previously
+/// freed or transferred. Neither the structure nor its allocation may be
+/// concurrently accessed for the duration of this call.
+///
+/// Runtime validation can reject null pointers and `len > capacity`, but it
+/// cannot establish allocation provenance, unique ownership, unchanged
+/// metadata, or the absence of concurrent access. Violating those requirements
+/// results in undefined behavior.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ag_buffer_free(buffer: *mut AgOwnedBuffer) -> AgStatus {
     catch_status(|| unsafe { free_buffer(buffer) })
