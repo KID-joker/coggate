@@ -28,6 +28,19 @@ pub extern "C" fn ag_abi_version() -> u32 {
     AG_ABI_VERSION_1
 }
 
+/// Returns the AgentGate core package version as borrowed UTF-8 bytes.
+///
+/// The returned slice references immutable static storage for the lifetime of
+/// the process. It is not NUL-terminated and must not be freed.
+#[unsafe(no_mangle)]
+pub extern "C" fn ag_core_version() -> AgByteSlice {
+    let version = env!("CARGO_PKG_VERSION").as_bytes();
+    AgByteSlice {
+        data: version.as_ptr(),
+        len: version.len(),
+    }
+}
+
 pub(crate) fn catch_status(operation: impl FnOnce() -> AgStatus) -> AgStatus {
     catch_unwind(AssertUnwindSafe(operation)).unwrap_or(AgStatus::PanicCaught)
 }
