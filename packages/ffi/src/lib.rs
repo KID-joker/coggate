@@ -4,6 +4,7 @@ mod adapters;
 mod callbacks;
 mod json;
 mod memory;
+mod service;
 mod status;
 
 pub use callbacks::{
@@ -12,6 +13,7 @@ pub use callbacks::{
     AgLifecycleStatus, AgObserveCallback, AgObserverCallbacks, AgStoreIssuedCallback,
 };
 pub use memory::{AgByteSlice, AgHostBuffer, AgHostRelease, AgOwnedBuffer, ag_buffer_free};
+pub use service::{AgService, ag_service_create, ag_service_destroy};
 pub use status::AgStatus;
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
