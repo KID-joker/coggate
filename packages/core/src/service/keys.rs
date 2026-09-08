@@ -21,10 +21,11 @@ impl MacKey {
     /// Returns [`KeyProviderError::InvalidMaterial`] when fewer than
     /// [`MIN_MAC_KEY_BYTES`] bytes are supplied.
     pub fn new(key: Vec<u8>) -> Result<Self, KeyProviderError> {
+        let key = Zeroizing::new(key);
         if key.len() < MIN_MAC_KEY_BYTES {
             return Err(KeyProviderError::InvalidMaterial);
         }
-        Ok(Self(Zeroizing::new(key)))
+        Ok(Self(key))
     }
 
     pub(crate) fn expose(&self) -> &[u8] {
@@ -101,7 +102,7 @@ mod tests {
     fn mac_key_uses_zeroizing_owned_storage() {
         let key = MacKey::new(vec![7; MIN_MAC_KEY_BYTES]).unwrap();
         assert_eq!(key.expose(), &[7; MIN_MAC_KEY_BYTES]);
-        assert!(std::any::type_name_of_val(&key.0).contains("Zeroizing"));
+        let _: &Zeroizing<Vec<u8>> = &key.0;
     }
 
     #[test]
