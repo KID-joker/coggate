@@ -6,6 +6,7 @@ use crate::{AG_ABI_VERSION_1, AgByteSlice, AgHostBuffer, AgStatus};
 
 #[repr(i32)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Status returned by lifecycle store and finish callbacks.
 pub enum AgLifecycleStatus {
     Ok = 0,
     Unavailable = 1,
@@ -29,6 +30,7 @@ impl TryFrom<i32> for AgLifecycleStatus {
 
 #[repr(i32)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Status returned by the lifecycle begin callback.
 pub enum AgBeginStatus {
     Ok = 0,
     Unavailable = 1,
@@ -64,6 +66,7 @@ impl TryFrom<i32> for AgBeginStatus {
 
 #[repr(i32)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Status returned by key-provider callbacks.
 pub enum AgKeyStatus {
     Ok = 0,
     Unavailable = 1,
@@ -87,12 +90,18 @@ impl TryFrom<i32> for AgKeyStatus {
 
 #[repr(i32)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Outcome passed to the lifecycle finish callback.
 pub enum AgAttemptOutcome {
     Accepted = 1,
     Rejected = 2,
     SystemFailure = 3,
 }
 
+/// Persists newly issued private material.
+///
+/// `private_json` and `binding` are borrowed only for the synchronous call and
+/// must not be retained. The callback must not unwind, throw, or longjmp across
+/// the ABI boundary, and must not reenter the same service handle.
 pub type AgStoreIssuedCallback = unsafe extern "C" fn(
     user_data: *mut c_void,
     private_json: AgByteSlice,
@@ -100,6 +109,21 @@ pub type AgStoreIssuedCallback = unsafe extern "C" fn(
     attempt_limit: u32,
 ) -> i32;
 
+/// Begins an attempt and returns required private material plus an optional token.
+///
+/// `identity_json` and `binding` are borrowed only for the synchronous call and
+/// must not be retained. Both out pointers are valid and writable only during
+/// the call and must not be retained. Output ownership transfers to Rust only
+/// when the callback returns [`AgBeginStatus::Ok`]; on every other status the
+/// outputs remain host-owned and require host cleanup.
+///
+/// On success, `material_out` must be nonempty. `token_out` may use canonical
+/// empty form (null `data`, zero `len`, and no release). Every non-null output
+/// `data` pointer must be readable for `len` bytes and provide a release
+/// callback, including at `len == 0`. Rust calls that release exactly once with
+/// the unchanged `release_data`, `data`, and `len` tuple. The callback and all
+/// release functions must not unwind, throw, or longjmp across the ABI boundary
+/// and must not reenter the same service handle.
 pub type AgBeginAttemptCallback = unsafe extern "C" fn(
     user_data: *mut c_void,
     identity_json: AgByteSlice,
@@ -109,23 +133,55 @@ pub type AgBeginAttemptCallback = unsafe extern "C" fn(
     token_out: *mut AgHostBuffer,
 ) -> i32;
 
+/// Finishes an attempt with the exact opaque token returned by begin.
+///
+/// `token` is borrowed only for the synchronous call and must not be retained.
+/// The callback must not unwind, throw, or longjmp across the ABI boundary, and
+/// must not reenter the same service handle.
 pub type AgFinishAttemptCallback =
     unsafe extern "C" fn(user_data: *mut c_void, token: AgByteSlice, outcome: i32) -> i32;
 
+/// Returns the required active key identifier and key material.
+///
+/// Both out pointers are valid and writable only during the call and must not
+/// be retained. Ownership transfers to Rust only when the callback returns
+/// [`AgKeyStatus::Ok`]; otherwise both outputs remain host-owned and require
+/// host cleanup. On success both outputs must be nonempty. Every non-null data
+/// pointer must be readable for its `len` and provide a release callback. Rust
+/// calls each release exactly once with the unchanged `release_data`, `data`,
+/// and `len` tuple. The callback and releases must not unwind, throw, or longjmp
+/// across the ABI boundary and must not reenter the same service handle.
 pub type AgActiveKeyCallback = unsafe extern "C" fn(
     user_data: *mut c_void,
     key_id_out: *mut AgHostBuffer,
     key_out: *mut AgHostBuffer,
 ) -> i32;
 
+/// Returns required key material for an exact key identifier.
+///
+/// `key_id` is borrowed only for the synchronous call and must not be retained;
+/// `key_out` is valid and writable only during that call and must not be
+/// retained. Ownership transfers to Rust only on [`AgKeyStatus::Ok`]. On every
+/// other status the output remains host-owned and requires host cleanup. On
+/// success the key must be nonempty, its data must be readable for `len`, and
+/// every non-null data pointer must provide a release callback. Rust calls the
+/// release exactly once with the unchanged tuple. The callback and release must
+/// not unwind, throw, or longjmp across the ABI boundary and must not reenter
+/// the same service handle.
 pub type AgKeyByIdCallback = unsafe extern "C" fn(
     user_data: *mut c_void,
     key_id: AgByteSlice,
     key_out: *mut AgHostBuffer,
 ) -> i32;
 
+/// Observes a serialized service event.
+///
+/// `event_json` is borrowed only for this synchronous call and must not be
+/// retained. The callback must not unwind, throw, or longjmp across the ABI
+/// boundary, and must not reenter the same service handle.
 pub type AgObserveCallback = unsafe extern "C" fn(user_data: *mut c_void, event_json: AgByteSlice);
 
+/// Common prefix for every versioned callback table.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct AgCallbackHeader {
@@ -133,6 +189,14 @@ pub struct AgCallbackHeader {
     pub abi_version: u32,
 }
 
+/// Host lifecycle callback table copied into a service handle.
+///
+/// After construction, the table and function pointers are immutable for the
+/// service lifetime. `user_data` must remain valid until handle destruction and
+/// must support serialized callback invocations from arbitrary host threads.
+/// Its pointee remains host-owned and must be synchronized by the host. No
+/// callback may reenter the same handle because future handle-level locking may
+/// deadlock, and handle destruction must not run concurrently with callbacks.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct AgLifecycleCallbacks {
@@ -144,6 +208,14 @@ pub struct AgLifecycleCallbacks {
     pub finish_attempt: Option<AgFinishAttemptCallback>,
 }
 
+/// Host key-provider callback table copied into a service handle.
+///
+/// After construction, the table and function pointers are immutable for the
+/// service lifetime. `user_data` must remain valid until handle destruction and
+/// must support serialized callback invocations from arbitrary host threads.
+/// Its pointee remains host-owned and must be synchronized by the host. No
+/// callback may reenter the same handle because future handle-level locking may
+/// deadlock, and handle destruction must not run concurrently with callbacks.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct AgKeyCallbacks {
@@ -154,6 +226,14 @@ pub struct AgKeyCallbacks {
     pub key_by_id: Option<AgKeyByIdCallback>,
 }
 
+/// Optional host observer callback table copied into a service handle.
+///
+/// After construction, the table and function pointer are immutable for the
+/// service lifetime. `user_data` must remain valid until handle destruction and
+/// must support serialized callback invocations from arbitrary host threads.
+/// Its pointee remains host-owned and must be synchronized by the host. The
+/// callback must not reenter the same handle, and handle destruction must not
+/// run concurrently with callbacks.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct AgObserverCallbacks {
@@ -181,10 +261,13 @@ unsafe fn validate_header<T>(table: *const T) -> Result<(), AgStatus> {
 ///
 /// # Safety
 ///
-/// `table` must be null or point to a properly aligned, initialized
-/// [`AgCallbackHeader`] that is valid to read. If that header advertises the
-/// current ABI version and a sufficient `struct_size`, the pointer must also be
-/// valid to read a complete [`AgLifecycleCallbacks`] value.
+/// `table` may be null. Otherwise it must be aligned for
+/// [`AgCallbackHeader`], point to an initialized header valid to read, and not
+/// be mutated concurrently during either read performed here. If the header
+/// advertises the current ABI version and a sufficient `struct_size`, `table`
+/// must also be aligned for and valid to read one complete, initialized
+/// [`AgLifecycleCallbacks`]. Its `Option<extern "C" fn>` fields must contain
+/// valid nullable function-pointer representations.
 #[allow(dead_code)]
 pub(crate) unsafe fn read_lifecycle_callbacks(
     table: *const AgLifecycleCallbacks,
@@ -204,10 +287,13 @@ pub(crate) unsafe fn read_lifecycle_callbacks(
 ///
 /// # Safety
 ///
-/// `table` must be null or point to a properly aligned, initialized
-/// [`AgCallbackHeader`] that is valid to read. If that header advertises the
-/// current ABI version and a sufficient `struct_size`, the pointer must also be
-/// valid to read a complete [`AgKeyCallbacks`] value.
+/// `table` may be null. Otherwise it must be aligned for
+/// [`AgCallbackHeader`], point to an initialized header valid to read, and not
+/// be mutated concurrently during either read performed here. If the header
+/// advertises the current ABI version and a sufficient `struct_size`, `table`
+/// must also be aligned for and valid to read one complete, initialized
+/// [`AgKeyCallbacks`]. Its `Option<extern "C" fn>` fields must contain valid
+/// nullable function-pointer representations.
 #[allow(dead_code)]
 pub(crate) unsafe fn read_key_callbacks(
     table: *const AgKeyCallbacks,
@@ -224,10 +310,13 @@ pub(crate) unsafe fn read_key_callbacks(
 ///
 /// # Safety
 ///
-/// `table` may be null. Otherwise it must point to a properly aligned,
-/// initialized [`AgCallbackHeader`] that is valid to read. If that header
-/// advertises the current ABI version and a sufficient `struct_size`, the
-/// pointer must also be valid to read a complete [`AgObserverCallbacks`] value.
+/// `table` may be null. Otherwise it must be aligned for
+/// [`AgCallbackHeader`], point to an initialized header valid to read, and not
+/// be mutated concurrently during either read performed here. If the header
+/// advertises the current ABI version and a sufficient `struct_size`, `table`
+/// must also be aligned for and valid to read one complete, initialized
+/// [`AgObserverCallbacks`]. Its `Option<extern "C" fn>` field must contain a
+/// valid nullable function-pointer representation.
 #[allow(dead_code)]
 pub(crate) unsafe fn read_observer_callbacks(
     table: *const AgObserverCallbacks,

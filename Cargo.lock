@@ -34,6 +34,7 @@ dependencies = [
  "agentgate-core",
  "serde",
  "serde_json",
+ "zeroize",
 ]
 
 [[package]]

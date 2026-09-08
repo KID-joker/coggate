@@ -13,3 +13,4 @@ agentgate-contracts = { path = "../contracts" }
 agentgate-core = { path = "../core" }
 serde.workspace = true
 serde_json.workspace = true
+zeroize.workspace = true

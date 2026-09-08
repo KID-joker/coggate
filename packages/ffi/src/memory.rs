@@ -1,3 +1,5 @@
+#[cfg(test)]
+use std::cell::Cell;
 use std::ffi::c_void;
 use std::ptr;
 use std::slice;
@@ -8,6 +10,27 @@ use std::sync::{
 
 use crate::{AgStatus, catch_status};
 
+#[cfg(test)]
+thread_local! {
+    static REQUIRED_HOST_BUFFER_COPY_COUNT: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_required_host_buffer_copy_count() {
+    REQUIRED_HOST_BUFFER_COPY_COUNT.set(0);
+}
+
+#[cfg(test)]
+pub(crate) fn required_host_buffer_copy_count() -> usize {
+    REQUIRED_HOST_BUFFER_COPY_COUNT.get()
+}
+
+/// A borrowed byte slice passed across the C ABI.
+///
+/// A null `data` pointer is valid only when `len == 0`. A non-null pointer must
+/// be readable for `len` bytes. When Rust passes this structure to a host
+/// callback, the bytes are borrowed only for that synchronous callback
+/// invocation and the host must not retain the pointer.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct AgByteSlice {
@@ -20,7 +43,8 @@ impl AgByteSlice {
     ///
     /// # Safety
     ///
-    /// When `data` is non-null, it must be valid to read `len` bytes.
+    /// When `data` is non-null, it must be valid to read `len` bytes and must
+    /// not be concurrently mutated for the duration of this call.
     pub unsafe fn copy_bytes(self) -> Result<Vec<u8>, AgStatus> {
         if self.data.is_null() {
             return if self.len == 0 {
@@ -34,6 +58,10 @@ impl AgByteSlice {
     }
 }
 
+/// A Rust-owned byte buffer returned through the ABI.
+///
+/// Values produced by [`AgOwnedBuffer::from_vec`] transfer ownership to the
+/// caller until passed exactly once to [`ag_buffer_free`].
 #[repr(C)]
 pub struct AgOwnedBuffer {
     pub data: *mut u8,
@@ -61,8 +89,24 @@ impl AgOwnedBuffer {
     }
 }
 
+/// Releases a host-owned callback output.
+///
+/// Rust invokes this function exactly once only for an output transferred by a
+/// callback that returned its `Ok` status. It receives the exact `release_data`,
+/// `data`, and `len` tuple supplied by the host. The function must accept
+/// `len == 0`, must not unwind, throw, or longjmp across the ABI boundary, and
+/// must not reenter the same service handle.
 pub type AgHostRelease = unsafe extern "C" fn(*mut c_void, *mut u8, usize);
 
+/// A host-owned callback output buffer.
+///
+/// Ownership transfers to Rust only when the producing callback returns its
+/// `Ok` status. On every other status the buffer remains host-owned and Rust
+/// neither reads nor releases it. After transfer, a null pointer is permitted
+/// only with `len == 0` for an output documented as optional. Every non-null
+/// `data` pointer must be readable for `len` bytes and must have a non-null
+/// [`AgHostRelease`], including when `len == 0`. Rust releases a transferred
+/// non-null buffer exactly once with the unchanged tuple after its last read.
 #[repr(C)]
 pub struct AgHostBuffer {
     pub data: *mut u8,
@@ -95,7 +139,23 @@ impl HostBufferGuard {
         }
     }
 
-    pub(crate) fn copy_bytes(&self) -> Result<Vec<u8>, ()> {
+    pub(crate) fn copy_required(&self) -> Result<Vec<u8>, ()> {
+        #[cfg(test)]
+        REQUIRED_HOST_BUFFER_COPY_COUNT.with(|count| count.set(count.get() + 1));
+
+        let bytes = self.copy_bytes()?;
+        if bytes.is_empty() {
+            self.mark_violation();
+            return Err(());
+        }
+        Ok(bytes)
+    }
+
+    pub(crate) fn copy_optional(&self) -> Result<Vec<u8>, ()> {
+        self.copy_bytes()
+    }
+
+    fn copy_bytes(&self) -> Result<Vec<u8>, ()> {
         if self.buffer.data.is_null() {
             if self.buffer.len == 0 {
                 return Ok(Vec::new());
