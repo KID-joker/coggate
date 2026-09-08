@@ -1,6 +1,8 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
+mod adapters;
 mod callbacks;
+mod json;
 mod memory;
 mod status;
 

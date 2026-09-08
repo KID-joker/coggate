@@ -1,6 +1,10 @@
 use std::ffi::c_void;
 use std::ptr;
 use std::slice;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 use crate::{AgStatus, catch_status};
 
@@ -74,6 +78,50 @@ impl AgHostBuffer {
             len: 0,
             release_data: ptr::null_mut(),
             release: None,
+        }
+    }
+}
+
+pub(crate) struct HostBufferGuard {
+    buffer: AgHostBuffer,
+    protocol_violation: Arc<AtomicBool>,
+}
+
+impl HostBufferGuard {
+    pub(crate) fn take(buffer: AgHostBuffer, protocol_violation: Arc<AtomicBool>) -> Self {
+        Self {
+            buffer,
+            protocol_violation,
+        }
+    }
+
+    pub(crate) fn copy_bytes(&self) -> Result<Vec<u8>, ()> {
+        if self.buffer.data.is_null() {
+            if self.buffer.len == 0 {
+                return Ok(Vec::new());
+            }
+            self.mark_violation();
+            return Err(());
+        }
+        if self.buffer.release.is_none() {
+            self.mark_violation();
+            return Err(());
+        }
+        Ok(unsafe { slice::from_raw_parts(self.buffer.data, self.buffer.len) }.to_vec())
+    }
+
+    pub(crate) fn mark_violation(&self) {
+        self.protocol_violation.store(true, Ordering::SeqCst);
+    }
+}
+
+impl Drop for HostBufferGuard {
+    fn drop(&mut self) {
+        if (self.buffer.data.is_null() && self.buffer.len == 0) || self.buffer.release.is_none() {
+            return;
+        }
+        if let Some(release) = self.buffer.release.take() {
+            unsafe { release(self.buffer.release_data, self.buffer.data, self.buffer.len) };
         }
     }
 }
