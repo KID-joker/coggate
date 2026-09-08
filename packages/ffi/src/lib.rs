@@ -15,6 +15,7 @@ pub use callbacks::{
 pub use memory::{AgByteSlice, AgHostBuffer, AgHostRelease, AgOwnedBuffer, ag_buffer_free};
 pub use service::{
     AgAttemptLimit, AgService, ag_service_create, ag_service_destroy, ag_service_issue,
+    ag_service_verify,
 };
 pub use status::AgStatus;
 

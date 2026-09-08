@@ -3,7 +3,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-use agentgate_core::{AttemptLimit, ChallengeService, IssueRequest, ServiceError};
+use agentgate_core::{AttemptLimit, ChallengeService, IssueRequest, ServiceError, VerifyRequest};
 
 use crate::{
     AgByteSlice, AgKeyCallbacks, AgLifecycleCallbacks, AgObserverCallbacks, AgOwnedBuffer,
@@ -11,6 +11,7 @@ use crate::{
     adapters::{CallbackKeys, CallbackLifecycle, CallbackObserver},
     callbacks::{read_key_callbacks, read_lifecycle_callbacks, read_observer_callbacks},
     catch_status,
+    json::{parse_submission, serialize_outcome},
 };
 
 type CoreService = ChallengeService<CallbackLifecycle, CallbackKeys, CallbackObserver>;
@@ -131,6 +132,82 @@ pub unsafe extern "C" fn ag_service_issue(
         let json = match serde_json::to_vec(&public) {
             Ok(json) => json,
             Err(_) => return AgStatus::InternalError,
+        };
+
+        *out = AgOwnedBuffer::from_vec(json);
+        AgStatus::Ok
+    })
+}
+
+/// Verifies one submission through the fail-closed lifecycle protocol.
+///
+/// Calls through the same service handle are serialized. Host callbacks must
+/// not reenter that handle. `submission_json` and `binding` are copied
+/// synchronously and their pointers are not retained. `submission_json` must be
+/// strict submission JSON with no unknown fields; `binding` must contain 1
+/// through 256 bytes.
+///
+/// `out` must contain the canonical empty buffer at entry. This prevents an
+/// existing allocation from being overwritten or leaked. Once `out` has been
+/// validated, it remains canonical empty on every failure. Only successful
+/// verification outcomes are serialized and published. On success ownership
+/// of the allocation transfers to the caller for exactly one
+/// [`crate::ag_buffer_free`] call.
+///
+/// # Safety
+///
+/// `service` may be null. Otherwise it must be the exact live pointer returned
+/// by [`ag_service_create`], with no concurrent destruction. Calls may be made
+/// concurrently through that handle subject to serialization above. Each
+/// non-null slice pointer must be readable for its declared length and not
+/// concurrently mutated during this call; null is valid only with length zero.
+/// `out` may be null. Otherwise it must be aligned, valid, and writable for one
+/// [`AgOwnedBuffer`] and must not be concurrently accessed.
+/// The caller must also uphold all callback lifetime, synchronization,
+/// ownership, unwind, and reentrancy requirements from service creation.
+/// Runtime checks cannot establish pointer provenance, allocation ownership,
+/// exact handle identity, or the absence of concurrent access.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ag_service_verify(
+    service: *mut AgService,
+    submission_json: AgByteSlice,
+    binding: AgByteSlice,
+    out: *mut AgOwnedBuffer,
+) -> AgStatus {
+    catch_status(|| {
+        let Some(out) = (unsafe { out.as_mut() }) else {
+            return AgStatus::InvalidArgument;
+        };
+        if !out.data.is_null() || out.len != 0 || out.capacity != 0 {
+            return AgStatus::InvalidArgument;
+        }
+        let Some(service) = (unsafe { service.as_ref() }) else {
+            return AgStatus::InvalidArgument;
+        };
+
+        let submission_json = match unsafe { submission_json.copy_bytes() } {
+            Ok(submission_json) => submission_json,
+            Err(status) => return status,
+        };
+        let binding = match unsafe { binding.copy_bytes() } {
+            Ok(binding) => binding,
+            Err(status) => return status,
+        };
+        let submission = match parse_submission(&submission_json) {
+            Ok(submission) => submission,
+            Err(()) => return AgStatus::InvalidArgument,
+        };
+        let request = match VerifyRequest::new(&submission, &binding) {
+            Ok(request) => request,
+            Err(error) => return AgStatus::from(error),
+        };
+        let outcome = match service.call(|service| service.verify_submission(request)) {
+            Ok(outcome) => outcome,
+            Err(status) => return status,
+        };
+        let json = match serialize_outcome(outcome) {
+            Ok(json) => json,
+            Err(()) => return AgStatus::InternalError,
         };
 
         *out = AgOwnedBuffer::from_vec(json);
