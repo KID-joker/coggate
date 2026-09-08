@@ -83,17 +83,26 @@ impl AgHostBuffer {
 /// # Safety
 ///
 /// `buffer` must either be null or point to a valid, writable
-/// [`AgOwnedBuffer`]. For every non-null `data` pointer, including one with
-/// `len == 0` and `capacity > 0`, the complete `(data, len, capacity)` triple
-/// must be exact and unchanged from [`AgOwnedBuffer::from_vec`]. The allocation
-/// must remain uniquely owned by that buffer and must not have been previously
-/// freed or transferred. Neither the structure nor its allocation may be
-/// concurrently accessed for the duration of this call.
+/// [`AgOwnedBuffer`], and the structure may not be concurrently accessed for
+/// the duration of this call.
+///
+/// When `data` is non-null and `len <= capacity`, including when `len == 0` and
+/// `capacity > 0`, the complete `(data, len, capacity)` triple must be exact and
+/// unchanged from [`AgOwnedBuffer::from_vec`]. The allocation must remain
+/// uniquely owned by that buffer, must not have been previously freed or
+/// transferred, and may not be concurrently accessed during the call.
+///
+/// A null `data` pointer with nonzero metadata is accepted as a malformed input
+/// and rejected without inspecting an allocation. When `len > capacity`,
+/// `data` may contain any pointer value; that combination is rejected before
+/// `data` is dereferenced or passed to [`Vec::from_raw_parts`]. The provenance
+/// and ownership requirements above therefore do not apply to either malformed
+/// case.
 ///
 /// Runtime validation can reject null pointers and `len > capacity`, but it
 /// cannot establish allocation provenance, unique ownership, unchanged
-/// metadata, or the absence of concurrent access. Violating those requirements
-/// results in undefined behavior.
+/// metadata, or the absence of concurrent access for a reconstructable buffer.
+/// Violating those requirements results in undefined behavior.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ag_buffer_free(buffer: *mut AgOwnedBuffer) -> AgStatus {
     catch_status(|| unsafe { free_buffer(buffer) })
