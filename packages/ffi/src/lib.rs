@@ -1,8 +1,14 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
+mod callbacks;
 mod memory;
 mod status;
 
+pub use callbacks::{
+    AgActiveKeyCallback, AgAttemptOutcome, AgBeginAttemptCallback, AgBeginStatus, AgCallbackHeader,
+    AgFinishAttemptCallback, AgKeyByIdCallback, AgKeyCallbacks, AgKeyStatus, AgLifecycleCallbacks,
+    AgLifecycleStatus, AgObserveCallback, AgObserverCallbacks, AgStoreIssuedCallback,
+};
 pub use memory::{AgByteSlice, AgHostBuffer, AgHostRelease, AgOwnedBuffer, ag_buffer_free};
 pub use status::AgStatus;
 
