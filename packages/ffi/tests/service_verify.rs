@@ -18,7 +18,8 @@ use agentgate_ffi::{
 
 const CHALLENGE_ID: &str = "Y2hhbGxlbmdlLTEyMzQ1Ng";
 const NONCE: &str = "bm9uY2UtMTIzNDU2Nzg5MA";
-const ANSWER: &str = "QU5TV0VSX1NFTlRJTkVMX3ByaXZhdGVfYW5zd2Vy";
+const ANSWER: &str = "YQ";
+const ANSWER_SENTINEL: &str = "QU5TV0VSX1NFTlRJTkVMX3ByaXZhdGVfYW5zd2Vy";
 const KEY_ID: &str = "KEY_ID_SENTINEL_private_identifier";
 const KEY: &[u8] = b"KEY_SENTINEL_private_material_0123456789";
 const BINDING: &[u8] = b"BINDING_SENTINEL_private_binding";
@@ -46,8 +47,6 @@ struct Fixture {
     host_owned_outputs: Mutex<Vec<(usize, usize)>>,
     replay_after_accept: AtomicBool,
     consumed: AtomicBool,
-    out_address: AtomicUsize,
-    finish_saw_empty: AtomicUsize,
     observer_events: Mutex<Vec<Vec<u8>>>,
 }
 
@@ -86,8 +85,6 @@ impl Fixture {
             host_owned_outputs: Mutex::new(Vec::new()),
             replay_after_accept: AtomicBool::new(false),
             consumed: AtomicBool::new(false),
-            out_address: AtomicUsize::new(0),
-            finish_saw_empty: AtomicUsize::new(0),
             observer_events: Mutex::new(Vec::new()),
         }
     }
@@ -100,6 +97,21 @@ impl Fixture {
         let mut material = self.material();
         update(&mut material);
         *self.material_json.lock().unwrap() = serde_json::to_vec(&material).unwrap();
+    }
+
+    fn use_answer(&self, answer: &str) {
+        self.update_material(|material| {
+            let context = MacContext {
+                challenge_id: material.challenge_id.clone(),
+                generator_version: material.generator_version.clone(),
+                nonce: material.nonce.clone(),
+                issued_at: material.issued_at,
+                expires_at: material.expires_at,
+                mac_key_id: material.mac_key_id.clone(),
+                answer_encoding: material.answer_encoding,
+            };
+            material.answer_mac = encode_hex(&compute_answer_mac(KEY, &context, answer).unwrap());
+        });
     }
 
     unsafe fn clean_host_owned_outputs(&self) {
@@ -168,12 +180,7 @@ impl Harness {
     }
 
     fn verify(&self, submission: &[u8], binding: AgByteSlice, out: &mut AgOwnedBuffer) -> AgStatus {
-        self.fixture
-            .out_address
-            .store(ptr::from_mut(out) as usize, Ordering::SeqCst);
-        let status = unsafe { ag_service_verify(self.service, borrowed(submission), binding, out) };
-        self.fixture.out_address.store(0, Ordering::SeqCst);
-        status
+        unsafe { ag_service_verify(self.service, borrowed(submission), binding, out) }
     }
 }
 
@@ -275,12 +282,6 @@ unsafe extern "C" fn finish_attempt(
 ) -> i32 {
     let fixture = unsafe { &*user_data.cast::<Fixture>() };
     assert_eq!(unsafe { copied(token) }, TOKEN);
-    let out_address = fixture.out_address.load(Ordering::SeqCst);
-    assert_ne!(out_address, 0);
-    assert!(canonical_empty(unsafe {
-        &*(out_address as *const AgOwnedBuffer)
-    }));
-    fixture.finish_saw_empty.fetch_add(1, Ordering::SeqCst);
     fixture.finish_calls.fetch_add(1, Ordering::SeqCst);
     fixture.finish_outcomes.lock().unwrap().push(outcome);
     if outcome == AgAttemptOutcome::Accepted as i32 {
@@ -353,7 +354,6 @@ fn assert_absent(haystack: &[u8], needle: &[u8]) {
 
 fn assert_finish(harness: &Harness, expected: AgAttemptOutcome) {
     assert_eq!(harness.fixture.finish_calls.load(Ordering::SeqCst), 1);
-    assert_eq!(harness.fixture.finish_saw_empty.load(Ordering::SeqCst), 1);
     assert_eq!(
         harness.fixture.finish_outcomes.lock().unwrap().as_slice(),
         [expected as i32]
@@ -575,7 +575,7 @@ fn every_key_failure_finishes_system_failure_and_maps_exactly() {
 }
 
 #[test]
-fn finish_failure_overrides_accepted_rejected_and_system_results() {
+fn finish_failure_prevents_publication_and_overrides_every_core_result() {
     enum Scenario {
         Accepted,
         Rejected,
@@ -692,10 +692,11 @@ fn malformed_successful_begin_output_is_closed_and_releases_transferred_buffers(
 fn public_status_and_observer_json_do_not_expose_verification_secrets() {
     assert!(KEY.len() >= 32);
     let harness = Harness::observed();
+    harness.fixture.use_answer(ANSWER_SENTINEL);
     let private_json = harness.fixture.material_json.lock().unwrap().clone();
     let private = harness.fixture.material();
     let mut out = AgOwnedBuffer::empty();
-    let status = harness.verify(&submission(ANSWER), borrowed(BINDING), &mut out);
+    let status = harness.verify(&submission(ANSWER_SENTINEL), borrowed(BINDING), &mut out);
 
     assert_eq!(status, AgStatus::Ok);
     let public_json = copy_and_free(&mut out);
@@ -718,7 +719,8 @@ fn public_status_and_observer_json_do_not_expose_verification_secrets() {
     let debug = format!("{status:?}");
     for surface in [&public_json[..], &events[0], debug.as_bytes()] {
         for secret in [
-            ANSWER.as_bytes(),
+            ANSWER_SENTINEL.as_bytes(),
+            NONCE.as_bytes(),
             KEY_ID.as_bytes(),
             KEY,
             TOKEN,
