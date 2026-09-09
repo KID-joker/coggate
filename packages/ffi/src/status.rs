@@ -31,3 +31,39 @@ impl From<agentgate_core::ServiceError> for AgStatus {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use agentgate_core::ServiceError;
+
+    use super::AgStatus;
+
+    #[test]
+    fn every_service_error_maps_to_its_exact_abi_status() {
+        let cases = [
+            (
+                ServiceError::InvalidConfiguration,
+                AgStatus::InvalidConfiguration,
+            ),
+            (ServiceError::GenerationFailed, AgStatus::GenerationFailed),
+            (
+                ServiceError::InvalidChallengeMaterial,
+                AgStatus::InvalidChallengeMaterial,
+            ),
+            (
+                ServiceError::InvalidAnswerEncoding,
+                AgStatus::InvalidAnswerEncoding,
+            ),
+            (ServiceError::AnswerMismatch, AgStatus::AnswerMismatch),
+            (
+                ServiceError::UnsupportedGeneratorVersion,
+                AgStatus::UnsupportedGeneratorVersion,
+            ),
+            (ServiceError::InternalError, AgStatus::InternalError),
+        ];
+
+        for (error, expected) in cases {
+            assert_eq!(AgStatus::from(error), expected, "{}", error.code());
+        }
+    }
+}
