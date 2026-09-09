@@ -277,8 +277,8 @@ AG_API uint32_t AG_CALL ag_abi_version(void);
 
 /*
  * Returns the core package version as immutable borrowed UTF-8 bytes. The
- * storage is valid for the process lifetime, is not NUL-terminated, and must
- * not be released.
+ * storage is valid while the AgentGate library remains loaded (normally the
+ * process lifetime), is not NUL-terminated, and must not be released.
  */
 AG_API ag_byte_slice AG_CALL ag_core_version(void);
 

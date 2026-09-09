@@ -1,6 +1,7 @@
 use std::{
+    ffi::c_void,
     mem::{align_of, offset_of, size_of},
-    slice,
+    ptr, slice,
 };
 
 use agentgate_ffi::{
@@ -11,6 +12,39 @@ use agentgate_ffi::{
 };
 
 const HEADER: &str = include_str!("../include/agentgate.h");
+
+unsafe extern "C" {
+    #[link_name = "ag_abi_version"]
+    fn linked_ag_abi_version() -> u32;
+    #[link_name = "ag_core_version"]
+    fn linked_ag_core_version() -> AgByteSlice;
+    #[link_name = "ag_service_create"]
+    fn linked_ag_service_create(
+        lifecycle: *const AgLifecycleCallbacks,
+        keys: *const AgKeyCallbacks,
+        observer: *const AgObserverCallbacks,
+        out: *mut *mut c_void,
+    ) -> AgStatus;
+    #[link_name = "ag_service_destroy"]
+    fn linked_ag_service_destroy(service: *mut c_void) -> AgStatus;
+    #[link_name = "ag_service_issue"]
+    fn linked_ag_service_issue(
+        service: *mut c_void,
+        version: AgByteSlice,
+        binding: AgByteSlice,
+        attempt_limit: u32,
+        out: *mut AgOwnedBuffer,
+    ) -> AgStatus;
+    #[link_name = "ag_service_verify"]
+    fn linked_ag_service_verify(
+        service: *mut c_void,
+        submission_json: AgByteSlice,
+        binding: AgByteSlice,
+        out: *mut AgOwnedBuffer,
+    ) -> AgStatus;
+    #[link_name = "ag_buffer_free"]
+    fn linked_ag_buffer_free(buffer: *mut AgOwnedBuffer) -> AgStatus;
+}
 
 fn header_integer(name: &str) -> i64 {
     let prefix = format!("#define {name} ");
@@ -137,6 +171,53 @@ fn version_exports_are_stable_and_core_version_is_static_utf8() {
     let bytes = unsafe { slice::from_raw_parts(first.data, first.len) };
     assert_eq!(bytes, env!("CARGO_PKG_VERSION").as_bytes());
     assert!(std::str::from_utf8(bytes).is_ok());
+}
+
+#[test]
+fn exact_exported_symbol_names_resolve_and_are_safely_callable() {
+    let empty_slice = AgByteSlice {
+        data: ptr::null(),
+        len: 0,
+    };
+    let mut output = AgOwnedBuffer::empty();
+    let mut service = ptr::null_mut();
+
+    // SAFETY: Every call uses the exact public ABI signature. Null service and
+    // callback-table pointers are documented, checked invalid inputs; output
+    // pointers refer to initialized, aligned, writable local storage.
+    unsafe {
+        assert_eq!(linked_ag_abi_version(), AG_ABI_VERSION_1);
+        let version = linked_ag_core_version();
+        assert!(!version.data.is_null());
+        assert_eq!(
+            slice::from_raw_parts(version.data, version.len),
+            env!("CARGO_PKG_VERSION").as_bytes()
+        );
+        assert_eq!(
+            linked_ag_service_create(ptr::null(), ptr::null(), ptr::null(), &mut service),
+            AgStatus::CallbackFailed
+        );
+        assert!(service.is_null());
+        assert_eq!(
+            linked_ag_service_issue(
+                ptr::null_mut(),
+                empty_slice,
+                empty_slice,
+                AgAttemptLimit::One as u32,
+                &mut output,
+            ),
+            AgStatus::InvalidArgument
+        );
+        assert_eq!(
+            linked_ag_service_verify(ptr::null_mut(), empty_slice, empty_slice, &mut output,),
+            AgStatus::InvalidArgument
+        );
+        assert_eq!(
+            linked_ag_service_destroy(ptr::null_mut()),
+            AgStatus::InvalidArgument
+        );
+        assert_eq!(linked_ag_buffer_free(&mut output), AgStatus::Ok);
+    }
 }
 
 #[test]
