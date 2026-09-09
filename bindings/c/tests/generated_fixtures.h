@@ -102,7 +102,7 @@ static const ag_binding_fixture_case AG_BINDING_FIXTURE_CASES[] = {
         INT32_C(7),
         "internal_error",
         NULL,
-        "[\"begin_attempt:exception\"]",
+        "[\"begin_attempt:exception\",\"observe:service_failed\"]",
         UINT32_C(0),
         "[\"CALLBACK_EXCEPTION_SENTINEL\"]"
     },
@@ -158,7 +158,7 @@ static const ag_binding_fixture_case AG_BINDING_FIXTURE_CASES[] = {
         INT32_C(0),
         "ok",
         "{\"status\":\"accepted\"}",
-        "[\"begin_attempt\",\"release:token\",\"release:material\",\"key_by_id:old\",\"release:key\",\"finish_attempt:accepted\"]",
+        "[\"begin_attempt\",\"release:token\",\"release:material\",\"key_by_id:old\",\"release:key\",\"finish_attempt:accepted\",\"observe:verification_completed\"]",
         UINT32_C(3),
         "[\"ACTIVE_KEY_SENTINEL\"]"
     },
@@ -171,7 +171,7 @@ static const ag_binding_fixture_case AG_BINDING_FIXTURE_CASES[] = {
         "{\"callback_exception\":false,\"key_id\":\"none\",\"status\":\"unused\"}",
         INT32_C(0),
         "ok",
-        "{\"reason\":\"already_consumed\",\"status\":\"rejected\"}",
+        "{\"status\":\"rejected\",\"reason\":\"already_consumed\"}",
         "[\"begin_attempt\",\"observe:verification_completed\"]",
         UINT32_C(0),
         "[\"MATERIAL_SENTINEL\"]"
@@ -185,7 +185,7 @@ static const ag_binding_fixture_case AG_BINDING_FIXTURE_CASES[] = {
         "{\"callback_exception\":false,\"key_id\":\"none\",\"status\":\"unused\"}",
         INT32_C(0),
         "ok",
-        "{\"reason\":\"attempts_exhausted\",\"status\":\"rejected\"}",
+        "{\"status\":\"rejected\",\"reason\":\"attempts_exhausted\"}",
         "[\"begin_attempt\",\"observe:verification_completed\"]",
         UINT32_C(0),
         "[\"MATERIAL_SENTINEL\"]"
@@ -199,7 +199,7 @@ static const ag_binding_fixture_case AG_BINDING_FIXTURE_CASES[] = {
         "{\"callback_exception\":false,\"key_id\":\"none\",\"status\":\"unused\"}",
         INT32_C(0),
         "ok",
-        "{\"reason\":\"binding_mismatch\",\"status\":\"rejected\"}",
+        "{\"status\":\"rejected\",\"reason\":\"binding_mismatch\"}",
         "[\"begin_attempt\",\"observe:verification_completed\"]",
         UINT32_C(0),
         "[\"BINDING_SENTINEL\"]"
@@ -213,7 +213,7 @@ static const ag_binding_fixture_case AG_BINDING_FIXTURE_CASES[] = {
         "{\"callback_exception\":false,\"key_id\":\"none\",\"status\":\"unused\"}",
         INT32_C(0),
         "ok",
-        "{\"reason\":\"expired\",\"status\":\"rejected\"}",
+        "{\"status\":\"rejected\",\"reason\":\"expired\"}",
         "[\"begin_attempt\",\"observe:verification_completed\"]",
         UINT32_C(0),
         "[\"MATERIAL_SENTINEL\"]"
@@ -227,7 +227,7 @@ static const ag_binding_fixture_case AG_BINDING_FIXTURE_CASES[] = {
         "{\"callback_exception\":false,\"key_id\":\"none\",\"status\":\"unused\"}",
         INT32_C(0),
         "ok",
-        "{\"reason\":\"nonce_mismatch\",\"status\":\"rejected\"}",
+        "{\"status\":\"rejected\",\"reason\":\"nonce_mismatch\"}",
         "[\"begin_attempt\",\"observe:verification_completed\"]",
         UINT32_C(0),
         "[\"NONCE_SENTINEL\"]"
@@ -241,7 +241,7 @@ static const ag_binding_fixture_case AG_BINDING_FIXTURE_CASES[] = {
         "{\"callback_exception\":false,\"key_id\":\"none\",\"status\":\"unused\"}",
         INT32_C(0),
         "ok",
-        "{\"reason\":\"not_found\",\"status\":\"rejected\"}",
+        "{\"status\":\"rejected\",\"reason\":\"not_found\"}",
         "[\"begin_attempt\",\"observe:verification_completed\"]",
         UINT32_C(0),
         "[\"MATERIAL_SENTINEL\"]"
@@ -269,7 +269,7 @@ static const ag_binding_fixture_case AG_BINDING_FIXTURE_CASES[] = {
         "{\"callback_exception\":false,\"key_id\":\"none\",\"status\":\"unused\"}",
         INT32_C(0),
         "ok",
-        "{\"reason\":\"already_consumed\",\"status\":\"rejected\"}",
+        "{\"status\":\"rejected\",\"reason\":\"already_consumed\"}",
         "[\"begin_attempt\",\"observe:verification_completed\"]",
         UINT32_C(0),
         "[\"REPLAY_MATERIAL_SENTINEL\"]"

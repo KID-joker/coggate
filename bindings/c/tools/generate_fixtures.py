@@ -328,6 +328,10 @@ def _validate_case(case, status_by_value):
         item.startswith("release:") for item in trace
     ):
         raise FixtureError()
+    if case["operation"] in {"verify", "observe"} and not any(
+        item.startswith("observe:") for item in trace
+    ):
+        raise FixtureError()
 
     if case["lifecycle"]["begin_status"] == "exception":
         if (case["expected_status"], case["expected_code"]) != (7, "internal_error"):
@@ -385,6 +389,14 @@ def _c_string(value):
     return encoded
 
 
+def _outcome_wire_json(outcome):
+    if outcome is None:
+        return None
+    if outcome["status"] == "accepted":
+        return '{"status":"accepted"}'
+    return '{"status":"rejected","reason":%s}' % _json(outcome["reason"])
+
+
 def _c_bytes(name, encoded):
     values = ", ".join("0x%02x" % byte for byte in bytes.fromhex(encoded))
     return "static const uint8_t %s[] = {%s};" % (name, values)
@@ -411,7 +423,7 @@ def render(manifest):
             _c_string(case["keys"]),
             "INT32_C(%d)" % case["expected_status"],
             _c_string(case["expected_code"]),
-            _c_string(case["expected_outcome"]),
+            _c_string(_outcome_wire_json(case["expected_outcome"])),
             _c_string(case["expected_trace"]),
             "UINT32_C(%d)" % case["expected_release_count"],
             _c_string(case["forbidden_sentinels"]),

@@ -71,6 +71,14 @@ class SharedBindingFixtureContractTests(unittest.TestCase):
             b"b9cb8fd013b40e31c7bc3a1c33b7e36143ef98d045a924ed09ebd38ff07cec2c",
             generated,
         )
+        self.assertIn(
+            b'{\\"status\\":\\"rejected\\",\\"reason\\":\\"already_consumed\\"}',
+            generated,
+        )
+        self.assertNotIn(
+            b'{\\"reason\\":\\"already_consumed\\",\\"status\\":\\"rejected\\"}',
+            generated,
+        )
 
     def test_manifest_has_exact_schema_and_required_scenarios(self):
         manifest = json.loads(FIXTURE.read_text(encoding="utf-8"))
@@ -136,6 +144,12 @@ class SharedBindingFixtureContractTests(unittest.TestCase):
             "release:key"
         )
         mutations["release count and trace mismatch"] = missing_release_trace
+
+        missing_observer_trace = copy.deepcopy(manifest)
+        missing_observer_trace["cases"][0]["expected_trace"].remove(
+            "observe:verification_completed"
+        )
+        mutations["missing observer expectation"] = missing_observer_trace
 
         invalid_code = copy.deepcopy(manifest)
         invalid_code["cases"][0]["expected_code"] = "secret_failure"

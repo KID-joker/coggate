@@ -64,7 +64,7 @@
       "lifecycle": {"begin_status": "exception", "finish_status": "unused", "material": "none", "token": "none", "replay": false, "callback_exception": true},
       "keys": {"status": "unused", "key_id": "none", "callback_exception": false},
       "expected_status": 7, "expected_code": "internal_error", "expected_outcome": null,
-      "expected_trace": ["begin_attempt:exception"], "expected_release_count": 0,
+      "expected_trace": ["begin_attempt:exception", "observe:service_failed"], "expected_release_count": 0,
       "forbidden_sentinels": ["CALLBACK_EXCEPTION_SENTINEL"]
     },
     {
@@ -102,7 +102,7 @@
       "lifecycle": {"begin_status": "ok", "finish_status": "ok", "material": "primary", "token": "default", "replay": false, "callback_exception": false},
       "keys": {"status": "ok", "key_id": "old", "callback_exception": false},
       "expected_status": 0, "expected_code": "ok", "expected_outcome": {"status": "accepted"},
-      "expected_trace": ["begin_attempt", "release:token", "release:material", "key_by_id:old", "release:key", "finish_attempt:accepted"],
+      "expected_trace": ["begin_attempt", "release:token", "release:material", "key_by_id:old", "release:key", "finish_attempt:accepted", "observe:verification_completed"],
       "expected_release_count": 3, "forbidden_sentinels": ["ACTIVE_KEY_SENTINEL"]
     },
     {
