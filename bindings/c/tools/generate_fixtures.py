@@ -113,18 +113,19 @@ TRACE_VALUES = {
     "observe:service_failed",
     "release:material",
     "release:token",
+    "release:key",
     "service_destroy",
 }
 KNOWN_VECTOR = {
-    "challenge_id": "019abc",
-    "nonce": "bm9uY2U",
-    "answer": "YUI5MmtM",
+    "challenge_id": "Y2hhbGxlbmdlLTEyMzQ1Ng",
+    "nonce": "bm9uY2UtMTIzNDU2Nzg5MA",
+    "answer": "YQ",
     "old_key_id": "2026-08",
     "old_key_hex": "3031323334353637383961626364656630313233343536373839616263646566",
     "generator_version": "1.0",
     "issued_at": 1788062400,
     "expires_at": 1788062408,
-    "answer_mac": "8f2828d022652cd0c7c322cd6a6bff93605dc19e44abb35494e737d778630cf9",
+    "answer_mac": "b9cb8fd013b40e31c7bc3a1c33b7e36143ef98d045a924ed09ebd38ff07cec2c",
 }
 OBSERVER_FIELDS = {
     "event",
@@ -184,6 +185,14 @@ def _base64url(value):
         raise FixtureError()
 
 
+def _random_token(value):
+    _base64url(value)
+    padding = "=" * ((4 - len(value) % 4) % 4)
+    decoded = base64.urlsafe_b64decode(value + padding)
+    if len(value) != 22 or len(decoded) != 16:
+        raise FixtureError()
+
+
 def _validate_statuses(statuses):
     if not isinstance(statuses, dict) or set(statuses) != set(STATUS_DEFINITIONS):
         raise FixtureError()
@@ -198,8 +207,9 @@ def _validate_statuses(statuses):
 
 def _validate_vectors(vectors):
     _exact_object(vectors, VECTOR_KEYS)
-    _string(vectors["challenge_id"])
-    for field in ("nonce", "answer", "wrong_answer"):
+    for field in ("challenge_id", "nonce"):
+        _random_token(vectors[field])
+    for field in ("answer", "wrong_answer"):
         _base64url(vectors[field])
     for field in ("binding_hex", "token_hex", "active_key_hex", "old_key_hex"):
         _hex(vectors[field])
@@ -208,8 +218,8 @@ def _validate_vectors(vectors):
 
     material = vectors["private_material"]
     _exact_object(material, MATERIAL_KEYS)
-    _string(material["challenge_id"])
-    _base64url(material["nonce"])
+    _random_token(material["challenge_id"])
+    _random_token(material["nonce"])
     for field in ("generator_version", "mac_key_id"):
         _string(material[field])
     for field in ("issued_at", "expires_at"):
@@ -241,9 +251,9 @@ def _validate_submission(submission, operation):
             raise FixtureError()
         return
     _exact_object(submission, SUBMISSION_KEYS)
-    _string(submission["challenge_id"])
-    for field in ("nonce", "answer"):
-        _base64url(submission[field])
+    _random_token(submission["challenge_id"])
+    _random_token(submission["nonce"])
+    _base64url(submission["answer"])
 
 
 def _validate_lifecycle(lifecycle):
@@ -309,10 +319,14 @@ def _validate_case(case, status_by_value):
     if any(item not in TRACE_VALUES for item in trace):
         raise FixtureError()
     _integer(case["expected_release_count"])
-    if case["expected_release_count"] < 0:
+    if not 0 <= case["expected_release_count"] <= 0xFFFFFFFF:
         raise FixtureError()
     sentinels = case["forbidden_sentinels"]
     if not isinstance(sentinels, list) or not sentinels or any(not isinstance(item, str) or not item for item in sentinels):
+        raise FixtureError()
+    if case["expected_release_count"] != sum(
+        item.startswith("release:") for item in trace
+    ):
         raise FixtureError()
 
     if case["lifecycle"]["begin_status"] == "exception":
@@ -343,6 +357,7 @@ def _validate_case(case, status_by_value):
 
 def validate(manifest):
     _exact_object(manifest, TOP_KEYS)
+    _integer(manifest["fixture_version"])
     if manifest["fixture_version"] != 1:
         raise FixtureError()
     _validate_statuses(manifest["statuses"])

@@ -68,7 +68,7 @@ class SharedBindingFixtureContractTests(unittest.TestCase):
         self.assertIn(b"AG_BINDING_FIXTURE_VECTORS", generated)
         self.assertIn(b"AG_BINDING_FIXTURE_OLD_KEY", generated)
         self.assertIn(
-            b"8f2828d022652cd0c7c322cd6a6bff93605dc19e44abb35494e737d778630cf9",
+            b"b9cb8fd013b40e31c7bc3a1c33b7e36143ef98d045a924ed09ebd38ff07cec2c",
             generated,
         )
 
@@ -123,6 +123,20 @@ class SharedBindingFixtureContractTests(unittest.TestCase):
         invalid_status["cases"][0]["expected_status"] = 999
         mutations["invalid status"] = invalid_status
 
+        boolean_fixture_version = copy.deepcopy(manifest)
+        boolean_fixture_version["fixture_version"] = True
+        mutations["boolean fixture version"] = boolean_fixture_version
+
+        oversized_release_count = copy.deepcopy(manifest)
+        oversized_release_count["cases"][0]["expected_release_count"] = 2**32
+        mutations["oversized release count"] = oversized_release_count
+
+        missing_release_trace = copy.deepcopy(manifest)
+        missing_release_trace["cases"][0]["expected_trace"].remove(
+            "release:key"
+        )
+        mutations["release count and trace mismatch"] = missing_release_trace
+
         invalid_code = copy.deepcopy(manifest)
         invalid_code["cases"][0]["expected_code"] = "secret_failure"
         mutations["invalid status code"] = invalid_code
@@ -141,6 +155,22 @@ class SharedBindingFixtureContractTests(unittest.TestCase):
         invalid_base64url = copy.deepcopy(manifest)
         invalid_base64url["cases"][0]["submission"]["answer"] = "YQ=="
         mutations["invalid base64url"] = invalid_base64url
+
+        invalid_token_alphabet = copy.deepcopy(manifest)
+        invalid_token_alphabet["cases"][0]["submission"][
+            "challenge_id"
+        ] = "not+canonical-token-12"
+        mutations["invalid random token alphabet"] = invalid_token_alphabet
+
+        short_random_token = copy.deepcopy(manifest)
+        short_random_token["cases"][0]["submission"]["nonce"] = "bm9uY2U"
+        mutations["short random token"] = short_random_token
+
+        noncanonical_random_token = copy.deepcopy(manifest)
+        noncanonical_random_token["cases"][0]["submission"][
+            "challenge_id"
+        ] = "Y2hhbGxlbmdlLTEyMzQ1Nn"
+        mutations["noncanonical random token"] = noncanonical_random_token
 
         non_string_begin = copy.deepcopy(manifest)
         non_string_begin["cases"][0]["lifecycle"]["begin_status"] = [
@@ -227,6 +257,7 @@ class SharedBindingFixtureContractTests(unittest.TestCase):
             "finish_attempt:accepted",
             "release:token",
             "release:material",
+            "release:key",
             "observe:verification_completed",
         ]
         mutations["release after core callbacks"] = late_release

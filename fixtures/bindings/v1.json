@@ -14,9 +14,9 @@
     "panic_caught": {"value": 102, "code": "panic_caught"}
   },
   "vectors": {
-    "challenge_id": "019abc",
-    "nonce": "bm9uY2U",
-    "answer": "YUI5MmtM",
+    "challenge_id": "Y2hhbGxlbmdlLTEyMzQ1Ng",
+    "nonce": "bm9uY2UtMTIzNDU2Nzg5MA",
+    "answer": "YQ",
     "wrong_answer": "Yg",
     "binding_hex": "0011223344556677",
     "token_hex": "aabbccdd",
@@ -25,13 +25,13 @@
     "old_key_id": "2026-08",
     "old_key_hex": "3031323334353637383961626364656630313233343536373839616263646566",
     "private_material": {
-      "challenge_id": "019abc",
+      "challenge_id": "Y2hhbGxlbmdlLTEyMzQ1Ng",
       "generator_version": "1.0",
-      "nonce": "bm9uY2U",
+      "nonce": "bm9uY2UtMTIzNDU2Nzg5MA",
       "issued_at": 1788062400,
       "expires_at": 1788062408,
       "mac_key_id": "2026-08",
-      "answer_mac": "8f2828d022652cd0c7c322cd6a6bff93605dc19e44abb35494e737d778630cf9",
+      "answer_mac": "b9cb8fd013b40e31c7bc3a1c33b7e36143ef98d045a924ed09ebd38ff07cec2c",
       "answer_encoding": "base64url"
     },
     "observer_allowlist": ["event", "challenge_id", "generator_version", "disposition", "elapsed_since_issue_us", "duration_us"]
@@ -39,27 +39,27 @@
   "cases": [
     {
       "id": "accepted", "operation": "verify",
-      "submission": {"challenge_id": "019abc", "nonce": "bm9uY2U", "answer": "YUI5MmtM"},
+      "submission": {"challenge_id": "Y2hhbGxlbmdlLTEyMzQ1Ng", "nonce": "bm9uY2UtMTIzNDU2Nzg5MA", "answer": "YQ"},
       "binding_hex": "0011223344556677",
       "lifecycle": {"begin_status": "ok", "finish_status": "ok", "material": "primary", "token": "default", "replay": false, "callback_exception": false},
       "keys": {"status": "ok", "key_id": "old", "callback_exception": false},
       "expected_status": 0, "expected_code": "ok", "expected_outcome": {"status": "accepted"},
-      "expected_trace": ["begin_attempt", "release:token", "release:material", "key_by_id:old", "finish_attempt:accepted", "observe:verification_completed"],
-      "expected_release_count": 2, "forbidden_sentinels": ["PRIVATE_ANSWER_SENTINEL", "KEY_SENTINEL"]
+      "expected_trace": ["begin_attempt", "release:token", "release:material", "key_by_id:old", "release:key", "finish_attempt:accepted", "observe:verification_completed"],
+      "expected_release_count": 3, "forbidden_sentinels": ["PRIVATE_ANSWER_SENTINEL", "KEY_SENTINEL"]
     },
     {
       "id": "answer_mismatch", "operation": "verify",
-      "submission": {"challenge_id": "019abc", "nonce": "bm9uY2U", "answer": "Yg"},
+      "submission": {"challenge_id": "Y2hhbGxlbmdlLTEyMzQ1Ng", "nonce": "bm9uY2UtMTIzNDU2Nzg5MA", "answer": "Yg"},
       "binding_hex": "0011223344556677",
       "lifecycle": {"begin_status": "ok", "finish_status": "ok", "material": "primary", "token": "default", "replay": false, "callback_exception": false},
       "keys": {"status": "ok", "key_id": "old", "callback_exception": false},
       "expected_status": 5, "expected_code": "answer_mismatch", "expected_outcome": null,
-      "expected_trace": ["begin_attempt", "release:token", "release:material", "key_by_id:old", "finish_attempt:rejected", "observe:verification_completed"],
-      "expected_release_count": 2, "forbidden_sentinels": ["PRIVATE_ANSWER_SENTINEL", "KEY_SENTINEL"]
+      "expected_trace": ["begin_attempt", "release:token", "release:material", "key_by_id:old", "release:key", "finish_attempt:rejected", "observe:verification_completed"],
+      "expected_release_count": 3, "forbidden_sentinels": ["PRIVATE_ANSWER_SENTINEL", "KEY_SENTINEL"]
     },
     {
       "id": "callback_exception", "operation": "verify",
-      "submission": {"challenge_id": "019abc", "nonce": "bm9uY2U", "answer": "YUI5MmtM"},
+      "submission": {"challenge_id": "Y2hhbGxlbmdlLTEyMzQ1Ng", "nonce": "bm9uY2UtMTIzNDU2Nzg5MA", "answer": "YQ"},
       "binding_hex": "0011223344556677",
       "lifecycle": {"begin_status": "exception", "finish_status": "unused", "material": "none", "token": "none", "replay": false, "callback_exception": true},
       "keys": {"status": "unused", "key_id": "none", "callback_exception": false},
@@ -77,37 +77,37 @@
     },
     {
       "id": "exact_release", "operation": "release",
-      "submission": {"challenge_id": "019abc", "nonce": "bm9uY2U", "answer": "YUI5MmtM"},
+      "submission": {"challenge_id": "Y2hhbGxlbmdlLTEyMzQ1Ng", "nonce": "bm9uY2UtMTIzNDU2Nzg5MA", "answer": "YQ"},
       "binding_hex": "0011223344556677",
       "lifecycle": {"begin_status": "ok", "finish_status": "ok", "material": "primary", "token": "default", "replay": false, "callback_exception": false},
       "keys": {"status": "ok", "key_id": "old", "callback_exception": false},
       "expected_status": 0, "expected_code": "ok", "expected_outcome": {"status": "accepted"},
-      "expected_trace": ["begin_attempt", "release:token", "release:material", "key_by_id:old", "finish_attempt:accepted"],
-      "expected_release_count": 2, "forbidden_sentinels": ["DOUBLE_RELEASE_SENTINEL"]
+      "expected_trace": ["begin_attempt", "release:token", "release:material", "key_by_id:old", "release:key", "finish_attempt:accepted"],
+      "expected_release_count": 3, "forbidden_sentinels": ["DOUBLE_RELEASE_SENTINEL"]
     },
     {
       "id": "finish_failure", "operation": "verify",
-      "submission": {"challenge_id": "019abc", "nonce": "bm9uY2U", "answer": "YUI5MmtM"},
+      "submission": {"challenge_id": "Y2hhbGxlbmdlLTEyMzQ1Ng", "nonce": "bm9uY2UtMTIzNDU2Nzg5MA", "answer": "YQ"},
       "binding_hex": "0011223344556677",
       "lifecycle": {"begin_status": "ok", "finish_status": "internal", "material": "primary", "token": "default", "replay": false, "callback_exception": false},
       "keys": {"status": "ok", "key_id": "old", "callback_exception": false},
       "expected_status": 7, "expected_code": "internal_error", "expected_outcome": null,
-      "expected_trace": ["begin_attempt", "release:token", "release:material", "key_by_id:old", "finish_attempt:accepted", "observe:service_failed"],
-      "expected_release_count": 2, "forbidden_sentinels": ["FINISH_FAILURE_SENTINEL"]
+      "expected_trace": ["begin_attempt", "release:token", "release:material", "key_by_id:old", "release:key", "finish_attempt:accepted", "observe:service_failed"],
+      "expected_release_count": 3, "forbidden_sentinels": ["FINISH_FAILURE_SENTINEL"]
     },
     {
       "id": "key_rotation_old_key", "operation": "verify",
-      "submission": {"challenge_id": "019abc", "nonce": "bm9uY2U", "answer": "YUI5MmtM"},
+      "submission": {"challenge_id": "Y2hhbGxlbmdlLTEyMzQ1Ng", "nonce": "bm9uY2UtMTIzNDU2Nzg5MA", "answer": "YQ"},
       "binding_hex": "0011223344556677",
       "lifecycle": {"begin_status": "ok", "finish_status": "ok", "material": "primary", "token": "default", "replay": false, "callback_exception": false},
       "keys": {"status": "ok", "key_id": "old", "callback_exception": false},
       "expected_status": 0, "expected_code": "ok", "expected_outcome": {"status": "accepted"},
-      "expected_trace": ["begin_attempt", "release:token", "release:material", "key_by_id:old", "finish_attempt:accepted"],
-      "expected_release_count": 2, "forbidden_sentinels": ["ACTIVE_KEY_SENTINEL"]
+      "expected_trace": ["begin_attempt", "release:token", "release:material", "key_by_id:old", "release:key", "finish_attempt:accepted"],
+      "expected_release_count": 3, "forbidden_sentinels": ["ACTIVE_KEY_SENTINEL"]
     },
     {
       "id": "lifecycle_already_consumed", "operation": "verify",
-      "submission": {"challenge_id": "019abc", "nonce": "bm9uY2U", "answer": "YUI5MmtM"}, "binding_hex": "0011223344556677",
+      "submission": {"challenge_id": "Y2hhbGxlbmdlLTEyMzQ1Ng", "nonce": "bm9uY2UtMTIzNDU2Nzg5MA", "answer": "YQ"}, "binding_hex": "0011223344556677",
       "lifecycle": {"begin_status": "already_consumed", "finish_status": "unused", "material": "none", "token": "none", "replay": false, "callback_exception": false},
       "keys": {"status": "unused", "key_id": "none", "callback_exception": false},
       "expected_status": 0, "expected_code": "ok", "expected_outcome": {"status": "rejected", "reason": "already_consumed"},
@@ -115,7 +115,7 @@
     },
     {
       "id": "lifecycle_attempts_exhausted", "operation": "verify",
-      "submission": {"challenge_id": "019abc", "nonce": "bm9uY2U", "answer": "YUI5MmtM"}, "binding_hex": "0011223344556677",
+      "submission": {"challenge_id": "Y2hhbGxlbmdlLTEyMzQ1Ng", "nonce": "bm9uY2UtMTIzNDU2Nzg5MA", "answer": "YQ"}, "binding_hex": "0011223344556677",
       "lifecycle": {"begin_status": "attempts_exhausted", "finish_status": "unused", "material": "none", "token": "none", "replay": false, "callback_exception": false},
       "keys": {"status": "unused", "key_id": "none", "callback_exception": false},
       "expected_status": 0, "expected_code": "ok", "expected_outcome": {"status": "rejected", "reason": "attempts_exhausted"},
@@ -123,7 +123,7 @@
     },
     {
       "id": "lifecycle_binding_mismatch", "operation": "verify",
-      "submission": {"challenge_id": "019abc", "nonce": "bm9uY2U", "answer": "YUI5MmtM"}, "binding_hex": "0011223344556677",
+      "submission": {"challenge_id": "Y2hhbGxlbmdlLTEyMzQ1Ng", "nonce": "bm9uY2UtMTIzNDU2Nzg5MA", "answer": "YQ"}, "binding_hex": "0011223344556677",
       "lifecycle": {"begin_status": "binding_mismatch", "finish_status": "unused", "material": "none", "token": "none", "replay": false, "callback_exception": false},
       "keys": {"status": "unused", "key_id": "none", "callback_exception": false},
       "expected_status": 0, "expected_code": "ok", "expected_outcome": {"status": "rejected", "reason": "binding_mismatch"},
@@ -131,7 +131,7 @@
     },
     {
       "id": "lifecycle_expired", "operation": "verify",
-      "submission": {"challenge_id": "019abc", "nonce": "bm9uY2U", "answer": "YUI5MmtM"}, "binding_hex": "0011223344556677",
+      "submission": {"challenge_id": "Y2hhbGxlbmdlLTEyMzQ1Ng", "nonce": "bm9uY2UtMTIzNDU2Nzg5MA", "answer": "YQ"}, "binding_hex": "0011223344556677",
       "lifecycle": {"begin_status": "expired", "finish_status": "unused", "material": "none", "token": "none", "replay": false, "callback_exception": false},
       "keys": {"status": "unused", "key_id": "none", "callback_exception": false},
       "expected_status": 0, "expected_code": "ok", "expected_outcome": {"status": "rejected", "reason": "expired"},
@@ -139,7 +139,7 @@
     },
     {
       "id": "lifecycle_nonce_mismatch", "operation": "verify",
-      "submission": {"challenge_id": "019abc", "nonce": "bm9uY2U", "answer": "YUI5MmtM"}, "binding_hex": "0011223344556677",
+      "submission": {"challenge_id": "Y2hhbGxlbmdlLTEyMzQ1Ng", "nonce": "bm9uY2UtMTIzNDU2Nzg5MA", "answer": "YQ"}, "binding_hex": "0011223344556677",
       "lifecycle": {"begin_status": "nonce_mismatch", "finish_status": "unused", "material": "none", "token": "none", "replay": false, "callback_exception": false},
       "keys": {"status": "unused", "key_id": "none", "callback_exception": false},
       "expected_status": 0, "expected_code": "ok", "expected_outcome": {"status": "rejected", "reason": "nonce_mismatch"},
@@ -147,7 +147,7 @@
     },
     {
       "id": "lifecycle_not_found", "operation": "verify",
-      "submission": {"challenge_id": "019abc", "nonce": "bm9uY2U", "answer": "YUI5MmtM"}, "binding_hex": "0011223344556677",
+      "submission": {"challenge_id": "Y2hhbGxlbmdlLTEyMzQ1Ng", "nonce": "bm9uY2UtMTIzNDU2Nzg5MA", "answer": "YQ"}, "binding_hex": "0011223344556677",
       "lifecycle": {"begin_status": "not_found", "finish_status": "unused", "material": "none", "token": "none", "replay": false, "callback_exception": false},
       "keys": {"status": "unused", "key_id": "none", "callback_exception": false},
       "expected_status": 0, "expected_code": "ok", "expected_outcome": {"status": "rejected", "reason": "not_found"},
@@ -155,16 +155,16 @@
     },
     {
       "id": "observer_allowlist", "operation": "observe",
-      "submission": {"challenge_id": "019abc", "nonce": "bm9uY2U", "answer": "YUI5MmtM"}, "binding_hex": "0011223344556677",
+      "submission": {"challenge_id": "Y2hhbGxlbmdlLTEyMzQ1Ng", "nonce": "bm9uY2UtMTIzNDU2Nzg5MA", "answer": "YQ"}, "binding_hex": "0011223344556677",
       "lifecycle": {"begin_status": "ok", "finish_status": "ok", "material": "primary", "token": "default", "replay": false, "callback_exception": false},
       "keys": {"status": "ok", "key_id": "old", "callback_exception": false},
       "expected_status": 0, "expected_code": "ok", "expected_outcome": {"status": "accepted"},
-      "expected_trace": ["begin_attempt", "release:token", "release:material", "key_by_id:old", "finish_attempt:accepted", "observe:verification_completed"],
-      "expected_release_count": 2, "forbidden_sentinels": ["PRIVATE_ANSWER_SENTINEL", "KEY_SENTINEL", "TOKEN_SENTINEL"]
+      "expected_trace": ["begin_attempt", "release:token", "release:material", "key_by_id:old", "release:key", "finish_attempt:accepted", "observe:verification_completed"],
+      "expected_release_count": 3, "forbidden_sentinels": ["PRIVATE_ANSWER_SENTINEL", "KEY_SENTINEL", "TOKEN_SENTINEL"]
     },
     {
       "id": "replay_after_accept", "operation": "verify",
-      "submission": {"challenge_id": "019abc", "nonce": "bm9uY2U", "answer": "YUI5MmtM"}, "binding_hex": "0011223344556677",
+      "submission": {"challenge_id": "Y2hhbGxlbmdlLTEyMzQ1Ng", "nonce": "bm9uY2UtMTIzNDU2Nzg5MA", "answer": "YQ"}, "binding_hex": "0011223344556677",
       "lifecycle": {"begin_status": "already_consumed", "finish_status": "unused", "material": "none", "token": "none", "replay": true, "callback_exception": false},
       "keys": {"status": "unused", "key_id": "none", "callback_exception": false},
       "expected_status": 0, "expected_code": "ok", "expected_outcome": {"status": "rejected", "reason": "already_consumed"},
