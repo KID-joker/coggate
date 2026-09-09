@@ -102,11 +102,12 @@ pub type AgHostRelease = unsafe extern "C" fn(*mut c_void, *mut u8, usize);
 ///
 /// Ownership transfers to Rust only when the producing callback returns its
 /// `Ok` status. On every other status the buffer remains host-owned and Rust
-/// neither reads nor releases it. After transfer, a null pointer is permitted
-/// only with `len == 0` for an output documented as optional. Every non-null
-/// `data` pointer must be readable for `len` bytes and must have a non-null
-/// [`AgHostRelease`], including when `len == 0`. Rust releases a transferred
-/// non-null buffer exactly once with the unchanged tuple after its last read.
+/// neither reads nor releases it. An optional empty output must use the
+/// canonical `(null, 0, null, None)` tuple. Every non-null `data` pointer must
+/// be readable for `len` bytes and must have a non-null [`AgHostRelease`],
+/// including when `len == 0`. Rust invokes any transferred release callback
+/// exactly once with the unchanged tuple after its last read, including for a
+/// malformed output whose `data` pointer is null.
 #[repr(C)]
 pub struct AgHostBuffer {
     pub data: *mut u8,
@@ -157,7 +158,10 @@ impl HostBufferGuard {
 
     fn copy_bytes(&self) -> Result<Vec<u8>, ()> {
         if self.buffer.data.is_null() {
-            if self.buffer.len == 0 {
+            if self.buffer.len == 0
+                && self.buffer.release_data.is_null()
+                && self.buffer.release.is_none()
+            {
                 return Ok(Vec::new());
             }
             self.mark_violation();
@@ -177,9 +181,6 @@ impl HostBufferGuard {
 
 impl Drop for HostBufferGuard {
     fn drop(&mut self) {
-        if (self.buffer.data.is_null() && self.buffer.len == 0) || self.buffer.release.is_none() {
-            return;
-        }
         if let Some(release) = self.buffer.release.take() {
             unsafe { release(self.buffer.release_data, self.buffer.data, self.buffer.len) };
         }
@@ -237,4 +238,102 @@ unsafe fn free_buffer(buffer: *mut AgOwnedBuffer) -> AgStatus {
     *buffer = AgOwnedBuffer::empty();
     drop(bytes);
     AgStatus::Ok
+}
+
+#[cfg(test)]
+mod host_buffer_tests {
+    use std::{
+        ffi::c_void,
+        ptr,
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicBool, AtomicUsize, Ordering},
+        },
+    };
+
+    use super::{AgHostBuffer, HostBufferGuard};
+
+    static NULL_RELEASE_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static NULL_RELEASE_CONTEXT: AtomicUsize = AtomicUsize::new(usize::MAX);
+    static NULL_RELEASE_DATA: AtomicUsize = AtomicUsize::new(usize::MAX);
+    static NULL_RELEASE_LEN: AtomicUsize = AtomicUsize::new(usize::MAX);
+
+    struct ReleaseProbe {
+        calls: Mutex<Vec<(usize, usize, usize)>>,
+    }
+
+    unsafe extern "C" fn record_release(release_data: *mut c_void, data: *mut u8, len: usize) {
+        let probe = unsafe { &*release_data.cast::<ReleaseProbe>() };
+        probe
+            .calls
+            .lock()
+            .unwrap()
+            .push((release_data as usize, data as usize, len));
+    }
+
+    unsafe extern "C" fn record_null_release(release_data: *mut c_void, data: *mut u8, len: usize) {
+        NULL_RELEASE_CONTEXT.store(release_data as usize, Ordering::SeqCst);
+        NULL_RELEASE_DATA.store(data as usize, Ordering::SeqCst);
+        NULL_RELEASE_LEN.store(len, Ordering::SeqCst);
+        NULL_RELEASE_CALLS.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn copy_optional(buffer: AgHostBuffer) -> (Result<Vec<u8>, ()>, bool) {
+        let violation = Arc::new(AtomicBool::new(false));
+        let guard = HostBufferGuard::take(buffer, Arc::clone(&violation));
+        let result = guard.copy_optional();
+        drop(guard);
+        (result, violation.load(Ordering::SeqCst))
+    }
+
+    #[test]
+    fn optional_empty_requires_canonical_four_tuple_and_releases_transferred_callbacks() {
+        let (result, violated) = copy_optional(AgHostBuffer::empty());
+        assert_eq!(result, Ok(Vec::new()));
+        assert!(!violated);
+
+        let probe = ReleaseProbe {
+            calls: Mutex::new(Vec::new()),
+        };
+        let probe_ptr = ptr::from_ref(&probe).cast_mut().cast::<c_void>();
+        let (result, violated) = copy_optional(AgHostBuffer {
+            data: ptr::null_mut(),
+            len: 0,
+            release_data: probe_ptr,
+            release: None,
+        });
+        assert_eq!(result, Err(()));
+        assert!(violated);
+        assert!(probe.calls.lock().unwrap().is_empty());
+
+        NULL_RELEASE_CALLS.store(0, Ordering::SeqCst);
+        NULL_RELEASE_CONTEXT.store(usize::MAX, Ordering::SeqCst);
+        NULL_RELEASE_DATA.store(usize::MAX, Ordering::SeqCst);
+        NULL_RELEASE_LEN.store(usize::MAX, Ordering::SeqCst);
+        let (result, violated) = copy_optional(AgHostBuffer {
+            data: ptr::null_mut(),
+            len: 0,
+            release_data: ptr::null_mut(),
+            release: Some(record_null_release),
+        });
+        assert_eq!(result, Err(()));
+        assert!(violated);
+        assert_eq!(NULL_RELEASE_CALLS.load(Ordering::SeqCst), 1);
+        assert_eq!(NULL_RELEASE_CONTEXT.load(Ordering::SeqCst), 0);
+        assert_eq!(NULL_RELEASE_DATA.load(Ordering::SeqCst), 0);
+        assert_eq!(NULL_RELEASE_LEN.load(Ordering::SeqCst), 0);
+
+        let (result, violated) = copy_optional(AgHostBuffer {
+            data: ptr::null_mut(),
+            len: 0,
+            release_data: probe_ptr,
+            release: Some(record_release),
+        });
+        assert_eq!(result, Err(()));
+        assert!(violated);
+        assert_eq!(
+            probe.calls.lock().unwrap().as_slice(),
+            [(probe_ptr as usize, 0, 0)]
+        );
+    }
 }

@@ -31,6 +31,7 @@ enum BeginOutputBehavior {
     Normal = 0,
     WriteOnFailure = 1,
     MalformedToken = 2,
+    NoncanonicalEmptyToken = 3,
 }
 
 struct Fixture {
@@ -38,6 +39,7 @@ struct Fixture {
     begin_calls: AtomicUsize,
     finish_status: AtomicI32,
     finish_calls: AtomicUsize,
+    allow_empty_finish_token: AtomicBool,
     finish_outcomes: Mutex<Vec<i32>>,
     key_status: AtomicI32,
     key_calls: AtomicUsize,
@@ -78,6 +80,7 @@ impl Fixture {
             begin_calls: AtomicUsize::new(0),
             finish_status: AtomicI32::new(AgLifecycleStatus::Ok as i32),
             finish_calls: AtomicUsize::new(0),
+            allow_empty_finish_token: AtomicBool::new(false),
             finish_outcomes: Mutex::new(Vec::new()),
             key_status: AtomicI32::new(AgKeyStatus::Ok as i32),
             key_calls: AtomicUsize::new(0),
@@ -198,8 +201,10 @@ impl Drop for Harness {
 unsafe extern "C" fn release_boxed(user_data: *mut c_void, data: *mut u8, len: usize) {
     let fixture = unsafe { &*user_data.cast::<Fixture>() };
     fixture.release_calls.fetch_add(1, Ordering::SeqCst);
-    let raw = ptr::slice_from_raw_parts_mut(data, len);
-    drop(unsafe { Box::from_raw(raw) });
+    if !data.is_null() {
+        let raw = ptr::slice_from_raw_parts_mut(data, len);
+        drop(unsafe { Box::from_raw(raw) });
+    }
 }
 
 unsafe fn write_host_buffer(user_data: *mut c_void, out: *mut AgHostBuffer, bytes: Vec<u8>) {
@@ -259,6 +264,13 @@ unsafe extern "C" fn begin_attempt(
                     release_data: ptr::null_mut(),
                     release: None,
                 });
+            } else if output_behavior == BeginOutputBehavior::NoncanonicalEmptyToken as i32 {
+                token_out.write(AgHostBuffer {
+                    data: ptr::null_mut(),
+                    len: 0,
+                    release_data: user_data,
+                    release: Some(release_boxed),
+                });
             } else {
                 write_host_buffer(user_data, token_out, TOKEN.to_vec());
             }
@@ -286,7 +298,10 @@ unsafe extern "C" fn finish_attempt(
     outcome: i32,
 ) -> i32 {
     let fixture = unsafe { &*user_data.cast::<Fixture>() };
-    assert_eq!(unsafe { copied(token) }, TOKEN);
+    let token = unsafe { copied(token) };
+    if !fixture.allow_empty_finish_token.load(Ordering::SeqCst) {
+        assert_eq!(token, TOKEN);
+    }
     fixture.finish_calls.fetch_add(1, Ordering::SeqCst);
     fixture.finish_outcomes.lock().unwrap().push(outcome);
     if outcome == AgAttemptOutcome::Accepted as i32 {
@@ -695,6 +710,33 @@ fn malformed_successful_begin_output_is_closed_and_releases_transferred_buffers(
     );
     assert!(canonical_empty(&out));
     assert_eq!(harness.fixture.release_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(harness.fixture.key_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(harness.fixture.finish_calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn noncanonical_empty_optional_token_is_closed_and_released_exactly_once() {
+    let harness = Harness::new();
+    harness.fixture.begin_output_behavior.store(
+        BeginOutputBehavior::NoncanonicalEmptyToken as i32,
+        Ordering::SeqCst,
+    );
+    harness
+        .fixture
+        .allow_empty_finish_token
+        .store(true, Ordering::SeqCst);
+    harness
+        .fixture
+        .finish_status
+        .store(AgLifecycleStatus::Internal as i32, Ordering::SeqCst);
+    let mut out = AgOwnedBuffer::empty();
+
+    assert_eq!(
+        harness.verify(&submission(ANSWER), borrowed(BINDING), &mut out),
+        AgStatus::CallbackFailed
+    );
+    assert!(canonical_empty(&out));
+    assert_eq!(harness.fixture.release_calls.load(Ordering::SeqCst), 2);
     assert_eq!(harness.fixture.key_calls.load(Ordering::SeqCst), 0);
     assert_eq!(harness.fixture.finish_calls.load(Ordering::SeqCst), 0);
 }
