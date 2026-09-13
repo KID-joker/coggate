@@ -1,10 +1,19 @@
-function(agentgate_configure_cpp_target target source is_test)
+find_package(Threads REQUIRED)
+get_filename_component(AGENTGATE_BINDING_FIXTURE_PATH_VALUE
+  "${PROJECT_SOURCE_DIR}/../fixtures/bindings/v1.json" ABSOLUTE)
+file(TO_CMAKE_PATH "${AGENTGATE_BINDING_FIXTURE_PATH_VALUE}"
+  AGENTGATE_BINDING_FIXTURE_PATH_VALUE)
+
+function(agentgate_configure_cpp_target target source)
   add_executable(${target} "${source}" ${ARGN})
   target_link_libraries(${target} PRIVATE
     agentgate_ffi
-    nlohmann_json::nlohmann_json)
+    nlohmann_json::nlohmann_json
+    Threads::Threads)
   target_include_directories(${target} PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  target_compile_definitions(${target} PRIVATE
+    AGENTGATE_BINDING_FIXTURE_PATH="${AGENTGATE_BINDING_FIXTURE_PATH_VALUE}")
   if(WIN32 AND NOT AGENTGATE_STATIC)
     add_custom_command(TARGET ${target} POST_BUILD
       COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -19,9 +28,7 @@ function(agentgate_configure_cpp_target target source is_test)
   else()
     target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic -Werror)
   endif()
-  if(is_test)
-    add_test(NAME ${target} COMMAND ${target})
-  endif()
+  add_test(NAME ${target} COMMAND ${target})
 endfunction()
 
 file(GLOB AGENTGATE_CPP_TEST_SOURCES CONFIGURE_DEPENDS
@@ -35,7 +42,7 @@ file(GLOB AGENTGATE_CPP_EXAMPLE_SUPPORT_SOURCES CONFIGURE_DEPENDS
 list(REMOVE_ITEM AGENTGATE_CPP_TEST_SOURCES ${AGENTGATE_CPP_TEST_SUPPORT_SOURCES})
 foreach(source IN LISTS AGENTGATE_CPP_TEST_SOURCES)
   get_filename_component(stem "${source}" NAME_WE)
-  agentgate_configure_cpp_target("agentgate_cpp_test_${stem}" "${source}" TRUE
+  agentgate_configure_cpp_target("agentgate_cpp_test_${stem}" "${source}"
     ${AGENTGATE_CPP_TEST_SUPPORT_SOURCES})
 endforeach()
 
@@ -44,6 +51,6 @@ file(GLOB AGENTGATE_CPP_EXAMPLE_SOURCES CONFIGURE_DEPENDS
 list(REMOVE_ITEM AGENTGATE_CPP_EXAMPLE_SOURCES ${AGENTGATE_CPP_EXAMPLE_SUPPORT_SOURCES})
 foreach(source IN LISTS AGENTGATE_CPP_EXAMPLE_SOURCES)
   get_filename_component(stem "${source}" NAME_WE)
-  agentgate_configure_cpp_target("agentgate_cpp_example_${stem}" "${source}" FALSE
+  agentgate_configure_cpp_target("agentgate_cpp_example_${stem}" "${source}"
     ${AGENTGATE_CPP_EXAMPLE_SUPPORT_SOURCES})
 endforeach()

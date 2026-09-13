@@ -17,6 +17,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 INCLUDE_DIR = ROOT / "packages" / "ffi" / "include"
 BINDINGS_DIR = ROOT / "bindings"
+FIXTURE_PATH = (ROOT / "fixtures" / "bindings" / "v1.json").resolve()
 
 
 class RunnerError(Exception):
@@ -198,6 +199,8 @@ def _direct_flags(
         flags.extend(
             ["-I", nlohmann_include or _nlohmann_include_dir()]
         )
+        fixture_path = str(FIXTURE_PATH).replace("\\", "/")
+        flags.append('-DAGENTGATE_BINDING_FIXTURE_PATH="' + fixture_path + '"')
     if static:
         flags.append("-DAGENTGATE_STATIC")
     flags.append(library)
@@ -237,7 +240,7 @@ def _direct_build(library, tools, system, static, dry_run):
                     )
                 )
                 _run(command, dry_run)
-                if source in tests:
+                if source in tests or source in examples:
                     _run([output], dry_run)
 
 
@@ -292,6 +295,72 @@ def parse_args(argv):
     return parser.parse_args(argv)
 
 class RunnerSelfTests(unittest.TestCase):
+    def test_cpp_consumers_receive_the_shared_fixture_path_directly(self):
+        cpp_cmake = (BINDINGS_DIR / "cpp" / "CMakeLists.txt").read_text(
+            encoding="utf-8"
+        )
+        contract = (BINDINGS_DIR / "cpp" / "tests" / "contract.cpp").read_text(
+            encoding="utf-8"
+        )
+        example = (BINDINGS_DIR / "cpp" / "examples" / "complete.cpp").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("AGENTGATE_BINDING_FIXTURE_PATH", cpp_cmake)
+        self.assertIn("add_test(NAME ${target} COMMAND ${target})", cpp_cmake)
+        self.assertNotIn("generated_fixtures.h", contract)
+        self.assertIn("fixture_by_id(\"accepted\")", example)
+        flags = _direct_flags(
+            "cpp",
+            Path("library"),
+            "Darwin",
+            False,
+            Path("nlohmann"),
+        )
+        expected = str(FIXTURE_PATH).replace("\\", "/")
+        self.assertTrue(
+            any(
+                str(flag).startswith("-DAGENTGATE_BINDING_FIXTURE_PATH=")
+                and expected in str(flag)
+                for flag in flags
+            )
+        )
+
+    def test_direct_build_executes_examples_as_smoke_tests(self):
+        c_test = Path("c/tests/contract.c")
+        c_example = Path("c/examples/complete.c")
+        cpp_test = Path("cpp/tests/contract.cpp")
+        cpp_example = Path("cpp/examples/complete.cpp")
+        groups = {
+            "c": ([c_test], [c_example], [], []),
+            "cpp": ([cpp_test], [cpp_example], [], []),
+        }
+        commands = []
+
+        with mock.patch.object(
+            sys.modules[__name__],
+            "_sources",
+            side_effect=lambda language: groups[language],
+        ), mock.patch.object(
+            sys.modules[__name__],
+            "_nlohmann_include_dir",
+            return_value=Path("json"),
+        ), mock.patch.object(
+            sys.modules[__name__],
+            "_run",
+            side_effect=lambda command, *args: commands.append(command),
+        ):
+            _direct_build(
+                Path("library"),
+                {"cc": "cc", "cxx": "c++"},
+                "Darwin",
+                False,
+                False,
+            )
+
+        executed = [command[0] for command in commands if len(command) == 1]
+        self.assertEqual(len(executed), 4)
+
     def test_cmake_requires_and_links_nlohmann_json_package(self):
         root_cmake = (BINDINGS_DIR / "CMakeLists.txt").read_text(encoding="utf-8")
         cpp_cmake = (BINDINGS_DIR / "cpp" / "CMakeLists.txt").read_text(

@@ -16,6 +16,10 @@
 #include <cstdint>
 #include <initializer_list>
 #include <limits>
+#include <atomic>
+#include <memory>
+#include <mutex>
+#include <new>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -526,37 +530,503 @@ public:
 } // namespace detail
 #endif
 
+struct BeginAttemptResult {
+  ag_begin_status status = AG_BEGIN_STATUS_OK;
+  std::vector<std::uint8_t> material;
+  std::vector<std::uint8_t> token;
+};
+
+struct ActiveKeyResult {
+  ag_key_status status = AG_KEY_STATUS_OK;
+  std::string key_id;
+  std::vector<std::uint8_t> key;
+};
+
+struct KeyResult {
+  ag_key_status status = AG_KEY_STATUS_OK;
+  std::vector<std::uint8_t> key;
+};
+
+class Lifecycle {
+public:
+  virtual ~Lifecycle() noexcept = default;
+  virtual ag_lifecycle_status
+  store_issued(std::string_view private_json,
+               const std::vector<std::uint8_t> &binding,
+               AttemptLimit attempt_limit) = 0;
+  virtual BeginAttemptResult
+  begin_attempt(std::string_view identity_json,
+                const std::vector<std::uint8_t> &binding,
+                std::int64_t server_time) = 0;
+  virtual ag_lifecycle_status
+  finish_attempt(const std::vector<std::uint8_t> &token,
+                 ag_attempt_outcome outcome) = 0;
+};
+
+class KeyProvider {
+public:
+  virtual ~KeyProvider() noexcept = default;
+  virtual ActiveKeyResult active_key() = 0;
+  virtual KeyResult key_by_id(std::string_view key_id) = 0;
+};
+
+class Observer {
+public:
+  virtual ~Observer() noexcept = default;
+  virtual void observe(std::string_view event_json) = 0;
+};
+
+namespace detail {
+
+inline std::string_view slice_view(ag_byte_slice slice) noexcept {
+  return slice.len == 0U
+             ? std::string_view{}
+             : std::string_view(reinterpret_cast<const char *>(slice.data),
+                                slice.len);
+}
+
+inline std::vector<std::uint8_t> slice_bytes(ag_byte_slice slice) {
+  if (slice.len == 0U) {
+    return {};
+  }
+  return {slice.data, slice.data + slice.len};
+}
+
+#ifdef AGENTGATE_CPP_TESTING
+using CallbackReleaseHook = void (*)(const char *, void *) noexcept;
+
+inline std::atomic<std::size_t> &callback_buffer_outstanding() noexcept {
+  static std::atomic<std::size_t> count{0U};
+  return count;
+}
+
+inline CallbackReleaseHook &callback_release_hook() noexcept {
+  static CallbackReleaseHook hook = nullptr;
+  return hook;
+}
+
+inline void *&callback_release_hook_data() noexcept {
+  static void *data = nullptr;
+  return data;
+}
+
+inline std::atomic<int> &callback_allocations_before_failure() noexcept {
+  static std::atomic<int> count{-1};
+  return count;
+}
+
+inline std::atomic<std::size_t> &service_destroy_calls() noexcept {
+  static std::atomic<std::size_t> count{0U};
+  return count;
+}
+#endif
+
+struct CallbackBufferState {
+  explicit CallbackBufferState(std::vector<std::uint8_t> value,
+                               const char *value_label)
+      : bytes(std::move(value)), label(value_label) {
+#ifdef AGENTGATE_CPP_TESTING
+    ++callback_buffer_outstanding();
+#endif
+  }
+
+  ~CallbackBufferState() noexcept {
+#ifdef AGENTGATE_CPP_TESTING
+    --callback_buffer_outstanding();
+#endif
+  }
+
+  std::vector<std::uint8_t> bytes;
+  const char *label;
+};
+
+inline void AG_CALL release_callback_buffer(void *release_data,
+                                            std::uint8_t *data,
+                                            std::size_t len) noexcept {
+  std::unique_ptr<CallbackBufferState> state(
+      static_cast<CallbackBufferState *>(release_data));
+  if (!state) {
+    return;
+  }
+#ifdef AGENTGATE_CPP_TESTING
+  if (callback_release_hook() != nullptr && data == state->bytes.data() &&
+      len == state->bytes.size()) {
+    callback_release_hook()(state->label, callback_release_hook_data());
+  }
+#else
+  (void)data;
+  (void)len;
+#endif
+}
+
+class PendingCallbackBuffer {
+public:
+  PendingCallbackBuffer(std::vector<std::uint8_t> bytes, const char *label) {
+    if (!bytes.empty()) {
+#ifdef AGENTGATE_CPP_TESTING
+      int remaining = callback_allocations_before_failure().load();
+      if (remaining == 0) {
+        throw std::bad_alloc();
+      }
+      if (remaining > 0) {
+        --callback_allocations_before_failure();
+      }
+#endif
+      state_ = std::make_unique<CallbackBufferState>(std::move(bytes), label);
+    }
+  }
+
+  void transfer_to(ag_host_buffer *out) noexcept {
+    if (!state_) {
+      *out = ag_host_buffer{};
+      return;
+    }
+    out->data = state_->bytes.data();
+    out->len = state_->bytes.size();
+    out->release_data = state_.get();
+    out->release = release_callback_buffer;
+    (void)state_.release();
+  }
+
+private:
+  std::unique_ptr<CallbackBufferState> state_;
+};
+
+struct CallbackBridge {
+  CallbackBridge(std::shared_ptr<Lifecycle> lifecycle_value,
+                 std::shared_ptr<KeyProvider> keys_value,
+                 std::shared_ptr<Observer> observer_value)
+      : lifecycle(std::move(lifecycle_value)), keys(std::move(keys_value)),
+        observer(std::move(observer_value)) {
+    lifecycle_callbacks = {
+        static_cast<std::uint32_t>(sizeof(ag_lifecycle_callbacks)),
+        AG_ABI_VERSION_1, this, store_issued, begin_attempt, finish_attempt};
+    key_callbacks = {static_cast<std::uint32_t>(sizeof(ag_key_callbacks)),
+                     AG_ABI_VERSION_1, this, active_key, key_by_id};
+    observer_callbacks = {
+        static_cast<std::uint32_t>(sizeof(ag_observer_callbacks)),
+        AG_ABI_VERSION_1, this, observe};
+  }
+
+  static ag_lifecycle_status AG_CALL
+  store_issued(void *user_data, ag_byte_slice private_json,
+               ag_byte_slice binding, ag_attempt_limit attempt_limit) noexcept {
+    try {
+      auto &self = *static_cast<CallbackBridge *>(user_data);
+      return self.lifecycle->store_issued(
+          slice_view(private_json), slice_bytes(binding),
+          static_cast<AttemptLimit>(attempt_limit));
+    } catch (...) {
+      return AG_LIFECYCLE_STATUS_INTERNAL;
+    }
+  }
+
+  static ag_begin_status AG_CALL
+  begin_attempt(void *user_data, ag_byte_slice identity_json,
+                ag_byte_slice binding, std::int64_t server_time,
+                ag_host_buffer *material_out,
+                ag_host_buffer *token_out) noexcept {
+    try {
+      auto &self = *static_cast<CallbackBridge *>(user_data);
+      BeginAttemptResult result = self.lifecycle->begin_attempt(
+          slice_view(identity_json), slice_bytes(binding), server_time);
+      if (result.status != AG_BEGIN_STATUS_OK) {
+        return result.status;
+      }
+      PendingCallbackBuffer material(std::move(result.material), "material");
+      PendingCallbackBuffer token(std::move(result.token), "token");
+      material.transfer_to(material_out);
+      token.transfer_to(token_out);
+      return AG_BEGIN_STATUS_OK;
+    } catch (...) {
+      return AG_BEGIN_STATUS_INTERNAL;
+    }
+  }
+
+  static ag_lifecycle_status AG_CALL
+  finish_attempt(void *user_data, ag_byte_slice token,
+                 ag_attempt_outcome outcome) noexcept {
+    try {
+      auto &self = *static_cast<CallbackBridge *>(user_data);
+      return self.lifecycle->finish_attempt(slice_bytes(token), outcome);
+    } catch (...) {
+      return AG_LIFECYCLE_STATUS_INTERNAL;
+    }
+  }
+
+  static ag_key_status AG_CALL active_key(void *user_data,
+                                          ag_host_buffer *key_id_out,
+                                          ag_host_buffer *key_out) noexcept {
+    try {
+      auto &self = *static_cast<CallbackBridge *>(user_data);
+      ActiveKeyResult result = self.keys->active_key();
+      if (result.status != AG_KEY_STATUS_OK) {
+        return result.status;
+      }
+      std::vector<std::uint8_t> key_id(result.key_id.begin(),
+                                       result.key_id.end());
+      PendingCallbackBuffer key_id_buffer(std::move(key_id), "active_key_id");
+      PendingCallbackBuffer key_buffer(std::move(result.key), "active_key");
+      key_id_buffer.transfer_to(key_id_out);
+      key_buffer.transfer_to(key_out);
+      return AG_KEY_STATUS_OK;
+    } catch (...) {
+      return AG_KEY_STATUS_UNAVAILABLE;
+    }
+  }
+
+  static ag_key_status AG_CALL key_by_id(void *user_data,
+                                         ag_byte_slice key_id,
+                                         ag_host_buffer *key_out) noexcept {
+    try {
+      auto &self = *static_cast<CallbackBridge *>(user_data);
+      KeyResult result = self.keys->key_by_id(slice_view(key_id));
+      if (result.status != AG_KEY_STATUS_OK) {
+        return result.status;
+      }
+      PendingCallbackBuffer key_buffer(std::move(result.key), "key");
+      key_buffer.transfer_to(key_out);
+      return AG_KEY_STATUS_OK;
+    } catch (...) {
+      return AG_KEY_STATUS_UNAVAILABLE;
+    }
+  }
+
+  static void AG_CALL observe(void *user_data,
+                              ag_byte_slice event_json) noexcept {
+    try {
+      auto &self = *static_cast<CallbackBridge *>(user_data);
+      if (self.observer) {
+        self.observer->observe(slice_view(event_json));
+      }
+    } catch (...) {
+    }
+  }
+
+  std::shared_ptr<Lifecycle> lifecycle;
+  std::shared_ptr<KeyProvider> keys;
+  std::shared_ptr<Observer> observer;
+  ag_lifecycle_callbacks lifecycle_callbacks{};
+  ag_key_callbacks key_callbacks{};
+  ag_observer_callbacks observer_callbacks{};
+};
+
+struct ServiceControl {
+  ServiceControl(std::shared_ptr<Lifecycle> lifecycle,
+                 std::shared_ptr<KeyProvider> keys,
+                 std::shared_ptr<Observer> observer)
+      : bridge(std::make_shared<CallbackBridge>(
+            std::move(lifecycle), std::move(keys), std::move(observer))) {}
+
+  std::mutex mutex;
+  std::shared_ptr<CallbackBridge> bridge;
+  ag_service *handle = nullptr;
+  std::atomic<bool> open{false};
+};
+
+struct ActiveCallFrame {
+  const ServiceControl *control;
+  ActiveCallFrame *previous;
+};
+
+inline ActiveCallFrame *&active_service_call() noexcept {
+  static thread_local ActiveCallFrame *active = nullptr;
+  return active;
+}
+
+inline bool is_active_service_call(const ServiceControl *control) noexcept {
+  for (ActiveCallFrame *frame = active_service_call(); frame != nullptr;
+       frame = frame->previous) {
+    if (frame->control == control) {
+      return true;
+    }
+  }
+  return false;
+}
+
+class ActiveServiceCall {
+public:
+  explicit ActiveServiceCall(const ServiceControl *control) noexcept
+      : frame_{control, active_service_call()} {
+    active_service_call() = &frame_;
+  }
+  ~ActiveServiceCall() noexcept { active_service_call() = frame_.previous; }
+
+private:
+  ActiveCallFrame frame_;
+};
+
+#ifdef AGENTGATE_CPP_TESTING
+class CallbackBufferTestAccess {
+public:
+  static std::size_t outstanding() noexcept {
+    return callback_buffer_outstanding().load();
+  }
+
+  static void set_release_hook(CallbackReleaseHook hook,
+                               void *data = nullptr) noexcept {
+    callback_release_hook() = hook;
+    callback_release_hook_data() = data;
+  }
+
+  static void fail_after(int successful_allocations) noexcept {
+    callback_allocations_before_failure().store(successful_allocations);
+  }
+};
+
+class ServiceTestAccess {
+public:
+  static std::size_t destroy_calls() noexcept {
+    return service_destroy_calls().load();
+  }
+  static void reset_destroy_calls() noexcept { service_destroy_calls().store(0U); }
+};
+#endif
+
+} // namespace detail
+
 class Service {
 public:
   Service() noexcept = default;
-  ~Service() noexcept { (void)close(); }
+
+  Service(std::shared_ptr<Lifecycle> lifecycle,
+          std::shared_ptr<KeyProvider> keys,
+          std::shared_ptr<Observer> observer = {}) {
+    if (!lifecycle || !keys) {
+      throw std::invalid_argument("AgentGate callbacks are required");
+    }
+    auto control = std::make_shared<detail::ServiceControl>(
+        std::move(lifecycle), std::move(keys), std::move(observer));
+    ag_service *handle = nullptr;
+    const ag_observer_callbacks *observer_callbacks =
+        control->bridge->observer
+            ? &control->bridge->observer_callbacks
+            : nullptr;
+    const ag_status status = ag_service_create(
+        &control->bridge->lifecycle_callbacks,
+        &control->bridge->key_callbacks, observer_callbacks, &handle);
+    if (status != AG_STATUS_OK) {
+      throw AgentGateError(status);
+    }
+    control->handle = handle;
+    control->open.store(true);
+    control_ = std::move(control);
+  }
+
+  ~Service() noexcept { (void)close_noexcept(); }
 
   Service(const Service &) = delete;
   Service &operator=(const Service &) = delete;
-
-  Service(Service &&other) noexcept
-      : handle_(std::exchange(other.handle_, nullptr)) {}
+  Service(Service &&) noexcept = default;
 
   Service &operator=(Service &&other) noexcept {
     if (this != &other) {
-      (void)close();
-      handle_ = std::exchange(other.handle_, nullptr);
+      (void)close_noexcept();
+      control_ = std::move(other.control_);
     }
     return *this;
   }
 
-  bool is_open() const noexcept { return handle_ != nullptr; }
+  bool is_open() const noexcept {
+    return control_ && control_->open.load();
+  }
 
-  ag_status close() noexcept {
-    if (handle_ == nullptr) {
-      return AG_STATUS_OK;
+  PublicChallenge issue(const IssueRequest &request) {
+    const auto control = require_control();
+    reject_reentry(control.get());
+    std::lock_guard<std::mutex> lock(control->mutex);
+    require_open(*control);
+    detail::ActiveServiceCall active(control.get());
+    OwnedBuffer output;
+    const auto &version = request.version();
+    const auto &binding = request.binding();
+    const ag_status status = ag_service_issue(
+        control->handle, bytes(version), bytes(binding),
+        static_cast<ag_attempt_limit>(request.attempt_limit()), output.output());
+    if (status != AG_STATUS_OK) {
+      throw AgentGateError(status);
     }
-    ag_service *handle = std::exchange(handle_, nullptr);
-    return ag_service_destroy(handle);
+    return PublicChallenge::from_json(output.string());
+  }
+
+  VerificationOutcome verify(const Submission &submission,
+                             const std::vector<std::uint8_t> &binding) {
+    const auto control = require_control();
+    reject_reentry(control.get());
+    std::lock_guard<std::mutex> lock(control->mutex);
+    require_open(*control);
+    detail::ActiveServiceCall active(control.get());
+    const std::string submission_json = submission.to_json();
+    OwnedBuffer output;
+    const ag_status status = ag_service_verify(
+        control->handle, bytes(submission_json), bytes(binding),
+        output.output());
+    if (status != AG_STATUS_OK) {
+      throw AgentGateError(status);
+    }
+    return VerificationOutcome::from_json(output.string());
+  }
+
+  void close() {
+    const ag_status status = close_noexcept();
+    if (status != AG_STATUS_OK) {
+      throw AgentGateError(status);
+    }
   }
 
 private:
-  ag_service *handle_ = nullptr;
+  ag_status close_noexcept() noexcept {
+    const auto control = control_;
+    if (!control || !control->open.load()) {
+      return AG_STATUS_OK;
+    }
+    if (detail::is_active_service_call(control.get())) {
+      return AG_STATUS_INVALID_ARGUMENT;
+    }
+    try {
+      std::lock_guard<std::mutex> lock(control->mutex);
+      if (!control->open.load()) {
+        return AG_STATUS_OK;
+      }
+      ag_service *handle = std::exchange(control->handle, nullptr);
+      control->open.store(false);
+#ifdef AGENTGATE_CPP_TESTING
+      ++detail::service_destroy_calls();
+#endif
+      return ag_service_destroy(handle);
+    } catch (...) {
+      return AG_STATUS_INTERNAL_ERROR;
+    }
+  }
+
+  static ag_byte_slice bytes(std::string_view value) noexcept {
+    return {reinterpret_cast<const std::uint8_t *>(value.data()), value.size()};
+  }
+
+  static ag_byte_slice bytes(const std::vector<std::uint8_t> &value) noexcept {
+    return {value.data(), value.size()};
+  }
+
+  std::shared_ptr<detail::ServiceControl> require_control() const {
+    if (!control_ || !control_->open.load()) {
+      throw AgentGateError(AG_STATUS_INVALID_ARGUMENT);
+    }
+    return control_;
+  }
+
+  static void reject_reentry(const detail::ServiceControl *control) {
+    if (detail::is_active_service_call(control)) {
+      throw AgentGateError(AG_STATUS_INVALID_ARGUMENT);
+    }
+  }
+
+  static void require_open(const detail::ServiceControl &control) {
+    if (!control.open.load() || control.handle == nullptr) {
+      throw AgentGateError(AG_STATUS_INVALID_ARGUMENT);
+    }
+  }
+
+  std::shared_ptr<detail::ServiceControl> control_;
 };
 
 } // namespace agentgate
