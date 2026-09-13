@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.16)
 project(agentgate_phase5b LANGUAGES C CXX)
 
 include(CTest)
+find_package(nlohmann_json 3.11 REQUIRED)
 
 set(AGENTGATE_INCLUDE_DIR "${CMAKE_CURRENT_LIST_DIR}/../packages/ffi/include"
     CACHE PATH "Directory containing agentgate.h")

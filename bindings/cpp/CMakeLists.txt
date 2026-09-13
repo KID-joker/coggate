@@ -1,6 +1,10 @@
 function(agentgate_configure_cpp_target target source is_test)
   add_executable(${target} "${source}" ${ARGN})
-  target_link_libraries(${target} PRIVATE agentgate_ffi)
+  target_link_libraries(${target} PRIVATE
+    agentgate_ffi
+    nlohmann_json::nlohmann_json)
+  target_include_directories(${target} PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include")
   if(WIN32 AND NOT AGENTGATE_STATIC)
     add_custom_command(TARGET ${target} POST_BUILD
       COMMAND ${CMAKE_COMMAND} -E copy_if_different

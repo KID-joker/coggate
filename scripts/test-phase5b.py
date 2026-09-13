@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 
@@ -165,7 +166,24 @@ def _cmake_build(library, runtime_library, static, dry_run):
             _run(["ctest", "--output-on-failure"], dry_run, cwd=build)
 
 
-def _direct_flags(language, library, system, static):
+def _nlohmann_include_dir():
+    configured = os.environ.get("NLOHMANN_JSON_INCLUDE_DIR")
+    if not configured:
+        raise RunnerError(
+            "NLOHMANN_JSON_INCLUDE_DIR is required for direct C++ builds"
+        )
+    include_dir = Path(configured)
+    if not (include_dir / "nlohmann" / "json.hpp").is_file():
+        raise RunnerError(
+            "NLOHMANN_JSON_INCLUDE_DIR does not contain nlohmann/json.hpp: %s"
+            % include_dir
+        )
+    return include_dir.resolve()
+
+
+def _direct_flags(
+    language, library, system, static, nlohmann_include=None
+):
     flags = [
         "-std=c11" if language == "c" else "-std=c++17",
         "-Wall",
@@ -175,6 +193,11 @@ def _direct_flags(language, library, system, static):
         "-I",
         INCLUDE_DIR,
     ]
+    if language == "cpp":
+        flags.extend(["-I", BINDINGS_DIR / "cpp" / "include"])
+        flags.extend(
+            ["-I", nlohmann_include or _nlohmann_include_dir()]
+        )
     if static:
         flags.append("-DAGENTGATE_STATIC")
     flags.append(library)
@@ -186,10 +209,15 @@ def _direct_flags(language, library, system, static):
 
 
 def _direct_build(library, tools, system, static, dry_run):
+    groups = {language: _sources(language) for language in ("c", "cpp")}
+    cpp_tests, cpp_examples, _, _ = groups["cpp"]
+    nlohmann_include = (
+        _nlohmann_include_dir() if cpp_tests or cpp_examples else None
+    )
     with tempfile.TemporaryDirectory(prefix="agentgate-phase5b-native-") as directory:
         build = Path(directory)
         for language, compiler_key in (("c", "cc"), ("cpp", "cxx")):
-            tests, examples, test_support, example_support = _sources(language)
+            tests, examples, test_support, example_support = groups[language]
             sources = tests + examples
             if sources and not tools[compiler_key]:
                 label = "C" if language == "c" else "C++"
@@ -199,7 +227,15 @@ def _direct_build(library, tools, system, static, dry_run):
                 command = [tools[compiler_key], source]
                 command.extend(test_support if source in tests else example_support)
                 command.extend(["-o", output])
-                command.extend(_direct_flags(language, library, system, static))
+                command.extend(
+                    _direct_flags(
+                        language,
+                        library,
+                        system,
+                        static,
+                        nlohmann_include,
+                    )
+                )
                 _run(command, dry_run)
                 if source in tests:
                     _run([output], dry_run)
@@ -256,6 +292,16 @@ def parse_args(argv):
     return parser.parse_args(argv)
 
 class RunnerSelfTests(unittest.TestCase):
+    def test_cmake_requires_and_links_nlohmann_json_package(self):
+        root_cmake = (BINDINGS_DIR / "CMakeLists.txt").read_text(encoding="utf-8")
+        cpp_cmake = (BINDINGS_DIR / "cpp" / "CMakeLists.txt").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("find_package(nlohmann_json 3.11 REQUIRED)", root_cmake)
+        self.assertNotIn("NLOHMANN_JSON_INCLUDE_DIR", root_cmake)
+        self.assertIn("nlohmann_json::nlohmann_json", cpp_cmake)
+
     def test_platform_release_library_names_are_exact(self):
         self.assertEqual(platform_library_name("Linux"), "libagentgate_ffi.so")
         self.assertEqual(platform_library_name("Darwin"), "libagentgate_ffi.dylib")
@@ -341,6 +387,48 @@ class RunnerSelfTests(unittest.TestCase):
                 windows_library_artifacts(runtime, False),
                 (import_library.resolve(), runtime.resolve()),
             )
+
+    def test_direct_cpp_build_requires_nlohmann_include_directory(self):
+        previous = os.environ.pop("NLOHMANN_JSON_INCLUDE_DIR", None)
+        try:
+            with mock.patch.object(sys.modules[__name__], "_run") as run:
+                with self.assertRaisesRegex(
+                    RunnerError, "NLOHMANN_JSON_INCLUDE_DIR is required"
+                ):
+                    _direct_build(
+                        Path("library"),
+                        {"cc": "cc", "cxx": "c++"},
+                        "Darwin",
+                        False,
+                        False,
+                    )
+                run.assert_not_called()
+        finally:
+            if previous is not None:
+                os.environ["NLOHMANN_JSON_INCLUDE_DIR"] = previous
+
+    def test_direct_cpp_build_rejects_invalid_nlohmann_include_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            previous = os.environ.get("NLOHMANN_JSON_INCLUDE_DIR")
+            os.environ["NLOHMANN_JSON_INCLUDE_DIR"] = directory
+            try:
+                with mock.patch.object(sys.modules[__name__], "_run") as run:
+                    with self.assertRaisesRegex(
+                        RunnerError, "does not contain nlohmann/json.hpp"
+                    ):
+                        _direct_build(
+                            Path("library"),
+                            {"cc": "cc", "cxx": "c++"},
+                            "Darwin",
+                            False,
+                            False,
+                        )
+                    run.assert_not_called()
+            finally:
+                if previous is None:
+                    os.environ.pop("NLOHMANN_JSON_INCLUDE_DIR", None)
+                else:
+                    os.environ["NLOHMANN_JSON_INCLUDE_DIR"] = previous
 
 
 def main(argv=None):
