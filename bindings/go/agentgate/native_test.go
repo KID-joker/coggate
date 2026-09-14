@@ -1,13 +1,36 @@
 package agentgate
 
 import (
+	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 )
+
+var testAgentGateLibrary = flag.String(
+	"agentgate-library", "", "absolute path to the AgentGate shared library",
+)
+
+func TestMain(m *testing.M) {
+	flag.Parse()
+	if err := initializeNativeLibrary(*testAgentGateLibrary); err != nil {
+		fmt.Fprintf(os.Stderr, "agentgate native library initialization failed: %s\n", stableErrorCode(err))
+		os.Exit(1)
+	}
+	os.Exit(m.Run())
+}
+
+func TestAgentGateLibraryFlagIsRegistered(t *testing.T) {
+	if flag.Lookup("agentgate-library") == nil {
+		t.Fatal("--agentgate-library is not registered for the Go test binary")
+	}
+}
 
 func TestNativeABIConstantsAndLayoutsMatchFrozenHeader(t *testing.T) {
 	contract := nativeABIContract()
@@ -289,12 +312,14 @@ func stableErrorCode(err error) string {
 
 func TestWindowsLoaderSourceContract(t *testing.T) {
 	bridge := readNativeSource(t, "native_bridge.c")
+	native := readNativeSource(t, "native.go")
 	windows := readNativeSource(t, "native_windows.go")
+	goSource := native + windows
 
 	for _, required := range []string{
 		"LoadLibraryExW", "LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR", "LOAD_LIBRARY_SEARCH_DEFAULT_DIRS",
-		"INIT_ONCE", "InitOnceExecuteOnce", "ag_go_windows_loader_vtable", "ag_go_windows_resolve_exports",
-		"resolved[i] == NULL", "abi_version() != AG_ABI_VERSION_1", "unload_library(module)",
+		"INIT_ONCE", "InitOnceExecuteOnce", "ag_go_loader_vtable", "ag_go_resolve_exports",
+		"exports_out->symbols[i] == 0", "loader->abi_version", "loader->unload_library(loader->context, module)",
 		"static HMODULE ag_go_module",
 	} {
 		if !strings.Contains(bridge, required) {
@@ -304,7 +329,7 @@ func TestWindowsLoaderSourceContract(t *testing.T) {
 	if strings.Contains(bridge, "LoadLibraryA") || strings.Contains(bridge, "FormatMessage") {
 		t.Fatal("Windows bridge uses an ANSI loader or exposes raw OS loader messages")
 	}
-	if strings.Contains(windows, "log.") || strings.Contains(windows, "fmt.") {
+	if strings.Contains(goSource, "log.") || strings.Contains(goSource, "fmt.") {
 		t.Fatal("Windows loader must not log loader paths or raw errors")
 	}
 
@@ -318,15 +343,135 @@ func TestWindowsLoaderSourceContract(t *testing.T) {
 		}
 	}
 	for _, required := range []string{"AGENTGATE_LIBRARY_PATH", "filepath.IsAbs", "utf16.Encode", "agentgate_ffi.dll"} {
-		if !strings.Contains(windows, required) {
-			t.Errorf("native_windows.go lacks %q", required)
+		if !strings.Contains(goSource, required) {
+			t.Errorf("Go Windows loader sources lack %q", required)
 		}
 	}
-	explicit := strings.Index(windows, "explicitPath")
-	environment := strings.Index(windows, "AGENTGATE_LIBRARY_PATH")
-	defaultName := strings.Index(windows, "agentgate_ffi.dll")
-	if explicit < 0 || environment < explicit || defaultName < environment {
-		t.Fatal("Windows lookup order is not explicit path, environment, then default name")
+}
+
+func TestNativeInjectedResolverStateMachine(t *testing.T) {
+	assertResult := func(t *testing.T, got nativeResolverTestResult, status int32,
+		loads, lookups, abiCalls, unloads uint32, retained bool) {
+		t.Helper()
+		if got.status != status || got.loads != loads || got.lookups != lookups ||
+			got.abiCalls != abiCalls || got.unloads != unloads || got.retained != retained {
+			t.Fatalf("resolver result = %#v", got)
+		}
+	}
+
+	t.Run("missing library", func(t *testing.T) {
+		assertResult(t, nativeTestResolveExports(true, -1, 1), 7, 1, 0, 0, 0, false)
+	})
+	for missing := 0; missing < 7; missing++ {
+		t.Run(fmt.Sprintf("missing symbol %d", missing), func(t *testing.T) {
+			assertResult(t, nativeTestResolveExports(false, missing, 1), 7,
+				1, uint32(missing+1), 0, 1, false)
+		})
+	}
+	t.Run("ABI mismatch", func(t *testing.T) {
+		assertResult(t, nativeTestResolveExports(false, -1, 2), 7, 1, 7, 1, 1, false)
+	})
+	t.Run("success retains module", func(t *testing.T) {
+		assertResult(t, nativeTestResolveExports(false, -1, 1), 0, 1, 7, 1, 0, true)
+	})
+}
+
+func TestWindowsLibraryRequestValidationAndFlags(t *testing.T) {
+	absolute := filepath.Join(t.TempDir(), "Unicode 库 with spaces", "agentgate_ffi.dll")
+	path, includeDirectory, err := resolveWindowsNativeLibraryRequest(absolute, "ignored")
+	if err != nil || path != absolute || !includeDirectory {
+		t.Fatalf("explicit request = (%q, %v, %v)", path, includeDirectory, err)
+	}
+	path, includeDirectory, err = resolveWindowsNativeLibraryRequest("", absolute)
+	if err != nil || path != absolute || !includeDirectory {
+		t.Fatalf("environment request = (%q, %v, %v)", path, includeDirectory, err)
+	}
+	path, includeDirectory, err = resolveWindowsNativeLibraryRequest("", "")
+	if err != nil || path != "agentgate_ffi.dll" || includeDirectory {
+		t.Fatalf("default request = (%q, %v, %v)", path, includeDirectory, err)
+	}
+	for _, invalid := range []string{"relative.dll", absolute + "\x00suffix"} {
+		if _, _, err := resolveWindowsNativeLibraryRequest(invalid, ""); stableErrorCode(err) != "invalid_argument" {
+			t.Fatalf("invalid path %q error = %v", invalid, err)
+		}
+	}
+}
+
+func TestNativeLibraryInitializationFailureIsSticky(t *testing.T) {
+	absolute := filepath.Join(t.TempDir(), "agentgate_ffi.dll")
+	for _, invalid := range []string{"relative.dll", absolute + "\x00suffix"} {
+		t.Run(fmt.Sprintf("first path %q", invalid), func(t *testing.T) {
+			var calls atomic.Int32
+			initializer := nativeLibraryInitializer{load: func(path string) error {
+				calls.Add(1)
+				_, _, err := resolveWindowsNativeLibraryRequest(path, "")
+				return err
+			}}
+			first := initializer.initialize(invalid)
+			second := initializer.initialize(absolute)
+			if stableErrorCode(first) != "invalid_argument" || first != second {
+				t.Fatalf("sticky failure = (%v, %v)", first, second)
+			}
+			if calls.Load() != 1 {
+				t.Fatalf("load calls = %d, want 1", calls.Load())
+			}
+		})
+	}
+}
+
+func TestNativeLibraryInitializationSuccessIsSticky(t *testing.T) {
+	var calls atomic.Int32
+	initializer := nativeLibraryInitializer{load: func(path string) error {
+		calls.Add(1)
+		_, _, err := resolveWindowsNativeLibraryRequest(path, "")
+		return err
+	}}
+	absolute := filepath.Join(t.TempDir(), "agentgate_ffi.dll")
+	if err := initializer.initialize(absolute); err != nil {
+		t.Fatalf("first initialization: %v", err)
+	}
+	for _, later := range []string{"relative.dll", "invalid\x00later", filepath.Join(t.TempDir(), "different.dll")} {
+		if err := initializer.initialize(later); err != nil {
+			t.Fatalf("stored successful result changed for %q: %v", later, err)
+		}
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("load calls = %d, want 1", calls.Load())
+	}
+}
+
+func TestNativeLibraryInitializationIsConcurrentExactOnce(t *testing.T) {
+	var calls atomic.Int32
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	initializer := nativeLibraryInitializer{load: func(string) error {
+		calls.Add(1)
+		close(entered)
+		<-release
+		return nil
+	}}
+
+	const callers = 32
+	errors := make(chan error, callers)
+	var wait sync.WaitGroup
+	wait.Add(callers)
+	for index := 0; index < callers; index++ {
+		go func() {
+			defer wait.Done()
+			errors <- initializer.initialize("first")
+		}()
+	}
+	<-entered
+	close(release)
+	wait.Wait()
+	close(errors)
+	for err := range errors {
+		if err != nil {
+			t.Fatalf("concurrent initialization: %v", err)
+		}
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("load calls = %d, want 1", calls.Load())
 	}
 }
 

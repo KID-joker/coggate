@@ -155,6 +155,105 @@ void ag_go_host_allocation_counters_reset(void) { ag_go_allocations = ag_go_rele
 size_t ag_go_host_allocation_count(void) { return ag_go_allocations; }
 size_t ag_go_host_release_count(void) { return ag_go_releases; }
 
+static const char *ag_go_export_names[AG_GO_EXPORT_COUNT] = {
+    "ag_abi_version", "ag_core_version", "ag_service_create", "ag_service_destroy",
+    "ag_service_issue", "ag_service_verify", "ag_buffer_free"
+};
+
+ag_status ag_go_resolve_exports(const ag_go_loader_vtable *loader,
+                                const uint16_t *path,
+                                uint32_t load_flags,
+                                ag_go_resolved_exports *exports_out,
+                                ag_go_module_handle *module_out) {
+    ag_go_module_handle module;
+    size_t i;
+    if (loader == NULL || loader->load_library == NULL || loader->lookup_symbol == NULL ||
+        loader->unload_library == NULL || loader->abi_version == NULL || path == NULL ||
+        exports_out == NULL || module_out == NULL) {
+        return AG_STATUS_INVALID_ARGUMENT;
+    }
+    memset(exports_out, 0, sizeof(*exports_out));
+    *module_out = NULL;
+    module = loader->load_library(loader->context, path, load_flags);
+    if (module == NULL) return AG_STATUS_INTERNAL_ERROR;
+    for (i = 0; i < AG_GO_EXPORT_COUNT; i++) {
+        exports_out->symbols[i] = loader->lookup_symbol(loader->context, module,
+                                                        ag_go_export_names[i]);
+        if (exports_out->symbols[i] == 0) {
+            memset(exports_out, 0, sizeof(*exports_out));
+            loader->unload_library(loader->context, module);
+            return AG_STATUS_INTERNAL_ERROR;
+        }
+    }
+    if (loader->abi_version(loader->context, exports_out->symbols[0]) != AG_ABI_VERSION_1) {
+        memset(exports_out, 0, sizeof(*exports_out));
+        loader->unload_library(loader->context, module);
+        return AG_STATUS_INTERNAL_ERROR;
+    }
+    *module_out = module;
+    return AG_STATUS_OK;
+}
+
+typedef struct ag_go_mock_loader {
+    int missing_library;
+    int missing_symbol;
+    uint32_t reported_abi;
+    uint32_t loads;
+    uint32_t lookups;
+    uint32_t abi_calls;
+    uint32_t unloads;
+} ag_go_mock_loader;
+
+static ag_go_module_handle ag_go_mock_load(void *context, const uint16_t *path,
+                                            uint32_t load_flags) {
+    ag_go_mock_loader *mock = (ag_go_mock_loader *)context;
+    (void)path;
+    (void)load_flags;
+    mock->loads++;
+    return mock->missing_library ? NULL : context;
+}
+
+static ag_go_symbol ag_go_mock_lookup(void *context, ag_go_module_handle module,
+                                      const char *name) {
+    ag_go_mock_loader *mock = (ag_go_mock_loader *)context;
+    uint32_t index = mock->lookups++;
+    (void)module;
+    (void)name;
+    if ((int)index == mock->missing_symbol) return 0;
+    return (ag_go_symbol)(index + 1);
+}
+
+static void ag_go_mock_unload(void *context, ag_go_module_handle module) {
+    ag_go_mock_loader *mock = (ag_go_mock_loader *)context;
+    (void)module;
+    mock->unloads++;
+}
+
+static uint32_t ag_go_mock_abi_version(void *context, ag_go_symbol symbol) {
+    ag_go_mock_loader *mock = (ag_go_mock_loader *)context;
+    (void)symbol;
+    mock->abi_calls++;
+    return mock->reported_abi;
+}
+
+ag_go_resolver_test_result ag_go_test_resolve_exports(int missing_library,
+                                                       int missing_symbol,
+                                                       uint32_t abi_version) {
+    static const uint16_t path[] = {'t', 'e', 's', 't', 0};
+    ag_go_mock_loader mock = {missing_library, missing_symbol, abi_version, 0, 0, 0, 0};
+    ag_go_loader_vtable loader = {
+        &mock, ag_go_mock_load, ag_go_mock_lookup, ag_go_mock_unload,
+        ag_go_mock_abi_version
+    };
+    ag_go_resolved_exports exports;
+    ag_go_module_handle module = NULL;
+    ag_status status = ag_go_resolve_exports(&loader, path, 0, &exports, &module);
+    ag_go_resolver_test_result result = {
+        status, mock.loads, mock.lookups, mock.abi_calls, mock.unloads, module != NULL
+    };
+    return result;
+}
+
 #if defined(_WIN32)
 
 typedef uint32_t (AG_CALL *ag_go_abi_version_fn)(void);
@@ -175,47 +274,69 @@ struct ag_go_native_exports {
     ag_go_buffer_free_fn buffer_free;
 };
 
-static const char *ag_go_export_names[7] = {
-    "ag_abi_version", "ag_core_version", "ag_service_create", "ag_service_destroy",
-    "ag_service_issue", "ag_service_verify", "ag_buffer_free"
-};
+typedef struct ag_go_windows_loader_context {
+    const ag_go_windows_loader_vtable *loader;
+} ag_go_windows_loader_context;
+
+static ag_go_module_handle ag_go_windows_load_adapter(void *context,
+                                                       const uint16_t *path,
+                                                       uint32_t load_flags) {
+    ag_go_windows_loader_context *windows = (ag_go_windows_loader_context *)context;
+    return (ag_go_module_handle)windows->loader->load_library((LPCWSTR)path, NULL,
+                                                               (DWORD)load_flags);
+}
+
+static ag_go_symbol ag_go_windows_lookup_adapter(void *context,
+                                                  ag_go_module_handle module,
+                                                  const char *name) {
+    ag_go_windows_loader_context *windows = (ag_go_windows_loader_context *)context;
+    return (ag_go_symbol)(uintptr_t)windows->loader->lookup_symbol((HMODULE)module, name);
+}
+
+static void ag_go_windows_unload_adapter(void *context, ag_go_module_handle module) {
+    ag_go_windows_loader_context *windows = (ag_go_windows_loader_context *)context;
+    (void)windows->loader->unload_library((HMODULE)module);
+}
+
+static uint32_t ag_go_windows_abi_adapter(void *context, ag_go_symbol symbol) {
+    ag_go_abi_version_fn abi_version = (ag_go_abi_version_fn)(uintptr_t)symbol;
+    (void)context;
+    return abi_version();
+}
 
 ag_status ag_go_windows_resolve_exports(const ag_go_windows_loader_vtable *loader,
                                         const uint16_t *path,
                                         DWORD load_flags,
                                         ag_go_native_exports *exports_out,
                                         HMODULE *module_out) {
-    FARPROC resolved[7];
-    HMODULE module;
-    size_t i;
+    ag_go_windows_loader_context windows_context;
+    ag_go_loader_vtable portable_loader;
+    ag_go_resolved_exports resolved;
+    ag_go_module_handle module = NULL;
+    ag_status status;
     if (loader == NULL || loader->load_library == NULL || loader->lookup_symbol == NULL ||
         loader->unload_library == NULL || path == NULL || exports_out == NULL || module_out == NULL) {
         return AG_STATUS_INVALID_ARGUMENT;
     }
     memset(exports_out, 0, sizeof(*exports_out));
     *module_out = NULL;
-    module = loader->load_library((LPCWSTR)path, NULL, load_flags);
-    if (module == NULL) return AG_STATUS_INTERNAL_ERROR;
-    for (i = 0; i < 7; i++) {
-        resolved[i] = loader->lookup_symbol(module, ag_go_export_names[i]);
-        if (resolved[i] == NULL) {
-            loader->unload_library(module);
-            return AG_STATUS_INTERNAL_ERROR;
-        }
-    }
-    exports_out->abi_version = (ag_go_abi_version_fn)resolved[0];
-    exports_out->core_version = (ag_go_core_version_fn)resolved[1];
-    exports_out->service_create = (ag_go_service_create_fn)resolved[2];
-    exports_out->service_destroy = (ag_go_service_destroy_fn)resolved[3];
-    exports_out->service_issue = (ag_go_service_issue_fn)resolved[4];
-    exports_out->service_verify = (ag_go_service_verify_fn)resolved[5];
-    exports_out->buffer_free = (ag_go_buffer_free_fn)resolved[6];
-    if (exports_out->abi_version() != AG_ABI_VERSION_1) {
-        memset(exports_out, 0, sizeof(*exports_out));
-        loader->unload_library(module);
-        return AG_STATUS_INTERNAL_ERROR;
-    }
-    *module_out = module;
+    windows_context.loader = loader;
+    portable_loader.context = &windows_context;
+    portable_loader.load_library = ag_go_windows_load_adapter;
+    portable_loader.lookup_symbol = ag_go_windows_lookup_adapter;
+    portable_loader.unload_library = ag_go_windows_unload_adapter;
+    portable_loader.abi_version = ag_go_windows_abi_adapter;
+    status = ag_go_resolve_exports(&portable_loader, path, (uint32_t)load_flags,
+                                   &resolved, &module);
+    if (status != AG_STATUS_OK) return status;
+    exports_out->abi_version = (ag_go_abi_version_fn)(uintptr_t)resolved.symbols[0];
+    exports_out->core_version = (ag_go_core_version_fn)(uintptr_t)resolved.symbols[1];
+    exports_out->service_create = (ag_go_service_create_fn)(uintptr_t)resolved.symbols[2];
+    exports_out->service_destroy = (ag_go_service_destroy_fn)(uintptr_t)resolved.symbols[3];
+    exports_out->service_issue = (ag_go_service_issue_fn)(uintptr_t)resolved.symbols[4];
+    exports_out->service_verify = (ag_go_service_verify_fn)(uintptr_t)resolved.symbols[5];
+    exports_out->buffer_free = (ag_go_buffer_free_fn)(uintptr_t)resolved.symbols[6];
+    *module_out = (HMODULE)module;
     return AG_STATUS_OK;
 }
 

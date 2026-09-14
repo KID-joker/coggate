@@ -31,6 +31,34 @@ typedef struct ag_go_callback_statuses {
     int32_t key_by_id;
 } ag_go_callback_statuses;
 
+#define AG_GO_EXPORT_COUNT 7
+
+typedef uintptr_t ag_go_symbol;
+typedef void *ag_go_module_handle;
+
+typedef struct ag_go_loader_vtable {
+    void *context;
+    ag_go_module_handle (*load_library)(void *context, const uint16_t *path,
+                                        uint32_t load_flags);
+    ag_go_symbol (*lookup_symbol)(void *context, ag_go_module_handle module,
+                                  const char *name);
+    void (*unload_library)(void *context, ag_go_module_handle module);
+    uint32_t (*abi_version)(void *context, ag_go_symbol symbol);
+} ag_go_loader_vtable;
+
+typedef struct ag_go_resolved_exports {
+    ag_go_symbol symbols[AG_GO_EXPORT_COUNT];
+} ag_go_resolved_exports;
+
+typedef struct ag_go_resolver_test_result {
+    int32_t status;
+    uint32_t loads;
+    uint32_t lookups;
+    uint32_t abi_calls;
+    uint32_t unloads;
+    int retained;
+} ag_go_resolver_test_result;
+
 ag_go_layout ag_go_layout_byte_slice(void);
 ag_go_layout ag_go_layout_owned_buffer(void);
 ag_go_layout ag_go_layout_host_buffer(void);
@@ -63,6 +91,14 @@ void ag_go_host_allocation_counters_reset(void);
 size_t ag_go_host_allocation_count(void);
 size_t ag_go_host_release_count(void);
 ag_go_callback_statuses ag_go_test_invalid_handle_callbacks(void);
+ag_status ag_go_resolve_exports(const ag_go_loader_vtable *loader,
+                                const uint16_t *path,
+                                uint32_t load_flags,
+                                ag_go_resolved_exports *exports_out,
+                                ag_go_module_handle *module_out);
+ag_go_resolver_test_result ag_go_test_resolve_exports(int missing_library,
+                                                       int missing_symbol,
+                                                       uint32_t abi_version);
 
 #if defined(_WIN32)
 #include <windows.h>

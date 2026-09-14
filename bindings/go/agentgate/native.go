@@ -8,8 +8,11 @@ import "C"
 
 import (
 	"bytes"
+	"path/filepath"
 	"runtime"
 	"runtime/cgo"
+	"strings"
+	"sync"
 	"unsafe"
 )
 
@@ -103,6 +106,35 @@ type nativeCallbacks interface {
 type nativeService struct {
 	pointer        *C.ag_service
 	callbackHandle cgo.Handle
+}
+
+type nativeLibraryInitializer struct {
+	once   sync.Once
+	load   func(string) error
+	result error
+}
+
+func (initializer *nativeLibraryInitializer) initialize(path string) error {
+	initializer.once.Do(func() {
+		initializer.result = initializer.load(path)
+	})
+	return initializer.result
+}
+
+func resolveWindowsNativeLibraryRequest(explicitPath, environmentPath string) (string, bool, error) {
+	path := explicitPath
+	includeDLLDirectory := path != ""
+	if path == "" {
+		path = environmentPath
+		includeDLLDirectory = path != ""
+	}
+	if path == "" {
+		return "agentgate_ffi.dll", false, nil
+	}
+	if !filepath.IsAbs(path) || strings.IndexByte(path, 0) >= 0 {
+		return "", false, errorForStatus(int32(C.AG_STATUS_INVALID_ARGUMENT))
+	}
+	return path, includeDLLDirectory, nil
 }
 
 func nativeServiceCreate(callbacks nativeCallbacks, withObserver bool) (*nativeService, error) {
@@ -326,6 +358,23 @@ type nativeCallbackStatuses struct {
 	finishAttempt int32
 	activeKey     int32
 	keyByID       int32
+}
+
+type nativeResolverTestResult struct {
+	status   int32
+	loads    uint32
+	lookups  uint32
+	abiCalls uint32
+	unloads  uint32
+	retained bool
+}
+
+func nativeTestResolveExports(missingLibrary bool, missingSymbol int, abiVersion uint32) nativeResolverTestResult {
+	result := C.ag_go_test_resolve_exports(C.int(boolInt(missingLibrary)), C.int(missingSymbol), C.uint32_t(abiVersion))
+	return nativeResolverTestResult{
+		status: int32(result.status), loads: uint32(result.loads), lookups: uint32(result.lookups),
+		abiCalls: uint32(result.abi_calls), unloads: uint32(result.unloads), retained: result.retained != 0,
+	}
 }
 
 func nativeTestInvalidHandleCallbackStatuses() nativeCallbackStatuses {
