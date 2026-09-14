@@ -40,6 +40,6 @@ file(GLOB AGENTGATE_C_EXAMPLE_SOURCES CONFIGURE_DEPENDS
 list(REMOVE_ITEM AGENTGATE_C_EXAMPLE_SOURCES ${AGENTGATE_C_EXAMPLE_SUPPORT_SOURCES})
 foreach(source IN LISTS AGENTGATE_C_EXAMPLE_SOURCES)
   get_filename_component(stem "${source}" NAME_WE)
-  agentgate_configure_c_target("agentgate_c_example_${stem}" "${source}" FALSE
+  agentgate_configure_c_target("agentgate_c_example_${stem}" "${source}" TRUE
     ${AGENTGATE_C_EXAMPLE_SUPPORT_SOURCES})
 endforeach()

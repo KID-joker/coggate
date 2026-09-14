@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -83,7 +84,8 @@ class Observer:
 
 
 def main():
-    library = ROOT / "target" / "release" / (
+    configured = os.environ.get("AGENTGATE_LIBRARY_PATH")
+    library = Path(configured) if configured else ROOT / "target" / "release" / (
         "agentgate_ffi.dll" if sys.platform == "win32" else
         "libagentgate_ffi.dylib" if sys.platform == "darwin" else
         "libagentgate_ffi.so"

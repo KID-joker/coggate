@@ -1,6 +1,7 @@
 import ctypes
 import gc
 import json
+import os
 import sys
 import threading
 import time
@@ -14,11 +15,20 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[3]
 SRC = ROOT / "bindings" / "python" / "src"
 FIXTURE_PATH = ROOT / "fixtures" / "bindings" / "v1.json"
-LIBRARY_PATH = ROOT / "target" / "release" / (
-    "agentgate_ffi.dll" if sys.platform == "win32" else
-    "libagentgate_ffi.dylib" if sys.platform == "darwin" else
-    "libagentgate_ffi.so"
-)
+
+
+def _integration_library_path():
+    configured = os.environ.get("AGENTGATE_LIBRARY_PATH")
+    if configured:
+        return Path(configured)
+    return ROOT / "target" / "release" / (
+        "agentgate_ffi.dll" if sys.platform == "win32" else
+        "libagentgate_ffi.dylib" if sys.platform == "darwin" else
+        "libagentgate_ffi.so"
+    )
+
+
+LIBRARY_PATH = _integration_library_path()
 sys.path.insert(0, str(SRC))
 
 from agentgate import (  # noqa: E402
@@ -41,6 +51,15 @@ CASES = MANIFEST["cases"]
 
 def _hex(field):
     return bytes.fromhex(VECTORS[field])
+
+
+class HarnessConfigurationTests(unittest.TestCase):
+    def test_explicit_runner_library_environment_precedes_release_default(self):
+        configured = Path("C:/native dir/agentgate_ffi.dll")
+        with mock.patch.dict(
+            os.environ, {"AGENTGATE_LIBRARY_PATH": str(configured)}
+        ):
+            self.assertEqual(_integration_library_path(), configured)
 
 
 def _begin_status(name):

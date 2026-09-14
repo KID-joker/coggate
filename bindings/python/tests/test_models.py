@@ -1,6 +1,7 @@
 import ctypes
 import json
 import os
+import platform
 import subprocess
 import sys
 import tempfile
@@ -14,7 +15,51 @@ SRC = ROOT / "bindings" / "python" / "src"
 sys.path.insert(0, str(SRC))
 
 
+def _layout_probe_command(system, compiler, include, source, executable):
+    if system == "Windows":
+        return [
+            compiler,
+            "/nologo",
+            "/std:c11",
+            "/I" + str(include),
+            str(source),
+            "/Fe:" + str(executable),
+            "/Fo:" + str(executable.with_suffix(".obj")),
+        ]
+    return [
+        compiler,
+        "-std=c11",
+        "-I",
+        str(include),
+        str(source),
+        "-o",
+        str(executable),
+    ]
+
+
 class AbiLayoutTests(unittest.TestCase):
+    def test_layout_probe_command_is_msvc_compatible(self):
+        include = Path("C:/workspace with spaces/include")
+        source = Path("C:/temporary files/layout.c")
+        executable = Path("C:/temporary files/layout.exe")
+
+        command = _layout_probe_command(
+            "Windows", "cl", include, source, executable
+        )
+
+        self.assertEqual(
+            command,
+            [
+                "cl",
+                "/nologo",
+                "/std:c11",
+                "/I" + str(include),
+                str(source),
+                "/Fe:" + str(executable),
+                "/Fo:" + str(executable.with_suffix(".obj")),
+            ],
+        )
+
     def test_ctypes_layouts_and_constants_match_c_header(self):
         from agentgate import _ffi
 
@@ -83,11 +128,20 @@ class AbiLayoutTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "layout.c"
-            executable = Path(directory) / "layout"
+            system = platform.system()
+            executable = Path(directory) / (
+                "layout.exe" if system == "Windows" else "layout"
+            )
             source.write_text("\n".join(lines), encoding="utf-8")
-            compiler = os.environ.get("CC", "cc")
+            compiler = os.environ.get("CC", "cl" if system == "Windows" else "cc")
             built = subprocess.run(
-                [compiler, "-std=c11", "-I", str(ROOT / "packages" / "ffi" / "include"), str(source), "-o", str(executable)],
+                _layout_probe_command(
+                    system,
+                    compiler,
+                    ROOT / "packages" / "ffi" / "include",
+                    source,
+                    executable,
+                ),
                 capture_output=True,
                 text=True,
             )

@@ -110,11 +110,11 @@ def _sources(language):
     return source_groups(BINDINGS_DIR / language, extension)
 
 
-def _run(command, dry_run=False, cwd=None):
+def _run(command, dry_run=False, cwd=None, env=None):
     print("+ " + shlex.join([str(part) for part in command]))
     if dry_run:
         return
-    completed = subprocess.run([str(part) for part in command], cwd=cwd)
+    completed = subprocess.run([str(part) for part in command], cwd=cwd, env=env)
     if completed.returncode != 0:
         raise RunnerError("command failed with exit code %d" % completed.returncode)
 
@@ -146,7 +146,7 @@ def windows_library_artifacts(library, static):
     return import_library.resolve(), runtime_library.resolve()
 
 
-def _cmake_build(library, runtime_library, static, dry_run):
+def _cmake_build(library, runtime_library, static, dry_run, system):
     with tempfile.TemporaryDirectory(prefix="agentgate-phase5b-cmake-") as directory:
         build = Path(directory)
         configure = [
@@ -162,9 +162,14 @@ def _cmake_build(library, runtime_library, static, dry_run):
         if runtime_library is not None:
             configure.append("-DAGENTGATE_RUNTIME_LIBRARY=" + str(runtime_library))
         _run(configure, dry_run)
-        _run(["cmake", "--build", build], dry_run)
+        build_command = ["cmake", "--build", build]
+        ctest_command = ["ctest", "--output-on-failure"]
+        if system == "Windows":
+            build_command.extend(["--config", "Release"])
+            ctest_command.extend(["-C", "Release"])
+        _run(build_command, dry_run)
         if any(_sources(language)[0] for language in ("c", "cpp")):
-            _run(["ctest", "--output-on-failure"], dry_run, cwd=build)
+            _run(ctest_command, dry_run, cwd=build)
 
 
 def _nlohmann_include_dir():
@@ -255,20 +260,31 @@ def run_phase5b(args):
         and not library.name.endswith(".dll.lib")
     )
 
+    runtime_library = None
     if system == "Windows":
         if not tools["cmake"]:
             raise RunnerError("Windows native tests require CMake and MSVC")
         library, runtime_library = windows_library_artifacts(library, static)
-        _cmake_build(library, runtime_library, static, args.dry_run)
+        _cmake_build(library, runtime_library, static, args.dry_run, system)
     elif tools["cmake"]:
-        _cmake_build(library, None, static, args.dry_run)
+        _cmake_build(library, None, static, args.dry_run, system)
     else:
         _warning("using direct compiler fallback because CMake is unavailable")
         _direct_build(library, tools, system, static, args.dry_run)
 
     if not args.native_only:
+        if static:
+            raise RunnerError(
+                "Python ctypes tests require a shared native library; "
+                "use --native-only with --static"
+            )
         if sys.version_info < (3, 11):
             raise RunnerError("missing capability: Python 3.11+")
+        python_environment = os.environ.copy()
+        if not static:
+            python_environment["AGENTGATE_LIBRARY_PATH"] = str(
+                runtime_library or library
+            )
         _run(
             [
                 sys.executable,
@@ -281,6 +297,16 @@ def run_phase5b(args):
             ],
             args.dry_run,
             cwd=ROOT,
+            env=python_environment,
+        )
+        _run(
+            [
+                sys.executable,
+                ROOT / "bindings" / "python" / "examples" / "complete.py",
+            ],
+            args.dry_run,
+            cwd=ROOT,
+            env=python_environment,
         )
 
 
@@ -295,6 +321,176 @@ def parse_args(argv):
     return parser.parse_args(argv)
 
 class RunnerSelfTests(unittest.TestCase):
+    def test_windows_cmake_uses_release_configuration_for_build_and_ctest(self):
+        commands = []
+        with mock.patch.object(
+            sys.modules[__name__],
+            "_run",
+            side_effect=lambda command, *args, **kwargs: commands.append(command),
+        ):
+            _cmake_build(
+                Path("agentgate_ffi.lib"),
+                None,
+                True,
+                True,
+                "Windows",
+            )
+
+        build = next(command for command in commands if command[:2] == ["cmake", "--build"])
+        ctest = next(command for command in commands if command[0] == "ctest")
+        self.assertEqual(build[-2:], ["--config", "Release"])
+        self.assertEqual(ctest[-2:], ["-C", "Release"])
+
+    def test_c_complete_example_is_registered_with_ctest(self):
+        c_cmake = (BINDINGS_DIR / "c" / "CMakeLists.txt").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn(
+            'agentgate_configure_c_target("agentgate_c_example_${stem}" "${source}" TRUE',
+            c_cmake,
+        )
+
+    def test_non_native_run_executes_python_contract_and_complete_example(self):
+        release_library = ROOT / "target" / "release" / "libagentgate_ffi.dylib"
+        args = argparse.Namespace(
+            system="Darwin",
+            library=None,
+            static=False,
+            dry_run=True,
+            native_only=False,
+        )
+        commands = []
+
+        with mock.patch.object(
+            sys.modules[__name__],
+            "detect_tools",
+            return_value={"cmake": "cmake", "cc": "cc", "cxx": "c++"},
+        ), mock.patch.object(
+            sys.modules[__name__],
+            "discover_library",
+            return_value=release_library,
+        ), mock.patch.object(
+            sys.modules[__name__],
+            "_cmake_build",
+        ), mock.patch.object(
+            sys.modules[__name__],
+            "_run",
+            side_effect=lambda command, *positional, **keyword: commands.append(
+                (command, positional, keyword)
+            ),
+        ), mock.patch.object(sys, "version_info", (3, 11)):
+            run_phase5b(args)
+
+        self.assertEqual(
+            [command for command, _, _ in commands],
+            [
+                [
+                    sys.executable,
+                    "-m",
+                    "unittest",
+                    "discover",
+                    "-s",
+                    ROOT / "bindings" / "python" / "tests",
+                    "-v",
+                ],
+                [
+                    sys.executable,
+                    ROOT / "bindings" / "python" / "examples" / "complete.py",
+                ],
+            ],
+        )
+        self.assertTrue(all(keyword.get("cwd") == ROOT for _, _, keyword in commands))
+        self.assertTrue(
+            all(
+                keyword["env"]["AGENTGATE_LIBRARY_PATH"]
+                == str(release_library)
+                for _, _, keyword in commands
+            )
+        )
+
+    def test_windows_runtime_dll_is_forwarded_to_python_subprocesses(self):
+        import_library = Path("C:/native dir/agentgate_ffi.dll.lib")
+        runtime_library = Path("C:/native dir/agentgate_ffi.dll")
+        args = argparse.Namespace(
+            system="Windows",
+            library=import_library,
+            static=False,
+            dry_run=True,
+            native_only=False,
+        )
+        commands = []
+
+        with mock.patch.object(
+            sys.modules[__name__],
+            "detect_tools",
+            return_value={"cmake": "cmake", "cc": "cl", "cxx": "cl"},
+        ), mock.patch.object(
+            sys.modules[__name__],
+            "discover_library",
+            return_value=import_library,
+        ), mock.patch.object(
+            sys.modules[__name__],
+            "windows_library_artifacts",
+            return_value=(import_library, runtime_library),
+        ), mock.patch.object(
+            sys.modules[__name__],
+            "_cmake_build",
+        ), mock.patch.object(
+            sys.modules[__name__],
+            "_run",
+            side_effect=lambda command, *args, **kwargs: commands.append(
+                (command, kwargs)
+            ),
+        ), mock.patch.object(sys, "version_info", (3, 11)):
+            run_phase5b(args)
+
+        self.assertEqual(len(commands), 2)
+        for _, kwargs in commands:
+            self.assertEqual(
+                kwargs["env"]["AGENTGATE_LIBRARY_PATH"], str(runtime_library)
+            )
+
+    def test_static_full_gate_is_rejected_after_native_build(self):
+        static_library = Path("C:/native dir/agentgate_ffi.lib")
+        args = argparse.Namespace(
+            system="Windows",
+            library=static_library,
+            static=True,
+            dry_run=True,
+            native_only=False,
+        )
+        with mock.patch.dict(
+            os.environ, {"AGENTGATE_LIBRARY_PATH": str(static_library)}
+        ), mock.patch.object(
+            sys.modules[__name__],
+            "detect_tools",
+            return_value={"cmake": "cmake", "cc": "cl", "cxx": "cl"},
+        ), mock.patch.object(
+            sys.modules[__name__],
+            "discover_library",
+            return_value=static_library,
+        ), mock.patch.object(
+            sys.modules[__name__],
+            "windows_library_artifacts",
+            return_value=(static_library, None),
+        ), mock.patch.object(
+            sys.modules[__name__],
+            "_cmake_build",
+        ) as cmake_build, mock.patch.object(
+            sys.modules[__name__],
+            "_run",
+        ) as run, mock.patch.object(sys, "version_info", (3, 11)):
+            with self.assertRaisesRegex(
+                RunnerError,
+                "Python ctypes tests require a shared native library; "
+                "use --native-only with --static",
+            ):
+                run_phase5b(args)
+
+        cmake_build.assert_called_once()
+        run.assert_not_called()
+
     def test_cpp_consumers_receive_the_shared_fixture_path_directly(self):
         cpp_cmake = (BINDINGS_DIR / "cpp" / "CMakeLists.txt").read_text(
             encoding="utf-8"
