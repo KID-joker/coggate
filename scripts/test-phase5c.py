@@ -177,7 +177,14 @@ def _missing_capabilities(runtime, capabilities):
     return missing
 
 
-def build_plan(runtime, library, capabilities, system, root=ROOT):
+def build_plan(
+    runtime,
+    library,
+    capabilities,
+    system,
+    root=ROOT,
+    environment=None,
+):
     if runtime not in {"go", "java", "node", "all"}:
         raise RunnerError("unsupported runtime: %s" % runtime)
 
@@ -199,8 +206,32 @@ def build_plan(runtime, library, capabilities, system, root=ROOT):
     root = Path(root)
     runtime_library = str(library.runtime_path)
     link_library = str(library.link_path)
+    environment = os.environ if environment is None else environment
     commands = []
     if "go" in available:
+        go_environment = ()
+        if system in {"Linux", "Darwin"}:
+            library_directory = str(library.runtime_path.parent)
+            link_flag = shlex.join(["-L" + library_directory])
+            existing_link_flags = environment.get("CGO_LDFLAGS")
+            combined_link_flags = (
+                link_flag + " " + existing_link_flags
+                if existing_link_flags
+                else link_flag
+            )
+            runtime_variable = (
+                "LD_LIBRARY_PATH" if system == "Linux" else "DYLD_LIBRARY_PATH"
+            )
+            existing_runtime_path = environment.get(runtime_variable)
+            combined_runtime_path = (
+                library_directory + os.pathsep + existing_runtime_path
+                if existing_runtime_path
+                else library_directory
+            )
+            go_environment = (
+                ("CGO_LDFLAGS", combined_link_flags),
+                (runtime_variable, combined_runtime_path),
+            )
         commands.append(
             PlannedCommand(
                 (
@@ -212,6 +243,7 @@ def build_plan(runtime, library, capabilities, system, root=ROOT):
                     runtime_library,
                 ),
                 root / "bindings" / "go",
+                go_environment,
             )
         )
     if "java" in available:
@@ -459,6 +491,100 @@ class RunnerSelfTests(unittest.TestCase):
         self.assertIn("--agentgate-library", go.argv)
         self.assertEqual(go.argv[go.argv.index("--agentgate-library") + 1], str(dll))
         self.assertEqual(dict(node.env)["AGENTGATE_LIBRARY_PATH"], str(dll))
+
+    def test_go_unix_plan_links_and_loads_from_discovered_spaced_unicode_parent(self):
+        capabilities = self._capabilities()
+        parent = Path("/native path/镜像 Ω")
+        library = NativeLibrary(
+            parent / "libagentgate_ffi.dylib",
+            parent / "libagentgate_ffi.dylib",
+        )
+        existing = {
+            "CGO_LDFLAGS": "-Wl,-dead_strip",
+            "DYLD_LIBRARY_PATH": "/existing runtime",
+        }
+
+        command = build_plan(
+            "go",
+            library,
+            capabilities,
+            "Darwin",
+            Path("/source tree"),
+            environment=existing,
+        )[0]
+        planned_environment = dict(command.env)
+
+        self.assertEqual(
+            shlex.split(planned_environment["CGO_LDFLAGS"]),
+            ["-L" + str(parent), "-Wl,-dead_strip"],
+        )
+        self.assertEqual(
+            planned_environment["DYLD_LIBRARY_PATH"],
+            str(parent) + os.pathsep + existing["DYLD_LIBRARY_PATH"],
+        )
+        self.assertNotIn("LD_LIBRARY_PATH", planned_environment)
+
+        calls = []
+        run_command(
+            command,
+            lambda argv, **kwargs: calls.append((argv, kwargs))
+            or type("Completed", (), {"returncode": 0})(),
+        )
+        self.assertEqual(
+            calls[0][1]["env"]["CGO_LDFLAGS"],
+            planned_environment["CGO_LDFLAGS"],
+        )
+        self.assertEqual(
+            calls[0][1]["env"]["DYLD_LIBRARY_PATH"],
+            planned_environment["DYLD_LIBRARY_PATH"],
+        )
+
+    def test_go_linux_plan_uses_ld_library_path_and_preserves_existing_values(self):
+        parent = Path("/opt/agent gate")
+        command = build_plan(
+            "go",
+            NativeLibrary(
+                parent / "libagentgate_ffi.so",
+                parent / "libagentgate_ffi.so",
+            ),
+            self._capabilities(),
+            "Linux",
+            environment={
+                "CGO_LDFLAGS": "-pthread",
+                "LD_LIBRARY_PATH": "/already/here",
+            },
+        )[0]
+        environment = dict(command.env)
+
+        self.assertEqual(
+            shlex.split(environment["CGO_LDFLAGS"]),
+            ["-L" + str(parent), "-pthread"],
+        )
+        self.assertEqual(
+            environment["LD_LIBRARY_PATH"],
+            str(parent) + os.pathsep + "/already/here",
+        )
+        self.assertNotIn("DYLD_LIBRARY_PATH", environment)
+
+    def test_go_windows_plan_remains_runtime_loader_only(self):
+        dll = Path("C:/native path/agentgate_ffi.dll")
+        command = build_plan(
+            "go",
+            NativeLibrary(Path("C:/native path/agentgate_ffi.dll.lib"), dll),
+            self._capabilities(),
+            "Windows",
+            environment={
+                "CGO_LDFLAGS": "existing",
+                "LD_LIBRARY_PATH": "existing-linux",
+                "DYLD_LIBRARY_PATH": "existing-macos",
+            },
+        )[0]
+
+        self.assertEqual(command.env, ())
+        self.assertEqual(
+            command.argv[command.argv.index("--agentgate-library") + 1],
+            str(dll),
+        )
 
     def test_run_command_reports_selected_runtime_failure(self):
         calls = []
