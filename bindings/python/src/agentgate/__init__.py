@@ -9,6 +9,7 @@ from .models import (
     VerificationOutcome,
     VerificationStatus,
 )
+from .service import ActiveKeyResult, BeginAttemptResult, KeyResult, Service
 
 __all__ = [
     "AgentGateError",
@@ -20,4 +21,8 @@ __all__ = [
     "Submission",
     "VerificationOutcome",
     "VerificationStatus",
+    "ActiveKeyResult",
+    "BeginAttemptResult",
+    "KeyResult",
+    "Service",
 ]
