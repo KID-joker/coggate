@@ -3,6 +3,32 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if defined(_MSC_VER) && !defined(__clang__)
+#include <windows.h>
+typedef volatile LONG64 ag_go_atomic_size;
+static void ag_go_counter_increment(ag_go_atomic_size *counter) {
+    (void)InterlockedIncrement64(counter);
+}
+static void ag_go_counter_reset(ag_go_atomic_size *counter) {
+    (void)InterlockedExchange64(counter, 0);
+}
+static size_t ag_go_counter_load(ag_go_atomic_size *counter) {
+    return (size_t)InterlockedCompareExchange64(counter, 0, 0);
+}
+#else
+#include <stdatomic.h>
+typedef _Atomic size_t ag_go_atomic_size;
+static void ag_go_counter_increment(ag_go_atomic_size *counter) {
+    (void)atomic_fetch_add_explicit(counter, 1, memory_order_relaxed);
+}
+static void ag_go_counter_reset(ag_go_atomic_size *counter) {
+    atomic_store_explicit(counter, 0, memory_order_relaxed);
+}
+static size_t ag_go_counter_load(ag_go_atomic_size *counter) {
+    return atomic_load_explicit(counter, memory_order_relaxed);
+}
+#endif
+
 #define AG_GO_LAYOUT_2(type, a, b) \
     (ag_go_layout){sizeof(type), {offsetof(type, a), offsetof(type, b), 0, 0, 0, 0}}
 #define AG_GO_LAYOUT_3(type, a, b, c) \
@@ -117,14 +143,16 @@ ag_observer_callbacks ag_go_make_observer_callbacks(uintptr_t user_data) {
     return callbacks;
 }
 
-static size_t ag_go_allocations;
-static size_t ag_go_releases;
+/* Callback releases can arrive from multiple services, so shared test
+ * instrumentation must be atomic even though one service serializes calls. */
+static ag_go_atomic_size ag_go_allocations;
+static ag_go_atomic_size ag_go_releases;
 
 static void AG_CALL ag_go_host_release(void *release_data, uint8_t *data, size_t len) {
     (void)release_data;
     (void)len;
     free(data);
-    ag_go_releases++;
+    ag_go_counter_increment(&ag_go_releases);
 }
 
 int ag_go_host_buffer_assign(ag_host_buffer *out, const uint8_t *data, size_t len, int present) {
@@ -139,7 +167,7 @@ int ag_go_host_buffer_assign(ag_host_buffer *out, const uint8_t *data, size_t le
     out->data = copy;
     out->len = len;
     out->release = ag_go_host_release;
-    ag_go_allocations++;
+    ag_go_counter_increment(&ag_go_allocations);
     return 1;
 }
 
@@ -151,9 +179,12 @@ void ag_go_host_buffer_discard(ag_host_buffer *buffer) {
     memset(buffer, 0, sizeof(*buffer));
 }
 
-void ag_go_host_allocation_counters_reset(void) { ag_go_allocations = ag_go_releases = 0; }
-size_t ag_go_host_allocation_count(void) { return ag_go_allocations; }
-size_t ag_go_host_release_count(void) { return ag_go_releases; }
+void ag_go_host_allocation_counters_reset(void) {
+    ag_go_counter_reset(&ag_go_allocations);
+    ag_go_counter_reset(&ag_go_releases);
+}
+size_t ag_go_host_allocation_count(void) { return ag_go_counter_load(&ag_go_allocations); }
+size_t ag_go_host_release_count(void) { return ag_go_counter_load(&ag_go_releases); }
 
 static const char *ag_go_export_names[AG_GO_EXPORT_COUNT] = {
     "ag_abi_version", "ag_core_version", "ag_service_create", "ag_service_destroy",

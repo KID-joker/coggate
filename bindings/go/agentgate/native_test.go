@@ -1,6 +1,9 @@
 package agentgate
 
 import (
+	"bytes"
+	"encoding/hex"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -123,6 +126,42 @@ func TestNativeHostBufferAllocationPairsExactlyOnce(t *testing.T) {
 	}
 }
 
+func TestNativeHostBufferCountersAreAtomicAcrossConcurrentCallbacks(t *testing.T) {
+	nativeResetHostAllocationCounters()
+	const workers = 32
+	const iterations = 2000
+	var wait sync.WaitGroup
+	wait.Add(workers)
+	failed := make(chan struct{}, 1)
+	for worker := 0; worker < workers; worker++ {
+		go func() {
+			defer wait.Done()
+			for iteration := 0; iteration < iterations; iteration++ {
+				value, nonnull := nativeTestHostBufferRoundTrip([]byte("atomic"), true)
+				if !nonnull || string(value) != "atomic" {
+					select {
+					case failed <- struct{}{}:
+					default:
+					}
+					return
+				}
+			}
+		}()
+	}
+	wait.Wait()
+	select {
+	case <-failed:
+		t.Fatal("concurrent host-buffer round trip was corrupted")
+	default:
+	}
+	allocations, releases := nativeHostAllocationCounters()
+	want := uint64(workers * iterations)
+	if allocations != want || releases != want {
+		t.Fatalf("concurrent counters = (%d, %d), want (%d, %d)",
+			allocations, releases, want, want)
+	}
+}
+
 func TestNativeNonOKCallbackDoesNotTransferHostOwnership(t *testing.T) {
 	nativeResetHostAllocationCounters()
 	nativeTestCallbackOutput(3, []byte("must remain Go-owned"))
@@ -164,6 +203,113 @@ func TestNativeCallbacksCopyBorrowedInputsAndPairTransferredOutputs(t *testing.T
 	allocations, releases := nativeHostAllocationCounters()
 	if allocations != 2 || releases != 2 {
 		t.Fatalf("native callback ownership = (%d, %d), want (2, 2)", allocations, releases)
+	}
+}
+
+func TestNativeRealVerifyTraversesCallbacksAndReleasesExactlyOnce(t *testing.T) {
+	fixture := loadNativeBindingFixture(t)
+	var trace []string
+	var callbackIssue string
+	callbacks := &nativeTestCallbacks{
+		beginAttemptFn: func(_ []byte, binding []byte, _ int64) (int32, []byte, []byte) {
+			trace = append(trace, "begin_attempt")
+			if !slices.Equal(binding, fixture.binding) {
+				callbackIssue = fmt.Sprintf("begin binding = %x, want %x", binding, fixture.binding)
+				return 3, nil, nil
+			}
+			return 0, fixture.privateMaterial, fixture.token
+		},
+		keyByIDFn: func(keyID []byte) (int32, []byte) {
+			trace = append(trace, "key_by_id")
+			if string(keyID) != fixture.oldKeyID {
+				callbackIssue = fmt.Sprintf("key id = %q, want %q", keyID, fixture.oldKeyID)
+				return 2, nil
+			}
+			return 0, fixture.oldKey
+		},
+		finishAttemptFn: func(token []byte, outcome int32) int32 {
+			trace = append(trace, "finish_attempt")
+			if !slices.Equal(token, fixture.token) || outcome != 1 {
+				callbackIssue = fmt.Sprintf("finish = token %x outcome %d", token, outcome)
+				return 3
+			}
+			return 0
+		},
+	}
+	service, err := nativeServiceCreate(callbacks, false)
+	if err != nil {
+		t.Fatalf("nativeServiceCreate: %v", err)
+	}
+	nativeResetHostAllocationCounters()
+	output, verifyErr := nativeServiceVerify(service, fixture.submission, fixture.binding)
+	if callbackIssue != "" {
+		t.Fatal(callbackIssue)
+	}
+	if verifyErr != nil {
+		t.Fatalf("nativeServiceVerify: %v", verifyErr)
+	}
+	if string(output) != `{"status":"accepted"}` {
+		t.Fatalf("accepted output = %s", output)
+	}
+	outcome, err := decodeVerificationOutcome(output)
+	if err != nil || outcome.Status != VerificationStatusAccepted {
+		t.Fatalf("outcome = %s, %v", output, err)
+	}
+	if !slices.Equal(trace, []string{"begin_attempt", "key_by_id", "finish_attempt"}) {
+		t.Fatalf("callback trace = %v", trace)
+	}
+	allocations, releases := nativeHostAllocationCounters()
+	if allocations != 3 || releases != 3 {
+		t.Fatalf("verify callback ownership = (%d, %d), want (3, 3)", allocations, releases)
+	}
+	if err := nativeServiceDestroy(service); err != nil {
+		t.Fatalf("nativeServiceDestroy: %v", err)
+	}
+}
+
+func TestNativeRealVerifyLifecycleRejectionSkipsKeyAndFinish(t *testing.T) {
+	fixture := loadNativeBindingFixture(t)
+	var trace []string
+	callbacks := &nativeTestCallbacks{
+		beginAttemptFn: func([]byte, []byte, int64) (int32, []byte, []byte) {
+			trace = append(trace, "begin_attempt")
+			return 12, fixture.privateMaterial, fixture.token
+		},
+		keyByIDFn: func([]byte) (int32, []byte) {
+			trace = append(trace, "unexpected_key_by_id")
+			return 0, fixture.oldKey
+		},
+		finishAttemptFn: func([]byte, int32) int32 {
+			trace = append(trace, "unexpected_finish_attempt")
+			return 0
+		},
+	}
+	service, err := nativeServiceCreate(callbacks, false)
+	if err != nil {
+		t.Fatalf("nativeServiceCreate: %v", err)
+	}
+	nativeResetHostAllocationCounters()
+	output, verifyErr := nativeServiceVerify(service, fixture.submission, fixture.binding)
+	if verifyErr != nil {
+		t.Fatalf("nativeServiceVerify: %v", verifyErr)
+	}
+	if string(output) != `{"status":"rejected","reason":"already_consumed"}` {
+		t.Fatalf("rejected output = %s", output)
+	}
+	outcome, err := decodeVerificationOutcome(output)
+	if err != nil || outcome.Status != VerificationStatusRejected ||
+		outcome.Reason != RejectionReasonAlreadyConsumed {
+		t.Fatalf("outcome = %s, %v", output, err)
+	}
+	if !slices.Equal(trace, []string{"begin_attempt"}) {
+		t.Fatalf("callback trace = %v", trace)
+	}
+	allocations, releases := nativeHostAllocationCounters()
+	if allocations != 0 || releases != 0 {
+		t.Fatalf("rejected callback ownership = (%d, %d), want (0, 0)", allocations, releases)
+	}
+	if err := nativeServiceDestroy(service); err != nil {
+		t.Fatalf("nativeServiceDestroy: %v", err)
 	}
 }
 
@@ -262,9 +408,12 @@ func TestNativeInvalidHandlePanicsFailClosedAtEveryCallbackBoundary(t *testing.T
 }
 
 type nativeTestCallbacks struct {
-	storeIssuedFn func([]byte, []byte, AttemptLimit) int32
-	activeKeyFn   func() (int32, []byte, []byte)
-	observeFn     func([]byte)
+	storeIssuedFn   func([]byte, []byte, AttemptLimit) int32
+	beginAttemptFn  func([]byte, []byte, int64) (int32, []byte, []byte)
+	finishAttemptFn func([]byte, int32) int32
+	activeKeyFn     func() (int32, []byte, []byte)
+	keyByIDFn       func([]byte) (int32, []byte)
+	observeFn       func([]byte)
 }
 
 func (callbacks *nativeTestCallbacks) storeIssued(privateJSON, binding []byte, limit AttemptLimit) int32 {
@@ -274,11 +423,19 @@ func (callbacks *nativeTestCallbacks) storeIssued(privateJSON, binding []byte, l
 	return 0
 }
 
-func (*nativeTestCallbacks) beginAttempt([]byte, []byte, int64) (int32, []byte, []byte) {
+func (callbacks *nativeTestCallbacks) beginAttempt(identity, binding []byte, serverTime int64) (int32, []byte, []byte) {
+	if callbacks.beginAttemptFn != nil {
+		return callbacks.beginAttemptFn(identity, binding, serverTime)
+	}
 	return 3, nil, nil
 }
 
-func (*nativeTestCallbacks) finishAttempt([]byte, int32) int32 { return 3 }
+func (callbacks *nativeTestCallbacks) finishAttempt(token []byte, outcome int32) int32 {
+	if callbacks.finishAttemptFn != nil {
+		return callbacks.finishAttemptFn(token, outcome)
+	}
+	return 3
+}
 
 func (callbacks *nativeTestCallbacks) activeKey() (int32, []byte, []byte) {
 	if callbacks.activeKeyFn != nil {
@@ -287,7 +444,12 @@ func (callbacks *nativeTestCallbacks) activeKey() (int32, []byte, []byte) {
 	return 1, nil, nil
 }
 
-func (*nativeTestCallbacks) keyByID([]byte) (int32, []byte) { return 1, nil }
+func (callbacks *nativeTestCallbacks) keyByID(keyID []byte) (int32, []byte) {
+	if callbacks.keyByIDFn != nil {
+		return callbacks.keyByIDFn(keyID)
+	}
+	return 1, nil
+}
 
 func (callbacks *nativeTestCallbacks) observe(event []byte) {
 	if callbacks.observeFn != nil {
@@ -320,7 +482,7 @@ func TestWindowsLoaderSourceContract(t *testing.T) {
 		"LoadLibraryExW", "LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR", "LOAD_LIBRARY_SEARCH_DEFAULT_DIRS",
 		"INIT_ONCE", "InitOnceExecuteOnce", "ag_go_loader_vtable", "ag_go_resolve_exports",
 		"exports_out->symbols[i] == 0", "loader->abi_version", "loader->unload_library(loader->context, module)",
-		"static HMODULE ag_go_module",
+		"static HMODULE ag_go_module", "InterlockedIncrement64", "atomic_fetch_add_explicit",
 	} {
 		if !strings.Contains(bridge, required) {
 			t.Errorf("native_bridge.c lacks %q", required)
@@ -472,6 +634,68 @@ func TestNativeLibraryInitializationIsConcurrentExactOnce(t *testing.T) {
 	}
 	if calls.Load() != 1 {
 		t.Fatalf("load calls = %d, want 1", calls.Load())
+	}
+}
+
+type nativeBindingFixture struct {
+	binding         []byte
+	token           []byte
+	oldKeyID        string
+	oldKey          []byte
+	privateMaterial []byte
+	submission      []byte
+}
+
+func loadNativeBindingFixture(t *testing.T) nativeBindingFixture {
+	t.Helper()
+	_, current, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	payload, err := os.ReadFile(filepath.Join(filepath.Dir(current), "../../../fixtures/bindings/v1.json"))
+	if err != nil {
+		t.Fatalf("read binding fixture: %v", err)
+	}
+	var document struct {
+		Vectors struct {
+			BindingHex      string          `json:"binding_hex"`
+			TokenHex        string          `json:"token_hex"`
+			OldKeyID        string          `json:"old_key_id"`
+			OldKeyHex       string          `json:"old_key_hex"`
+			PrivateMaterial json.RawMessage `json:"private_material"`
+		} `json:"vectors"`
+		Cases []struct {
+			ID         string          `json:"id"`
+			Submission json.RawMessage `json:"submission"`
+		} `json:"cases"`
+	}
+	if err := json.Unmarshal(payload, &document); err != nil {
+		t.Fatalf("decode binding fixture: %v", err)
+	}
+	decodeHex := func(name, value string) []byte {
+		decoded, err := hex.DecodeString(value)
+		if err != nil {
+			t.Fatalf("decode %s: %v", name, err)
+		}
+		return decoded
+	}
+	var submission []byte
+	for _, fixtureCase := range document.Cases {
+		if fixtureCase.ID == "accepted" {
+			submission = bytes.Clone(fixtureCase.Submission)
+			break
+		}
+	}
+	if len(submission) == 0 {
+		t.Fatal("binding fixture lacks accepted case")
+	}
+	return nativeBindingFixture{
+		binding:         decodeHex("binding_hex", document.Vectors.BindingHex),
+		token:           decodeHex("token_hex", document.Vectors.TokenHex),
+		oldKeyID:        document.Vectors.OldKeyID,
+		oldKey:          decodeHex("old_key_hex", document.Vectors.OldKeyHex),
+		privateMaterial: bytes.Clone(document.Vectors.PrivateMaterial),
+		submission:      submission,
 	}
 }
 
