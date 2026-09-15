@@ -267,6 +267,22 @@ test('strict scanner rejects malformed syntax, trailing roots, and invalid UTF-8
   ]) assertInvalid(() => decodeVerificationOutcome(bytes));
 });
 
+test('all JSON decoders normalize revoked typed-array proxies to stable errors', () => {
+  const { proxy, revoke } = Proxy.revocable(Uint8Array.of(1), {});
+  revoke();
+  for (const decode of [decodeSubmission, decodePublicChallenge, decodeVerificationOutcome]) {
+    assert.throws(() => decode(proxy), (error) => {
+      assert.ok(error instanceof AgentGateError);
+      assert.equal(error.code, 'invalid_argument');
+      assert.equal(error.message, 'invalid_argument');
+      assert.equal(error.stack, undefined);
+      assert.equal(String(error).includes('revoked'), false);
+      assert.equal(inspect(error).includes('proxy'), false);
+      return true;
+    });
+  }
+});
+
 test('strict scanner accepts JSON whitespace, escapes, arrays, and valid raw Unicode', () => {
   assert.deepEqual(
     decodeSubmission(utf8(' \n\t {"challenge_id":"雪🚀","nonce":"n","answer":"a"}\r ')),

@@ -10,6 +10,14 @@ import {
 const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 const encoder = new TextEncoder();
 const integerPattern = /^-?(?:0|[1-9][0-9]*)$/;
+const typedArrayPrototype = Object.getPrototypeOf(Uint8Array.prototype);
+const typedArrayBuffer = Object.getOwnPropertyDescriptor(typedArrayPrototype, 'buffer').get;
+const typedArrayByteLength = Object.getOwnPropertyDescriptor(typedArrayPrototype, 'byteLength').get;
+const typedArrayByteOffset = Object.getOwnPropertyDescriptor(typedArrayPrototype, 'byteOffset').get;
+const typedArrayTag = Object.getOwnPropertyDescriptor(
+  typedArrayPrototype, Symbol.toStringTag,
+).get;
+const uint8ArraySet = Uint8Array.prototype.set;
 
 class Scanner {
   constructor(text) {
@@ -165,14 +173,24 @@ class Scanner {
   }
 }
 
-function parse(payload) {
-  if (!(payload instanceof Uint8Array)) throw invalidArgument();
-  let text;
+function decodePayload(payload) {
   try {
-    text = decoder.decode(Uint8Array.from(payload));
+    if (!ArrayBuffer.isView(payload) || typedArrayTag.call(payload) !== 'Uint8Array') {
+      throw invalidArgument();
+    }
+    const buffer = typedArrayBuffer.call(payload);
+    const byteOffset = typedArrayByteOffset.call(payload);
+    const byteLength = typedArrayByteLength.call(payload);
+    const copy = new Uint8Array(byteLength);
+    uint8ArraySet.call(copy, new Uint8Array(buffer, byteOffset, byteLength));
+    return decoder.decode(copy);
   } catch {
     throw invalidArgument();
   }
+}
+
+function parse(payload) {
+  const text = decodePayload(payload);
   let metadata;
   let value;
   try {
