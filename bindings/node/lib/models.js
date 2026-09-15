@@ -17,18 +17,48 @@ export const RejectionReason = Object.freeze({
 const attemptLimits = new Set(Object.values(AttemptLimit));
 const answerEncodings = new Set(Object.values(AnswerEncoding));
 const rejectionReasons = new Set(Object.values(RejectionReason));
+const uint8ArrayPrototype = Uint8Array.prototype;
+const uint8ArraySlice = Uint8Array.prototype.slice;
+
 function exactPlainObject(value, keys) {
-  if (value === null || typeof value !== 'object' || Object.getPrototypeOf(value) !== Object.prototype) {
+  try {
+    if (value === null || typeof value !== 'object' || Object.getPrototypeOf(value) !== Object.prototype) {
+      throw invalidArgument();
+    }
+    const ownKeys = Reflect.ownKeys(value);
+    if (ownKeys.length !== keys.length || ownKeys.some((key) => typeof key !== 'string') ||
+        keys.some((key) => !ownKeys.includes(key))) {
+      throw invalidArgument();
+    }
+    const fields = Object.create(null);
+    for (const key of keys) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor?.enumerable || !Object.hasOwn(descriptor, 'value')) throw invalidArgument();
+      fields[key] = descriptor.value;
+    }
+    return fields;
+  } catch {
     throw invalidArgument();
   }
-  const ownKeys = Reflect.ownKeys(value);
-  if (ownKeys.length !== keys.length || ownKeys.some((key) => typeof key !== 'string') ||
-      keys.some((key) => !ownKeys.includes(key))) {
+}
+
+function requireExactConstruction(instance, newTarget, target) {
+  if (newTarget !== target || Object.getPrototypeOf(instance) !== target.prototype ||
+      instance.constructor !== target) {
     throw invalidArgument();
   }
-  for (const key of keys) {
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    if (!descriptor?.enumerable || !Object.hasOwn(descriptor, 'value')) throw invalidArgument();
+}
+
+function copyBinding(value) {
+  try {
+    if (!ArrayBuffer.isView(value) || Object.getPrototypeOf(value) !== uint8ArrayPrototype) {
+      throw invalidArgument();
+    }
+    const copied = uint8ArraySlice.call(value);
+    if (copied.byteLength < 1 || copied.byteLength > 256) throw invalidArgument();
+    return copied;
+  } catch {
+    throw invalidArgument();
   }
 }
 
@@ -66,23 +96,22 @@ export class IssueRequest {
 
   constructor(value) {
     if (arguments.length !== 1) throw invalidArgument();
-    exactPlainObject(value, ['version', 'binding', 'attemptLimit']);
-    requireString(value.version);
-    if (!(value.binding instanceof Uint8Array) || value.binding.byteLength < 1 ||
-        value.binding.byteLength > 256 || !attemptLimits.has(value.attemptLimit)) {
-      throw invalidArgument();
-    }
-    this.#binding = Uint8Array.from(value.binding);
+    requireExactConstruction(this, new.target, IssueRequest);
+    const fields = exactPlainObject(value, ['version', 'binding', 'attemptLimit']);
+    requireString(fields.version);
+    if (!attemptLimits.has(fields.attemptLimit)) throw invalidArgument();
+    this.#binding = copyBinding(fields.binding);
     Object.defineProperties(this, {
-      version: { enumerable: true, value: value.version },
-      binding: { enumerable: true, get: () => Uint8Array.from(this.#binding) },
-      attemptLimit: { enumerable: true, value: value.attemptLimit },
+      version: { enumerable: true, value: fields.version },
+      binding: { enumerable: true, get: () => uint8ArraySlice.call(this.#binding) },
+      attemptLimit: { enumerable: true, value: fields.attemptLimit },
     });
     Object.freeze(this);
   }
 
   static is(value) {
-    return typeof value === 'object' && value !== null && #brand in value;
+    return typeof value === 'object' && value !== null && #brand in value &&
+      Object.getPrototypeOf(value) === IssueRequest.prototype && value.constructor === IssueRequest;
   }
 }
 
@@ -99,24 +128,26 @@ export class PublicChallenge {
 
   constructor(value) {
     if (arguments.length !== 1) throw invalidArgument();
+    requireExactConstruction(this, new.target, PublicChallenge);
     const keys = [
       'challengeId', 'generatorVersion', 'nonce', 'issuedAt', 'expiresAt', 'question',
       'answerEncoding',
     ];
-    exactPlainObject(value, keys);
-    for (const key of ['challengeId', 'generatorVersion', 'nonce', 'question']) requireString(value[key]);
-    if (!Number.isSafeInteger(value.issuedAt) || !Number.isSafeInteger(value.expiresAt) ||
-        !answerEncodings.has(value.answerEncoding)) {
+    const fields = exactPlainObject(value, keys);
+    for (const key of ['challengeId', 'generatorVersion', 'nonce', 'question']) requireString(fields[key]);
+    if (!Number.isSafeInteger(fields.issuedAt) || !Number.isSafeInteger(fields.expiresAt) ||
+        !answerEncodings.has(fields.answerEncoding)) {
       throw invalidArgument();
     }
     for (const key of keys) {
-      Object.defineProperty(this, key, { enumerable: true, value: value[key] });
+      Object.defineProperty(this, key, { enumerable: true, value: fields[key] });
     }
     Object.freeze(this);
   }
 
   static is(value) {
-    return typeof value === 'object' && value !== null && #brand in value;
+    return typeof value === 'object' && value !== null && #brand in value &&
+      Object.getPrototypeOf(value) === PublicChallenge.prototype && value.constructor === PublicChallenge;
   }
 }
 
@@ -128,17 +159,19 @@ export class Submission {
 
   constructor(value) {
     if (arguments.length !== 1) throw invalidArgument();
+    requireExactConstruction(this, new.target, Submission);
     const keys = ['challengeId', 'nonce', 'answer'];
-    exactPlainObject(value, keys);
-    for (const key of keys) requireString(value[key]);
+    const fields = exactPlainObject(value, keys);
+    for (const key of keys) requireString(fields[key]);
     for (const key of keys) {
-      Object.defineProperty(this, key, { enumerable: true, value: value[key] });
+      Object.defineProperty(this, key, { enumerable: true, value: fields[key] });
     }
     Object.freeze(this);
   }
 
   static is(value) {
-    return typeof value === 'object' && value !== null && #brand in value;
+    return typeof value === 'object' && value !== null && #brand in value &&
+      Object.getPrototypeOf(value) === Submission.prototype && value.constructor === Submission;
   }
 }
 
@@ -151,6 +184,7 @@ export class VerificationOutcome {
   #brand;
 
   constructor(token, status, reason) {
+    requireExactConstruction(this, new.target, VerificationOutcome);
     if (token !== outcomeToken) throw invalidArgument();
     Object.defineProperty(this, 'status', { enumerable: true, value: status });
     Object.defineProperty(this, 'reason', { enumerable: true, value: reason });
@@ -168,7 +202,9 @@ export class VerificationOutcome {
   }
 
   static is(value) {
-    return typeof value === 'object' && value !== null && #brand in value;
+    return typeof value === 'object' && value !== null && #brand in value &&
+      Object.getPrototypeOf(value) === VerificationOutcome.prototype &&
+      value.constructor === VerificationOutcome;
   }
 }
 

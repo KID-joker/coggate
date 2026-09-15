@@ -124,10 +124,73 @@ test('typed model construction copies explicit fields and rejects prototype tric
   assertInvalid(() => new Submission(nonEnumerable));
 });
 
+test('model constructors reject malicious subclasses before they can leak secrets', () => {
+  const sentinel = 'SUBCLASS_SECRET_SENTINEL';
+  class LeakyIssueRequest extends IssueRequest {
+    toJSON() { return sentinel; }
+    [inspect.custom]() { return sentinel; }
+  }
+  class LeakyPublicChallenge extends PublicChallenge {
+    toJSON() { return sentinel; }
+    [inspect.custom]() { return sentinel; }
+  }
+  class LeakySubmission extends Submission {
+    toJSON() { return sentinel; }
+    [inspect.custom]() { return sentinel; }
+  }
+  class LeakyVerificationOutcome extends VerificationOutcome {
+    toJSON() { return sentinel; }
+    [inspect.custom]() { return sentinel; }
+  }
+
+  const cases = [
+    () => new LeakyIssueRequest({
+      version: '1.0', binding: Uint8Array.of(1), attemptLimit: AttemptLimit.ONE,
+    }),
+    () => new LeakyPublicChallenge({
+      challengeId: 'c', generatorVersion: '1.0', nonce: sentinel,
+      issuedAt: 1, expiresAt: 2, question: sentinel,
+      answerEncoding: AnswerEncoding.BASE64URL,
+    }),
+    () => new LeakySubmission({ challengeId: 'c', nonce: sentinel, answer: sentinel }),
+    () => new LeakyVerificationOutcome(Symbol(sentinel), 'accepted', null),
+  ];
+  for (const construct of cases) {
+    let caught;
+    try { construct(); } catch (error) { caught = error; }
+    assert.ok(caught instanceof AgentGateError);
+    assert.equal(caught.code, 'invalid_argument');
+    for (const rendered of [String(caught), inspect(caught), JSON.stringify(caught)]) {
+      assert.equal(rendered.includes(sentinel), false);
+    }
+  }
+});
+
+test('issue requests require an exact genuine Uint8Array and normalize intrinsic failures', () => {
+  class DerivedBytes extends Uint8Array {}
+  const customPrototype = Object.create(Uint8Array.prototype);
+  const customView = Uint8Array.of(1);
+  Object.setPrototypeOf(customView, customPrototype);
+  const proxy = new Proxy(Uint8Array.of(1), {});
+  const detached = Uint8Array.of(1);
+  structuredClone(detached.buffer, { transfer: [detached.buffer] });
+
+  for (const binding of [
+    Object.create(Uint8Array.prototype),
+    new DerivedBytes([1]),
+    Buffer.from([1]),
+    customView,
+    proxy,
+    detached,
+  ]) {
+    assertInvalid(() => newV1IssueRequest(binding));
+  }
+});
+
 test('model string, inspection, and implicit JSON forms redact secrets', () => {
   const sentinels = ['BINDING_SENTINEL', 'NONCE_SENTINEL', 'ANSWER_SENTINEL', 'QUESTION_SENTINEL'];
   const models = [
-    newV1IssueRequest(utf8(sentinels[0])),
+    newV1IssueRequest(Uint8Array.from(utf8(sentinels[0]))),
     new PublicChallenge({
       challengeId: 'challenge', generatorVersion: '1.0', nonce: sentinels[1],
       issuedAt: 1, expiresAt: 2, question: sentinels[3], answerEncoding: AnswerEncoding.BASE64URL,
