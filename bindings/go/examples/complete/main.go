@@ -22,6 +22,14 @@ type memoryLifecycle struct {
 	challenges map[string]*storedChallenge
 }
 
+func (store *memoryLifecycle) seed(challengeID string, material, binding []byte) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	store.challenges[challengeID] = &storedChallenge{
+		material: bytes.Clone(material), binding: bytes.Clone(binding),
+	}
+}
+
 func (store *memoryLifecycle) StoreIssued(privateJSON, binding []byte, _ agentgate.AttemptLimit) agentgate.LifecycleStatus {
 	var identity struct {
 		ChallengeID string `json:"challenge_id"`
@@ -69,18 +77,24 @@ func (store *memoryLifecycle) FinishAttempt(token []byte, _ agentgate.AttemptOut
 }
 
 type memoryKeys struct {
-	id  string
-	key []byte
+	activeID  string
+	activeKey []byte
+	oldID     string
+	oldKey    []byte
 }
 
 func (keys *memoryKeys) ActiveKey() agentgate.ActiveKeyResult {
-	return agentgate.ActiveKeyResult{Status: agentgate.KeyStatusOK, KeyID: keys.id, Key: bytes.Clone(keys.key)}
+	return agentgate.ActiveKeyResult{Status: agentgate.KeyStatusOK, KeyID: keys.activeID, Key: bytes.Clone(keys.activeKey)}
 }
 func (keys *memoryKeys) KeyByID(id string) agentgate.KeyResult {
-	if id != keys.id {
+	switch id {
+	case keys.activeID:
+		return agentgate.KeyResult{Status: agentgate.KeyStatusOK, Key: bytes.Clone(keys.activeKey)}
+	case keys.oldID:
+		return agentgate.KeyResult{Status: agentgate.KeyStatusOK, Key: bytes.Clone(keys.oldKey)}
+	default:
 		return agentgate.KeyResult{Status: agentgate.KeyStatusNotFound}
 	}
-	return agentgate.KeyResult{Status: agentgate.KeyStatusOK, Key: bytes.Clone(keys.key)}
 }
 
 type discardObserver struct{}
@@ -98,26 +112,39 @@ func main() {
 }
 
 func run(library, answer string) error {
-	binding := []byte("complete-example-binding")
+	issueBinding := []byte("complete-example-binding")
 	lifecycle := &memoryLifecycle{challenges: make(map[string]*storedChallenge)}
-	keys := &memoryKeys{id: "example-2026-09", key: bytes.Repeat([]byte{0x41}, 32)}
+	keys := &memoryKeys{
+		activeID: "example-2026-09", activeKey: bytes.Repeat([]byte{0x41}, 32),
+		oldID: "2026-08", oldKey: []byte("0123456789abcdef0123456789abcdef"),
+	}
 	service, err := agentgate.NewService(lifecycle, keys, discardObserver{}, library)
 	if err != nil {
 		return err
 	}
 	defer service.Close()
 
-	request, err := agentgate.NewV1IssueRequest(binding)
+	request, err := agentgate.NewV1IssueRequest(issueBinding)
 	if err != nil {
 		return err
 	}
-	challenge, err := service.Issue(request)
+	_, err = service.Issue(request)
 	if err != nil {
 		return err
 	}
 	fmt.Println("issue: ok")
 
-	outcome, err := service.Verify(agentgate.Submission{ChallengeID: challenge.ChallengeID, Nonce: challenge.Nonce, Answer: answer}, binding)
+	// This accepted path uses the shared deterministic fixture. Applications do
+	// not reproduce AgentGate's MAC construction; they persist private material
+	// from Issue and later return it from BeginAttempt in the same way.
+	fixtureBinding := []byte{0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77}
+	const fixtureChallengeID = "Y2hhbGxlbmdlLTEyMzQ1Ng"
+	const fixtureNonce = "bm9uY2UtMTIzNDU2Nzg5MA"
+	fixtureMaterial := []byte(`{"challenge_id":"Y2hhbGxlbmdlLTEyMzQ1Ng","generator_version":"1.0","nonce":"bm9uY2UtMTIzNDU2Nzg5MA","issued_at":1788062400,"expires_at":1788062408,"mac_key_id":"2026-08","answer_mac":"b9cb8fd013b40e31c7bc3a1c33b7e36143ef98d045a924ed09ebd38ff07cec2c","answer_encoding":"base64url"}`)
+	lifecycle.seed(fixtureChallengeID, fixtureMaterial, fixtureBinding)
+	outcome, err := service.Verify(agentgate.Submission{
+		ChallengeID: fixtureChallengeID, Nonce: fixtureNonce, Answer: answer,
+	}, fixtureBinding)
 	if err != nil {
 		fmt.Println("verify:", errorCode(err))
 		return nil

@@ -269,7 +269,7 @@ func TestSameServiceCallbackReentryFailsWithoutDeadlock(t *testing.T) {
 	}
 }
 
-func TestExternalCloseWaitsForInFlightCall(t *testing.T) {
+func TestPublicCloseDuringCallbackFailsFastThenClosesIdempotently(t *testing.T) {
 	requireDirectLinkedNativeLibrary(t)
 	lifecycle, keys := validServiceProviders()
 	entered, release := make(chan struct{}), make(chan struct{})
@@ -286,19 +286,17 @@ func TestExternalCloseWaitsForInFlightCall(t *testing.T) {
 	issueDone := make(chan error, 1)
 	go func() { _, e := service.Issue(request); issueDone <- e }()
 	<-entered
-	closeDone := make(chan error, 1)
-	// Start Close while Issue owns the call lock but before allowing the callback to return.
-	go func() { closeDone <- service.closeWaitingForInflight() }()
-	select {
-	case <-closeDone:
-		t.Fatal("Close did not wait")
-	case <-time.After(30 * time.Millisecond):
+	if err := service.Close(); stableErrorCode(err) != "invalid_argument" {
+		t.Fatalf("Close during callback = %v", err)
 	}
 	close(release)
 	if err := <-issueDone; err != nil {
 		t.Fatal(err)
 	}
-	if err := <-closeDone; err != nil {
+	if err := service.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Close(); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -337,15 +335,107 @@ func TestCallbackAdaptersValidateBeginAndKeyResults(t *testing.T) {
 		t.Fatal("test setup did not mutate returned copy")
 	}
 
-	sourceMaterial := []byte(`{"challenge_id":"copy"}`)
+	sourceMaterial := []byte(`{"challenge_id":"copy","generator_version":"1.0","nonce":"nonce","issued_at":1,"expires_at":2,"mac_key_id":"old","answer_mac":"0000000000000000000000000000000000000000000000000000000000000000","answer_encoding":"base64url"}`)
 	sourceToken := []byte("token")
+	wantMaterial, wantToken := bytes.Clone(sourceMaterial), bytes.Clone(sourceToken)
 	copying := newCallbackAdapter(&serviceLifecycle{beginFn: func([]byte, []byte, int64) BeginAttemptResult {
 		return BeginAttemptResult{Status: BeginStatusOK, Material: sourceMaterial, Token: sourceToken}
 	}}, &serviceKeys{}, nil)
 	_, materialCopy, tokenCopy := copying.beginAttempt(nil, nil, 0)
 	sourceMaterial[0], sourceToken[0] = 'X', 'X'
-	if string(materialCopy) != `{"challenge_id":"copy"}` || string(tokenCopy) != "token" {
+	if !bytes.Equal(materialCopy, wantMaterial) || !bytes.Equal(tokenCopy, wantToken) {
 		t.Fatalf("callback outputs were not copied: %q %q", materialCopy, tokenCopy)
+	}
+}
+
+func TestBeginAttemptRejectsStructurallyInvalidPrivateMaterial(t *testing.T) {
+	valid := `{"challenge_id":"id","generator_version":"1.0","nonce":"nonce","issued_at":1,"expires_at":2,"mac_key_id":"old","answer_mac":"0000000000000000000000000000000000000000000000000000000000000000","answer_encoding":"base64url"}`
+	cases := map[string][]byte{
+		"non-object":             []byte(`[]`),
+		"duplicate":              []byte(`{"challenge_id":"id","challenge_id":"again","generator_version":"1.0","nonce":"nonce","issued_at":1,"expires_at":2,"mac_key_id":"old","answer_mac":"0000000000000000000000000000000000000000000000000000000000000000","answer_encoding":"base64url"}`),
+		"unknown":                []byte(valid[:len(valid)-1] + `,"extra":true}`),
+		"missing":                []byte(`{"challenge_id":"id"}`),
+		"challenge id type":      []byte(strings.Replace(valid, `"id"`, `1`, 1)),
+		"generator version type": []byte(strings.Replace(valid, `"1.0"`, `false`, 1)),
+		"nonce type":             []byte(strings.Replace(valid, `"nonce"`, `[]`, 1)),
+		"issued at type":         []byte(strings.Replace(valid, `"issued_at":1`, `"issued_at":"1"`, 1)),
+		"expires at type":        []byte(strings.Replace(valid, `"expires_at":2`, `"expires_at":2.5`, 1)),
+		"key id type":            []byte(strings.Replace(valid, `"old"`, `null`, 1)),
+		"answer mac type":        []byte(strings.Replace(valid, `"0000000000000000000000000000000000000000000000000000000000000000"`, `{}`, 1)),
+		"answer encoding type":   []byte(strings.Replace(valid, `"base64url"`, `7`, 1)),
+		"invalid enum":           []byte(strings.Replace(valid, `"base64url"`, `"hex"`, 1)),
+		"invalid utf8":           bytes.Replace([]byte(valid), []byte(`"id"`), []byte{'"', 0xff, '"'}, 1),
+		"lone surrogate":         []byte(strings.Replace(valid, `"id"`, `"\ud800"`, 1)),
+		"trailing document":      []byte(valid + `{}`),
+	}
+	for name, material := range cases {
+		t.Run(name, func(t *testing.T) {
+			adapter := newCallbackAdapter(&serviceLifecycle{beginFn: func([]byte, []byte, int64) BeginAttemptResult {
+				return BeginAttemptResult{Status: BeginStatusOK, Material: material, Token: []byte("token")}
+			}}, &serviceKeys{}, nil)
+			status, returnedMaterial, token := adapter.beginAttempt(nil, nil, 0)
+			if status != int32(BeginStatusInternal) || returnedMaterial != nil || token != nil {
+				t.Fatalf("invalid material accepted: status=%d material=%q token=%q", status, returnedMaterial, token)
+			}
+		})
+	}
+}
+
+func TestNativeCopiesAreClearedWithoutMutatingProviderOwnedSlices(t *testing.T) {
+	requireDirectLinkedNativeLibrary(t)
+	fixture := loadGoFixture(t)
+	providerMaterial, _ := json.Marshal(fixture.Vectors.PrivateMaterial)
+	providerToken := mustHex(t, fixture.Vectors.TokenHex)
+	providerKey := mustHex(t, fixture.Vectors.OldKeyHex)
+	providerActiveKey := mustHex(t, fixture.Vectors.ActiveKeyHex)
+	originalMaterial, originalToken := bytes.Clone(providerMaterial), bytes.Clone(providerToken)
+	originalKey, originalActiveKey := bytes.Clone(providerKey), bytes.Clone(providerActiveKey)
+	lifecycle := &serviceLifecycle{
+		beginFn: func([]byte, []byte, int64) BeginAttemptResult {
+			return BeginAttemptResult{Status: BeginStatusOK, Material: providerMaterial, Token: providerToken}
+		},
+	}
+	keys := &serviceKeys{
+		activeFn: func() ActiveKeyResult {
+			return ActiveKeyResult{Status: KeyStatusOK, KeyID: fixture.Vectors.ActiveKeyID, Key: providerActiveKey}
+		},
+		byIDFn: func(string) KeyResult {
+			return KeyResult{Status: KeyStatusOK, Key: providerKey}
+		},
+	}
+	service, err := NewService(lifecycle, keys, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+	var cleared []hostReleaseTag
+	service.callbacks.transientClearedHook = func(tag hostReleaseTag, value []byte) {
+		if !bytes.Equal(value, make([]byte, len(value))) {
+			t.Errorf("%s transient was not cleared", tag)
+		}
+		cleared = append(cleared, tag)
+	}
+	request, err := NewV1IssueRequest([]byte("transient-clear-binding"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Issue(request); err != nil {
+		t.Fatal(err)
+	}
+	caseFixture := fixture.Cases[0]
+	binding := mustHex(t, caseFixture.BindingHex)
+	if _, err := service.Verify(*caseFixture.Submission, binding); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(providerMaterial, originalMaterial) || !bytes.Equal(providerToken, originalToken) ||
+		!bytes.Equal(providerKey, originalKey) || !bytes.Equal(providerActiveKey, originalActiveKey) {
+		t.Fatal("provider-owned callback result was mutated")
+	}
+	if !reflect.DeepEqual(cleared, []hostReleaseTag{
+		hostReleaseActiveKeyID, hostReleaseActiveKey,
+		hostReleaseMaterial, hostReleaseToken, hostReleaseKey,
+	}) {
+		t.Fatalf("cleared tags = %v", cleared)
 	}
 }
 

@@ -2,7 +2,6 @@ package agentgate
 
 import (
 	"bytes"
-	"encoding/json"
 	"log/slog"
 	"sync/atomic"
 	"unicode/utf8"
@@ -105,10 +104,12 @@ type KeyProvider interface {
 type Observer interface{ Observe(eventJSON []byte) }
 
 type callbackAdapter struct {
-	lifecycle Lifecycle
-	keys      KeyProvider
-	observer  Observer
-	active    atomic.Bool
+	lifecycle            Lifecycle
+	keys                 KeyProvider
+	observer             Observer
+	active               atomic.Bool
+	releaseHook          func(hostReleaseTag)
+	transientClearedHook func(hostReleaseTag, []byte)
 }
 
 func newCallbackAdapter(lifecycle Lifecycle, keys KeyProvider, observer Observer) *callbackAdapter {
@@ -154,10 +155,48 @@ func (adapter *callbackAdapter) beginAttempt(identityJSON, binding []byte, serve
 	if result.Status != BeginStatusOK {
 		return int32(result.Status), nil, nil
 	}
-	if len(result.Material) == 0 || !utf8.Valid(result.Material) || !json.Valid(result.Material) {
+	if !validPrivateChallengeMaterial(result.Material) {
 		return status, nil, nil
 	}
 	return int32(BeginStatusOK), bytes.Clone(result.Material), bytes.Clone(result.Token)
+}
+
+func validPrivateChallengeMaterial(payload []byte) bool {
+	type wirePrivateChallengeMaterial struct {
+		ChallengeID      *string         `json:"challenge_id"`
+		GeneratorVersion *string         `json:"generator_version"`
+		Nonce            *string         `json:"nonce"`
+		IssuedAt         *int64          `json:"issued_at"`
+		ExpiresAt        *int64          `json:"expires_at"`
+		MacKeyID         *string         `json:"mac_key_id"`
+		AnswerMAC        *string         `json:"answer_mac"`
+		AnswerEncoding   *AnswerEncoding `json:"answer_encoding"`
+	}
+	var wire wirePrivateChallengeMaterial
+	if strictDecodeObject(payload, &wire,
+		"challenge_id", "generator_version", "nonce", "issued_at", "expires_at",
+		"mac_key_id", "answer_mac", "answer_encoding") != nil {
+		return false
+	}
+	return wire.ChallengeID != nil && wire.GeneratorVersion != nil && wire.Nonce != nil &&
+		wire.IssuedAt != nil && wire.ExpiresAt != nil && wire.MacKeyID != nil &&
+		wire.AnswerMAC != nil && wire.AnswerEncoding != nil &&
+		*wire.AnswerEncoding == AnswerEncodingBase64URL
+}
+
+func (adapter *callbackAdapter) hostReleased(tag hostReleaseTag) {
+	if adapter.releaseHook != nil {
+		adapter.releaseHook(tag)
+	}
+}
+
+func (adapter *callbackAdapter) clearTransient(tag hostReleaseTag, value []byte) {
+	for index := range value {
+		value[index] = 0
+	}
+	if adapter.transientClearedHook != nil {
+		adapter.transientClearedHook(tag, value)
+	}
 }
 
 func (adapter *callbackAdapter) finishAttempt(token []byte, outcome int32) (status int32) {

@@ -126,6 +126,15 @@ func (tag hostReleaseTag) String() string {
 }
 
 type hostReleaseObserver interface{ hostReleased(hostReleaseTag) }
+type hostTransientClearer interface {
+	clearTransient(hostReleaseTag, []byte)
+}
+
+func clearHostTransient(callbacks nativeCallbacks, tag hostReleaseTag, value []byte) {
+	if clearer, ok := callbacks.(hostTransientClearer); ok {
+		clearer.clearTransient(tag, value)
+	}
+}
 
 type nativeService struct {
 	pointer        *C.ag_service
@@ -301,6 +310,8 @@ func agGoBeginAttempt(handle C.uintptr_t, identityData *C.uint8_t, identityLen C
 	callbacks := callbacksForHandle(handle)
 	callbackStatus, material, token := callbacks.beginAttempt(copyBorrowed(identityData, identityLen),
 		copyBorrowed(bindingData, bindingLen), int64(serverTime))
+	defer clearHostTransient(callbacks, hostReleaseToken, token)
+	defer clearHostTransient(callbacks, hostReleaseMaterial, material)
 	if callbackStatus != int32(C.AG_BEGIN_STATUS_OK) {
 		return C.int32_t(callbackStatus)
 	}
@@ -332,6 +343,8 @@ func agGoActiveKey(handle C.uintptr_t, keyIDOut, keyOut *C.ag_host_buffer) (stat
 	defer func() { _ = recover() }()
 	callbacks := callbacksForHandle(handle)
 	callbackStatus, keyID, key := callbacks.activeKey()
+	defer clearHostTransient(callbacks, hostReleaseActiveKey, key)
+	defer clearHostTransient(callbacks, hostReleaseActiveKeyID, keyID)
 	if callbackStatus != int32(C.AG_KEY_STATUS_OK) {
 		return C.int32_t(callbackStatus)
 	}
@@ -353,6 +366,7 @@ func agGoKeyByID(handle C.uintptr_t, keyIDData *C.uint8_t, keyIDLen C.size_t,
 	defer func() { _ = recover() }()
 	callbacks := callbacksForHandle(handle)
 	callbackStatus, key := callbacks.keyByID(copyBorrowed(keyIDData, keyIDLen))
+	defer clearHostTransient(callbacks, hostReleaseKey, key)
 	if callbackStatus != int32(C.AG_KEY_STATUS_OK) {
 		return C.int32_t(callbackStatus)
 	}
