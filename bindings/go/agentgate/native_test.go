@@ -126,6 +126,40 @@ func TestNativeHostBufferAllocationPairsExactlyOnce(t *testing.T) {
 	}
 }
 
+func TestNativeHostReleaseTagsAreClosedAndStable(t *testing.T) {
+	want := []hostReleaseTag{
+		hostReleaseMaterial,
+		hostReleaseToken,
+		hostReleaseActiveKeyID,
+		hostReleaseActiveKey,
+		hostReleaseKey,
+	}
+	for index, tag := range want {
+		if tag != hostReleaseTag(index+1) || !tag.valid() {
+			t.Fatalf("release tag %d = %d valid=%v", index, tag, tag.valid())
+		}
+	}
+	for _, tag := range []hostReleaseTag{0, 6, 255} {
+		if tag.valid() {
+			t.Fatalf("unexpected valid release tag %d", tag)
+		}
+	}
+}
+
+func TestNativeHostReleaseNotificationFailsSafeForInvalidHandlesAndTags(t *testing.T) {
+	nativeTestHostReleaseNotification(0, hostReleaseMaterial)
+	nativeTestDeletedHandleReleaseNotification(&nativeTestCallbacks{}, hostReleaseToken)
+
+	var released []hostReleaseTag
+	callbacks := &nativeTestCallbacks{releasedFn: func(tag hostReleaseTag) {
+		released = append(released, tag)
+	}}
+	nativeTestHostReleaseNotificationForCallbacks(callbacks, hostReleaseTag(99))
+	if len(released) != 0 {
+		t.Fatalf("invalid release tag reached callbacks: %v", released)
+	}
+}
+
 func TestNativeHostBufferCountersAreAtomicAcrossConcurrentCallbacks(t *testing.T) {
 	nativeResetHostAllocationCounters()
 	const workers = 32
@@ -168,6 +202,17 @@ func TestNativeNonOKCallbackDoesNotTransferHostOwnership(t *testing.T) {
 	allocations, releases := nativeHostAllocationCounters()
 	if allocations != 0 || releases != 0 {
 		t.Fatalf("non-OK callback transferred ownership: (%d, %d)", allocations, releases)
+	}
+}
+
+func TestNativeOversizedHostBufferAssignmentFailsWithoutOwnershipTransfer(t *testing.T) {
+	nativeResetHostAllocationCounters()
+	if !nativeTestHostBufferOversizedAssignFails() {
+		t.Fatal("oversized host buffer assignment succeeded")
+	}
+	allocations, releases := nativeHostAllocationCounters()
+	if allocations != 0 || releases != 0 {
+		t.Fatalf("failed assignment transferred ownership: (%d, %d)", allocations, releases)
 	}
 }
 
@@ -235,6 +280,9 @@ func TestNativeRealVerifyTraversesCallbacksAndReleasesExactlyOnce(t *testing.T) 
 			}
 			return 0
 		},
+		releasedFn: func(tag hostReleaseTag) {
+			trace = append(trace, "release:"+tag.String())
+		},
 	}
 	service, err := nativeServiceCreate(callbacks, false)
 	if err != nil {
@@ -255,7 +303,10 @@ func TestNativeRealVerifyTraversesCallbacksAndReleasesExactlyOnce(t *testing.T) 
 	if err != nil || outcome.Status != VerificationStatusAccepted {
 		t.Fatalf("outcome = %s, %v", output, err)
 	}
-	if !slices.Equal(trace, []string{"begin_attempt", "key_by_id", "finish_attempt"}) {
+	if !slices.Equal(trace, []string{
+		"begin_attempt", "release:token", "release:material", "key_by_id",
+		"release:key", "finish_attempt",
+	}) {
 		t.Fatalf("callback trace = %v", trace)
 	}
 	allocations, releases := nativeHostAllocationCounters()
@@ -392,8 +443,8 @@ func requireDirectLinkedNativeLibrary(t *testing.T) {
 
 func TestEveryExportedGoCallbackContainsPanics(t *testing.T) {
 	source := readNativeSource(t, "native.go")
-	if got := strings.Count(source, "_ = recover()"); got != 6 {
-		t.Fatalf("panic recovery guards = %d, want one for each of six Go callback exports", got)
+	if got := strings.Count(source, "_ = recover()"); got != 7 {
+		t.Fatalf("panic recovery guards = %d, want one for each of seven Go callback exports", got)
 	}
 }
 
@@ -414,6 +465,13 @@ type nativeTestCallbacks struct {
 	activeKeyFn     func() (int32, []byte, []byte)
 	keyByIDFn       func([]byte) (int32, []byte)
 	observeFn       func([]byte)
+	releasedFn      func(hostReleaseTag)
+}
+
+func (callbacks *nativeTestCallbacks) hostReleased(tag hostReleaseTag) {
+	if callbacks.releasedFn != nil {
+		callbacks.releasedFn(tag)
+	}
 }
 
 func (callbacks *nativeTestCallbacks) storeIssued(privateJSON, binding []byte, limit AttemptLimit) int32 {

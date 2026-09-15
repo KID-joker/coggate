@@ -55,6 +55,7 @@ extern int32_t agGoFinishAttempt(uintptr_t, const uint8_t *, size_t, int32_t);
 extern int32_t agGoActiveKey(uintptr_t, ag_host_buffer *, ag_host_buffer *);
 extern int32_t agGoKeyByID(uintptr_t, const uint8_t *, size_t, ag_host_buffer *);
 extern void agGoObserve(uintptr_t, const uint8_t *, size_t);
+extern void agGoHostReleased(uintptr_t, int32_t);
 
 static ag_lifecycle_status AG_CALL ag_go_store_issued_trampoline(void *user_data,
                                                                  ag_byte_slice private_json,
@@ -148,27 +149,62 @@ ag_observer_callbacks ag_go_make_observer_callbacks(uintptr_t user_data) {
 static ag_go_atomic_size ag_go_allocations;
 static ag_go_atomic_size ag_go_releases;
 
+typedef struct ag_go_host_allocation {
+    uintptr_t handle;
+    size_t len;
+    ag_go_host_release_tag tag;
+    uint8_t bytes[];
+} ag_go_host_allocation;
+
+static int ag_go_valid_release_tag(ag_go_host_release_tag tag) {
+    return tag >= AG_GO_HOST_RELEASE_MATERIAL && tag <= AG_GO_HOST_RELEASE_KEY;
+}
+
+static void ag_go_zero_bytes(uint8_t *data, size_t len) {
+    volatile uint8_t *cursor = data;
+    while (len-- != 0) *cursor++ = 0;
+}
+
 static void AG_CALL ag_go_host_release(void *release_data, uint8_t *data, size_t len) {
-    (void)release_data;
-    (void)len;
-    free(data);
+    ag_go_host_allocation *allocation = (ag_go_host_allocation *)release_data;
+    if (allocation == NULL) return;
+    if (data == allocation->bytes && len == allocation->len &&
+        ag_go_valid_release_tag(allocation->tag)) {
+        agGoHostReleased(allocation->handle, (int32_t)allocation->tag);
+    }
+    ag_go_zero_bytes(allocation->bytes, allocation->len);
+    free(allocation);
     ag_go_counter_increment(&ag_go_releases);
 }
 
-int ag_go_host_buffer_assign(ag_host_buffer *out, const uint8_t *data, size_t len, int present) {
-    uint8_t *copy;
+int ag_go_host_buffer_assign(ag_host_buffer *out, const uint8_t *data, size_t len, int present,
+                             uintptr_t handle, ag_go_host_release_tag tag) {
+    ag_go_host_allocation *allocation;
     if (out == NULL) return 0;
     memset(out, 0, sizeof(*out));
     if (!present) return 1;
-    if (len != 0 && data == NULL) return 0;
-    copy = (uint8_t *)malloc(len == 0 ? 1 : len);
-    if (copy == NULL) return 0;
-    if (len != 0) memcpy(copy, data, len);
-    out->data = copy;
+    if ((len != 0 && data == NULL) || !ag_go_valid_release_tag(tag) ||
+        len > SIZE_MAX - offsetof(ag_go_host_allocation, bytes)) return 0;
+    allocation = (ag_go_host_allocation *)malloc(
+        offsetof(ag_go_host_allocation, bytes) + (len == 0 ? 1 : len));
+    if (allocation == NULL) return 0;
+    allocation->handle = handle;
+    allocation->len = len;
+    allocation->tag = tag;
+    if (len != 0) memcpy(allocation->bytes, data, len);
+    out->data = allocation->bytes;
     out->len = len;
+    out->release_data = allocation;
     out->release = ag_go_host_release;
     ag_go_counter_increment(&ag_go_allocations);
     return 1;
+}
+
+int ag_go_test_host_buffer_oversized_assign(void) {
+    ag_host_buffer output = {0};
+    uint8_t byte = 0;
+    return ag_go_host_buffer_assign(&output, &byte, SIZE_MAX, 1, 0,
+                                    AG_GO_HOST_RELEASE_MATERIAL);
 }
 
 void ag_go_host_buffer_discard(ag_host_buffer *buffer) {

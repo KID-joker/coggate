@@ -31,6 +31,14 @@ typedef struct ag_go_callback_statuses {
     int32_t key_by_id;
 } ag_go_callback_statuses;
 
+typedef enum ag_go_host_release_tag {
+    AG_GO_HOST_RELEASE_MATERIAL = 1,
+    AG_GO_HOST_RELEASE_TOKEN = 2,
+    AG_GO_HOST_RELEASE_ACTIVE_KEY_ID = 3,
+    AG_GO_HOST_RELEASE_ACTIVE_KEY = 4,
+    AG_GO_HOST_RELEASE_KEY = 5
+} ag_go_host_release_tag;
+
 #define AG_GO_EXPORT_COUNT 7
 
 typedef uintptr_t ag_go_symbol;
@@ -85,8 +93,10 @@ ag_lifecycle_callbacks ag_go_make_lifecycle_callbacks(uintptr_t user_data);
 ag_key_callbacks ag_go_make_key_callbacks(uintptr_t user_data);
 ag_observer_callbacks ag_go_make_observer_callbacks(uintptr_t user_data);
 
-int ag_go_host_buffer_assign(ag_host_buffer *out, const uint8_t *data, size_t len, int present);
+int ag_go_host_buffer_assign(ag_host_buffer *out, const uint8_t *data, size_t len, int present,
+                             uintptr_t handle, ag_go_host_release_tag tag);
 void ag_go_host_buffer_discard(ag_host_buffer *buffer);
+int ag_go_test_host_buffer_oversized_assign(void);
 void ag_go_host_allocation_counters_reset(void);
 size_t ag_go_host_allocation_count(void);
 size_t ag_go_host_release_count(void);

@@ -103,6 +103,30 @@ type nativeCallbacks interface {
 	observe(eventJSON []byte)
 }
 
+type hostReleaseTag int32
+
+const (
+	hostReleaseMaterial hostReleaseTag = iota + 1
+	hostReleaseToken
+	hostReleaseActiveKeyID
+	hostReleaseActiveKey
+	hostReleaseKey
+)
+
+func (tag hostReleaseTag) valid() bool {
+	return tag >= hostReleaseMaterial && tag <= hostReleaseKey
+}
+
+func (tag hostReleaseTag) String() string {
+	return map[hostReleaseTag]string{
+		hostReleaseMaterial: "material", hostReleaseToken: "token",
+		hostReleaseActiveKeyID: "active_key_id", hostReleaseActiveKey: "active_key",
+		hostReleaseKey: "key",
+	}[tag]
+}
+
+type hostReleaseObserver interface{ hostReleased(hostReleaseTag) }
+
 type nativeService struct {
 	pointer        *C.ag_service
 	callbackHandle cgo.Handle
@@ -237,13 +261,14 @@ func callbacksForHandle(handle C.uintptr_t) nativeCallbacks {
 	return cgo.Handle(uintptr(handle)).Value().(nativeCallbacks)
 }
 
-func assignHostBuffer(output *C.ag_host_buffer, value []byte) bool {
+func assignHostBuffer(output *C.ag_host_buffer, value []byte, handle C.uintptr_t, tag hostReleaseTag) bool {
 	present := value != nil
 	var data *C.uint8_t
 	if len(value) != 0 {
 		data = (*C.uint8_t)(unsafe.Pointer(unsafe.SliceData(value)))
 	}
-	ok := C.ag_go_host_buffer_assign(output, data, C.size_t(len(value)), C.int(boolInt(present))) != 0
+	ok := C.ag_go_host_buffer_assign(output, data, C.size_t(len(value)), C.int(boolInt(present)),
+		handle, C.ag_go_host_release_tag(tag)) != 0
 	runtime.KeepAlive(value)
 	return ok
 }
@@ -279,10 +304,10 @@ func agGoBeginAttempt(handle C.uintptr_t, identityData *C.uint8_t, identityLen C
 	if callbackStatus != int32(C.AG_BEGIN_STATUS_OK) {
 		return C.int32_t(callbackStatus)
 	}
-	if !assignHostBuffer(materialOut, material) {
+	if !assignHostBuffer(materialOut, material, handle, hostReleaseMaterial) {
 		return C.AG_BEGIN_STATUS_INTERNAL
 	}
-	if !assignHostBuffer(tokenOut, token) {
+	if !assignHostBuffer(tokenOut, token, handle, hostReleaseToken) {
 		C.ag_go_host_buffer_discard(materialOut)
 		return C.AG_BEGIN_STATUS_INTERNAL
 	}
@@ -310,10 +335,10 @@ func agGoActiveKey(handle C.uintptr_t, keyIDOut, keyOut *C.ag_host_buffer) (stat
 	if callbackStatus != int32(C.AG_KEY_STATUS_OK) {
 		return C.int32_t(callbackStatus)
 	}
-	if !assignHostBuffer(keyIDOut, keyID) {
+	if !assignHostBuffer(keyIDOut, keyID, handle, hostReleaseActiveKeyID) {
 		return C.AG_KEY_STATUS_UNAVAILABLE
 	}
-	if !assignHostBuffer(keyOut, key) {
+	if !assignHostBuffer(keyOut, key, handle, hostReleaseActiveKey) {
 		C.ag_go_host_buffer_discard(keyIDOut)
 		return C.AG_KEY_STATUS_UNAVAILABLE
 	}
@@ -331,7 +356,7 @@ func agGoKeyByID(handle C.uintptr_t, keyIDData *C.uint8_t, keyIDLen C.size_t,
 	if callbackStatus != int32(C.AG_KEY_STATUS_OK) {
 		return C.int32_t(callbackStatus)
 	}
-	if !assignHostBuffer(keyOut, key) {
+	if !assignHostBuffer(keyOut, key, handle, hostReleaseKey) {
 		return C.AG_KEY_STATUS_UNAVAILABLE
 	}
 	runtime.KeepAlive(callbacks)
@@ -343,6 +368,20 @@ func agGoObserve(handle C.uintptr_t, eventData *C.uint8_t, eventLen C.size_t) {
 	defer func() { _ = recover() }()
 	callbacks := callbacksForHandle(handle)
 	callbacks.observe(copyBorrowed(eventData, eventLen))
+	runtime.KeepAlive(callbacks)
+}
+
+//export agGoHostReleased
+func agGoHostReleased(handle C.uintptr_t, rawTag C.int32_t) {
+	defer func() { _ = recover() }()
+	tag := hostReleaseTag(rawTag)
+	if !tag.valid() {
+		return
+	}
+	callbacks := callbacksForHandle(handle)
+	if observer, ok := callbacks.(hostReleaseObserver); ok {
+		observer.hostReleased(tag)
+	}
 	runtime.KeepAlive(callbacks)
 }
 
@@ -394,7 +433,7 @@ func nativeTestHostBufferRoundTrip(value []byte, present bool) ([]byte, bool) {
 	if !present {
 		value = nil
 	}
-	if !assignHostBuffer(&output, value) {
+	if !assignHostBuffer(&output, value, 0, hostReleaseMaterial) {
 		panic("host allocation failed")
 	}
 	nonnull := output.data != nil
@@ -408,7 +447,28 @@ func nativeTestCallbackOutput(status int32, value []byte) {
 		return
 	}
 	var output C.ag_host_buffer
-	if assignHostBuffer(&output, value) {
+	if assignHostBuffer(&output, value, 0, hostReleaseMaterial) {
 		C.ag_go_host_buffer_discard(&output)
 	}
+}
+
+func nativeTestHostReleaseNotification(handle uintptr, tag hostReleaseTag) {
+	agGoHostReleased(C.uintptr_t(handle), C.int32_t(tag))
+}
+
+func nativeTestDeletedHandleReleaseNotification(callbacks nativeCallbacks, tag hostReleaseTag) {
+	handle := cgo.NewHandle(callbacks)
+	raw := uintptr(handle)
+	handle.Delete()
+	nativeTestHostReleaseNotification(raw, tag)
+}
+
+func nativeTestHostReleaseNotificationForCallbacks(callbacks nativeCallbacks, tag hostReleaseTag) {
+	handle := cgo.NewHandle(callbacks)
+	defer handle.Delete()
+	nativeTestHostReleaseNotification(uintptr(handle), tag)
+}
+
+func nativeTestHostBufferOversizedAssignFails() bool {
+	return C.ag_go_test_host_buffer_oversized_assign() == 0
 }
