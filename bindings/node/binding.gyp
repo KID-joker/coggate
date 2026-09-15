@@ -6,7 +6,7 @@
     "agentgate_static%": "<!(node -p \"process.env.AGENTGATE_STATIC || '0'\")",
     "agentgate_runtime_source%": "<!(node -p \"process.env.AGENTGATE_RUNTIME_LIBRARY || process.env.AGENTGATE_LIBRARY || ''\")",
     "agentgate_runtime_basename%": "<!(node -p \"require('node:path').basename(process.env.AGENTGATE_RUNTIME_LIBRARY || process.env.AGENTGATE_LIBRARY || '')\")",
-    "agentgate_install_name%": "<!(node -e \"const {execFileSync}=require('node:child_process');const p=process.env.AGENTGATE_LIBRARY||'';if(p)process.stdout.write(execFileSync('otool',['-D',p],{encoding:'utf8'}).trim().split(/\\r?\\n/).at(-1).trim())\")",
+    "agentgate_install_name%": "<!(node -e \"const {execFileSync}=require('node:child_process');const p=process.env.AGENTGATE_LIBRARY||'';if(process.platform==='darwin'&&p)process.stdout.write(execFileSync('otool',['-D',p],{encoding:'utf8'}).trim().split(/\\r?\\n/).at(-1).trim())\")",
     "node_executable%": "<!(node -p \"process.execPath\")"
   },
   "targets": [{
@@ -53,7 +53,7 @@
           ],
           "action": [
             "<(node_executable)", "-e",
-            "const fs=require('node:fs');const path=require('node:path');const cp=require('node:child_process');const [source,destination,oldName,addon,stamp]=process.argv.slice(1);fs.copyFileSync(source,destination);cp.execFileSync('install_name_tool',['-change',oldName,'@rpath/'+path.basename(destination),addon]);fs.writeFileSync(stamp,'');",
+            "const fs=require('node:fs');const path=require('node:path');const cp=require('node:child_process');const [source,destination,oldName,addon,stamp]=process.argv.slice(1);const relocated='@rpath/'+path.basename(destination);fs.copyFileSync(source,destination);cp.execFileSync('install_name_tool',['-id',relocated,destination]);cp.execFileSync('install_name_tool',['-change',oldName,relocated,addon]);fs.writeFileSync(stamp,'');",
             "<(agentgate_runtime_source)",
             "<(PRODUCT_DIR)/<(agentgate_runtime_basename)",
             "<(agentgate_install_name)",

@@ -19,6 +19,15 @@ function exactObject(value, required) {
     const allowed = new Set([...required, 'observer']);
     if (keys.some((key) => typeof key !== 'string' || !allowed.has(key)) ||
         required.some((key) => !keys.includes(key))) throw invalidArgument();
+    const fields = Object.create(null);
+    for (const key of keys) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (descriptor === undefined || !descriptor.enumerable || !Object.hasOwn(descriptor, 'value')) {
+        throw invalidArgument();
+      }
+      fields[key] = descriptor.value;
+    }
+    return fields;
   } catch { throw invalidArgument(); }
 }
 
@@ -72,13 +81,16 @@ export class Service {
 
   constructor(options) {
     if (arguments.length !== 1) throw invalidArgument();
-    exactObject(options, ['lifecycle', 'keys']);
-    methodObject(options.lifecycle, ['storeIssued', 'beginAttempt', 'finishAttempt']);
-    methodObject(options.keys, ['activeKey', 'keyById']);
-    if (options.observer !== undefined && typeof options.observer !== 'function') throw invalidArgument();
-    this.#lifecycle = options.lifecycle;
-    this.#keys = options.keys;
-    this.#observer = options.observer;
+    let fields;
+    try {
+      fields = exactObject(options, ['lifecycle', 'keys']);
+      methodObject(fields.lifecycle, ['storeIssued', 'beginAttempt', 'finishAttempt']);
+      methodObject(fields.keys, ['activeKey', 'keyById']);
+      if (fields.observer !== undefined && typeof fields.observer !== 'function') throw invalidArgument();
+    } catch { throw invalidArgument(); }
+    this.#lifecycle = fields.lifecycle;
+    this.#keys = fields.keys;
+    this.#observer = fields.observer;
     const lifecycleBridge = bridge(this.#lifecycle,
       ['storeIssued', 'beginAttempt', 'finishAttempt', 'released']);
     const keysBridge = bridge(this.#keys, ['activeKey', 'keyById']);
@@ -142,6 +154,7 @@ export class Service {
   static testDestroyCount() { return addon.destroyCount(); }
   static testWipeCount() { return addon.wipeCount(); }
   static testObservationCount() { return addon.observationCount(); }
+  static testFailNextNapi() { addon.failNextNapi(); }
 }
 
 Object.freeze(Service.prototype);

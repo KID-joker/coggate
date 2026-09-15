@@ -3,11 +3,13 @@
 #include "agentgate.h"
 
 #include <atomic>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <new>
+#include <mutex>
 #include <string>
 
 namespace {
@@ -18,8 +20,10 @@ struct State {
   napi_ref keys{};
   napi_ref observer{};
   ag_service* service{};
+  std::mutex mutex;
   bool closed{};
   bool callback_active{};
+  std::size_t in_flight{};
 };
 
 struct HostAllocation {
@@ -33,19 +37,25 @@ std::atomic<std::uint64_t> releases{0};
 std::atomic<std::uint64_t> destroys{0};
 std::atomic<std::uint64_t> wipes{0};
 std::atomic<std::uint64_t> observations{0};
+std::atomic<std::uint64_t> napi_failures{0};
+std::atomic<bool> fail_next_named_property{false};
 
 void secure_zero(void* pointer, std::size_t length) noexcept {
   auto* bytes = static_cast<volatile std::uint8_t*>(pointer);
   while (length-- != 0) *bytes++ = 0;
 }
 
-bool ok(napi_status status) noexcept { return status == napi_ok; }
+bool ok(napi_status status) noexcept {
+  if (status == napi_ok) return true;
+  napi_failures.fetch_add(1, std::memory_order_relaxed);
+  return false;
+}
 
 void clear_exception(napi_env env) noexcept {
   bool pending = false;
   if (!ok(napi_is_exception_pending(env, &pending)) || !pending) return;
   napi_value ignored{};
-  (void)napi_get_and_clear_last_exception(env, &ignored);
+  if (!ok(napi_get_and_clear_last_exception(env, &ignored))) return;
 }
 
 void close_scope(napi_env env, napi_handle_scope scope) noexcept {
@@ -53,20 +63,45 @@ void close_scope(napi_env env, napi_handle_scope scope) noexcept {
 }
 
 bool get_ref(napi_env env, napi_ref ref, napi_value* value) noexcept {
-  return ref != nullptr && ok(napi_get_reference_value(env, ref, value)) && *value != nullptr;
-}
-
-bool uint32_value(napi_env env, napi_value value, std::uint32_t* output) noexcept {
-  napi_valuetype type{};
-  if (value == nullptr || !ok(napi_typeof(env, value, &type)) || type != napi_number ||
-      !ok(napi_get_value_uint32(env, value, output))) {
+  if (ref == nullptr || !ok(napi_get_reference_value(env, ref, value)) || *value == nullptr) {
     clear_exception(env);
     return false;
   }
   return true;
 }
 
+bool number_value(napi_env env, napi_value value, std::int32_t* output) noexcept {
+  napi_valuetype type{};
+  double number = 0;
+  if (value == nullptr || !ok(napi_typeof(env, value, &type)) || type != napi_number ||
+      !ok(napi_get_value_double(env, value, &number)) || !std::isfinite(number) ||
+      std::trunc(number) != number || number < std::numeric_limits<std::int32_t>::min() ||
+      number > std::numeric_limits<std::int32_t>::max()) {
+    clear_exception(env);
+    return false;
+  }
+  *output = static_cast<std::int32_t>(number);
+  return true;
+}
+
+bool lifecycle_value(napi_env env, napi_value value, std::int32_t* output) noexcept {
+  return number_value(env, value, output) && *output >= 0 && *output <= 3;
+}
+
+bool begin_value(napi_env env, napi_value value, std::int32_t* output) noexcept {
+  return number_value(env, value, output) && ((*output >= 0 && *output <= 3) ||
+      (*output >= 10 && *output <= 15));
+}
+
+bool key_value(napi_env env, napi_value value, std::int32_t* output) noexcept {
+  return number_value(env, value, output) && *output >= 0 && *output <= 3;
+}
+
 bool named(napi_env env, napi_value object, const char* name, napi_value* value) noexcept {
+  if (fail_next_named_property.exchange(false, std::memory_order_relaxed)) {
+    napi_failures.fetch_add(1, std::memory_order_relaxed);
+    return false;
+  }
   if (!ok(napi_get_named_property(env, object, name, value))) {
     clear_exception(env);
     return false;
@@ -93,21 +128,37 @@ bool bytes(napi_env env, napi_value value, const std::uint8_t** data,
   return true;
 }
 
-napi_value byte_array(napi_env env, ag_byte_slice input) noexcept {
-  void* copied = nullptr;
-  napi_value buffer{};
-  napi_value array{};
-  if (!ok(napi_create_arraybuffer(env, input.len, &copied, &buffer))) {
-    clear_exception(env);
-    return nullptr;
+class TransientArray {
+ public:
+  TransientArray(napi_env env, ag_byte_slice input) noexcept : env_(env), size_(input.len) {
+    napi_value buffer{};
+    if (!ok(napi_create_arraybuffer(env_, size_, &data_, &buffer))) {
+      clear_exception(env_);
+      return;
+    }
+    if (size_ != 0) std::memcpy(data_, input.data, size_);
+    if (!ok(napi_create_typedarray(env_, napi_uint8_array, size_, buffer, 0, &value_))) {
+      clear_exception(env_);
+      secure_zero(data_, size_);
+      value_ = nullptr;
+    }
   }
-  if (input.len != 0) std::memcpy(copied, input.data, input.len);
-  if (!ok(napi_create_typedarray(env, napi_uint8_array, input.len, buffer, 0, &array))) {
-    clear_exception(env);
-    return nullptr;
+  ~TransientArray() { wipe(); }
+  TransientArray(const TransientArray&) = delete;
+  TransientArray& operator=(const TransientArray&) = delete;
+  napi_value value() const noexcept { return value_; }
+  void wipe() noexcept {
+    if (data_ != nullptr) {
+      secure_zero(data_, size_);
+      data_ = nullptr;
+    }
   }
-  return array;
-}
+ private:
+  napi_env env_;
+  napi_value value_{};
+  void* data_{};
+  std::size_t size_{};
+};
 
 bool call_method(State* state, napi_ref target_ref, const char* method,
     std::size_t argc, napi_value* argv, napi_value* result) noexcept {
@@ -130,12 +181,41 @@ bool call_method(State* state, napi_ref target_ref, const char* method,
 class CallbackGuard {
  public:
   explicit CallbackGuard(State* value) noexcept : state_(value) {
-    if (state_ != nullptr && !state_->callback_active && !state_->closed) {
+    if (state_ == nullptr) return;
+    std::lock_guard<std::mutex> lock(state_->mutex);
+    if (!state_->callback_active && !state_->closed) {
       state_->callback_active = true;
       entered_ = true;
     }
   }
-  ~CallbackGuard() { if (entered_) state_->callback_active = false; }
+  ~CallbackGuard() {
+    if (entered_) {
+      std::lock_guard<std::mutex> lock(state_->mutex);
+      state_->callback_active = false;
+    }
+  }
+  bool entered() const noexcept { return entered_; }
+ private:
+  State* state_;
+  bool entered_{};
+};
+
+class CallGuard {
+ public:
+  explicit CallGuard(State* state) noexcept : state_(state) {
+    if (state_ == nullptr) return;
+    std::lock_guard<std::mutex> lock(state_->mutex);
+    if (!state_->closed && !state_->callback_active && state_->service != nullptr) {
+      ++state_->in_flight;
+      entered_ = true;
+    }
+  }
+  ~CallGuard() {
+    if (entered_) {
+      std::lock_guard<std::mutex> lock(state_->mutex);
+      --state_->in_flight;
+    }
+  }
   bool entered() const noexcept { return entered_; }
  private:
   State* state_;
@@ -163,7 +243,8 @@ void AG_CALL release_host(void* release_data, std::uint8_t* data, std::size_t le
         napi_value ignored{};
         if (ok(napi_create_string_utf8(allocation->state->env, allocation->tag, NAPI_AUTO_LENGTH,
                 &argument))) {
-          (void)napi_call_function(allocation->state->env, target, function, 1, &argument, &ignored);
+          if (!ok(napi_call_function(allocation->state->env, target, function, 1, &argument,
+                  &ignored))) clear_exception(allocation->state->env);
         }
         clear_exception(allocation->state->env);
       }
@@ -203,15 +284,20 @@ ag_lifecycle_status AG_CALL store_issued(void* opaque, ag_byte_slice private_jso
     if (!guard.entered()) return AG_LIFECYCLE_STATUS_INTERNAL;
     napi_handle_scope scope{};
     if (!ok(napi_open_handle_scope(state->env, &scope))) return AG_LIFECYCLE_STATUS_INTERNAL;
-    napi_value argv[3]{byte_array(state->env, private_json), byte_array(state->env, binding), {}};
+    TransientArray private_value(state->env, private_json);
+    TransientArray binding_value(state->env, binding);
+    napi_value argv[3]{private_value.value(), binding_value.value(), {}};
     napi_value result{};
-    std::uint32_t status = AG_LIFECYCLE_STATUS_INTERNAL;
-    const bool success = argv[0] != nullptr && argv[1] != nullptr &&
+    std::int32_t status = AG_LIFECYCLE_STATUS_INTERNAL;
+    const bool called = argv[0] != nullptr && argv[1] != nullptr &&
         ok(napi_create_uint32(state->env, limit, &argv[2])) &&
-        call_method(state, state->lifecycle, "storeIssued", 3, argv, &result) &&
-        uint32_value(state->env, result, &status);
+        call_method(state, state->lifecycle, "storeIssued", 3, argv, &result);
+    const bool valid = called && lifecycle_value(state->env, result, &status);
+    private_value.wipe();
+    binding_value.wipe();
     close_scope(state->env, scope);
-    return success ? static_cast<ag_lifecycle_status>(status) : AG_LIFECYCLE_STATUS_INTERNAL;
+    return !called ? AG_LIFECYCLE_STATUS_INTERNAL
+        : valid ? static_cast<ag_lifecycle_status>(status) : INT32_MAX;
   } catch (...) { return AG_LIFECYCLE_STATUS_INTERNAL; }
 }
 
@@ -224,15 +310,17 @@ ag_begin_status AG_CALL begin_attempt(void* opaque, ag_byte_slice identity,
     if (!guard.entered()) return AG_BEGIN_STATUS_INTERNAL;
     napi_handle_scope scope{};
     if (!ok(napi_open_handle_scope(state->env, &scope))) return AG_BEGIN_STATUS_INTERNAL;
-    napi_value argv[3]{byte_array(state->env, identity), byte_array(state->env, binding), {}};
+    TransientArray identity_value(state->env, identity);
+    TransientArray binding_value(state->env, binding);
+    napi_value argv[3]{identity_value.value(), binding_value.value(), {}};
     napi_value result{};
-    std::uint32_t status = AG_BEGIN_STATUS_INTERNAL;
-    bool success = argv[0] != nullptr && argv[1] != nullptr &&
+    std::int32_t status = AG_BEGIN_STATUS_INTERNAL;
+    const bool called = argv[0] != nullptr && argv[1] != nullptr &&
         ok(napi_create_int64(state->env, server_time, &argv[2])) &&
         call_method(state, state->lifecycle, "beginAttempt", 3, argv, &result);
     napi_value status_value{};
-    success = success && named(state->env, result, "status", &status_value) &&
-        uint32_value(state->env, status_value, &status);
+    bool success = called && named(state->env, result, "status", &status_value) &&
+        begin_value(state->env, status_value, &status);
     if (success && status == AG_BEGIN_STATUS_OK) {
       napi_value material{};
       napi_value token{};
@@ -247,8 +335,11 @@ ag_begin_status AG_CALL begin_attempt(void* opaque, ag_byte_slice identity,
         *token_out = {};
       }
     }
+    identity_value.wipe();
+    binding_value.wipe();
     close_scope(state->env, scope);
-    return success ? static_cast<ag_begin_status>(status) : AG_BEGIN_STATUS_INTERNAL;
+    return !called ? AG_BEGIN_STATUS_INTERNAL
+        : success ? static_cast<ag_begin_status>(status) : INT32_MAX;
   } catch (...) { return AG_BEGIN_STATUS_INTERNAL; }
 }
 
@@ -260,14 +351,17 @@ ag_lifecycle_status AG_CALL finish_attempt(void* opaque, ag_byte_slice token,
     if (!guard.entered()) return AG_LIFECYCLE_STATUS_INTERNAL;
     napi_handle_scope scope{};
     if (!ok(napi_open_handle_scope(state->env, &scope))) return AG_LIFECYCLE_STATUS_INTERNAL;
-    napi_value argv[2]{byte_array(state->env, token), {}};
+    TransientArray token_value(state->env, token);
+    napi_value argv[2]{token_value.value(), {}};
     napi_value result{};
-    std::uint32_t status = AG_LIFECYCLE_STATUS_INTERNAL;
-    const bool success = argv[0] != nullptr && ok(napi_create_uint32(state->env, outcome, &argv[1])) &&
-        call_method(state, state->lifecycle, "finishAttempt", 2, argv, &result) &&
-        uint32_value(state->env, result, &status);
+    std::int32_t status = AG_LIFECYCLE_STATUS_INTERNAL;
+    const bool called = argv[0] != nullptr && ok(napi_create_uint32(state->env, outcome, &argv[1])) &&
+        call_method(state, state->lifecycle, "finishAttempt", 2, argv, &result);
+    const bool valid = called && lifecycle_value(state->env, result, &status);
+    token_value.wipe();
     close_scope(state->env, scope);
-    return success ? static_cast<ag_lifecycle_status>(status) : AG_LIFECYCLE_STATUS_INTERNAL;
+    return !called ? AG_LIFECYCLE_STATUS_INTERNAL
+        : valid ? static_cast<ag_lifecycle_status>(status) : INT32_MAX;
   } catch (...) { return AG_LIFECYCLE_STATUS_INTERNAL; }
 }
 
@@ -280,11 +374,11 @@ ag_key_status AG_CALL active_key(void* opaque, ag_host_buffer* key_id_out,
     napi_handle_scope scope{};
     if (!ok(napi_open_handle_scope(state->env, &scope))) return AG_KEY_STATUS_UNAVAILABLE;
     napi_value result{};
-    std::uint32_t status = AG_KEY_STATUS_UNAVAILABLE;
-    bool success = call_method(state, state->keys, "activeKey", 0, nullptr, &result);
+    std::int32_t status = AG_KEY_STATUS_UNAVAILABLE;
+    const bool called = call_method(state, state->keys, "activeKey", 0, nullptr, &result);
     napi_value status_value{};
-    success = success && named(state->env, result, "status", &status_value) &&
-        uint32_value(state->env, status_value, &status);
+    bool success = called && named(state->env, result, "status", &status_value) &&
+        key_value(state->env, status_value, &status);
     if (success && status == AG_KEY_STATUS_OK) {
       napi_value key_id{};
       napi_value key{};
@@ -299,7 +393,8 @@ ag_key_status AG_CALL active_key(void* opaque, ag_host_buffer* key_id_out,
       }
     }
     close_scope(state->env, scope);
-    return success ? static_cast<ag_key_status>(status) : AG_KEY_STATUS_UNAVAILABLE;
+    return !called ? AG_KEY_STATUS_UNAVAILABLE
+        : success ? static_cast<ag_key_status>(status) : INT32_MAX;
   } catch (...) { return AG_KEY_STATUS_UNAVAILABLE; }
 }
 
@@ -310,20 +405,23 @@ ag_key_status AG_CALL key_by_id(void* opaque, ag_byte_slice key_id, ag_host_buff
     if (!guard.entered()) return AG_KEY_STATUS_UNAVAILABLE;
     napi_handle_scope scope{};
     if (!ok(napi_open_handle_scope(state->env, &scope))) return AG_KEY_STATUS_UNAVAILABLE;
-    napi_value argv[1]{byte_array(state->env, key_id)};
+    TransientArray key_id_value(state->env, key_id);
+    napi_value argv[1]{key_id_value.value()};
     napi_value result{};
-    std::uint32_t status = AG_KEY_STATUS_UNAVAILABLE;
-    bool success = argv[0] != nullptr && call_method(state, state->keys, "keyById", 1, argv, &result);
+    std::int32_t status = AG_KEY_STATUS_UNAVAILABLE;
+    const bool called = argv[0] != nullptr && call_method(state, state->keys, "keyById", 1, argv, &result);
     napi_value status_value{};
-    success = success && named(state->env, result, "status", &status_value) &&
-        uint32_value(state->env, status_value, &status);
+    bool success = called && named(state->env, result, "status", &status_value) &&
+        key_value(state->env, status_value, &status);
     if (success && status == AG_KEY_STATUS_OK) {
       napi_value key{};
       success = named(state->env, result, "key", &key) &&
           output_buffer(state, key, key_out, "key");
     }
+    key_id_value.wipe();
     close_scope(state->env, scope);
-    return success ? static_cast<ag_key_status>(status) : AG_KEY_STATUS_UNAVAILABLE;
+    return !called ? AG_KEY_STATUS_UNAVAILABLE
+        : success ? static_cast<ag_key_status>(status) : INT32_MAX;
   } catch (...) { return AG_KEY_STATUS_UNAVAILABLE; }
 }
 
@@ -335,25 +433,35 @@ void AG_CALL observe(void* opaque, ag_byte_slice event_json) {
     if (!guard.entered()) return;
     napi_handle_scope scope{};
     if (!ok(napi_open_handle_scope(state->env, &scope))) return;
-    napi_value argv[1]{byte_array(state->env, event_json)};
+    TransientArray event_value(state->env, event_json);
+    napi_value argv[1]{event_value.value()};
     napi_value ignored{};
     if (argv[0] != nullptr) (void)call_method(state, state->observer, "observe", 1, argv, &ignored);
     clear_exception(state->env);
+    event_value.wipe();
     close_scope(state->env, scope);
   } catch (...) {}
 }
 
 void delete_state(napi_env env, State* state) noexcept {
   if (state == nullptr) return;
-  if (!state->closed && state->service != nullptr) {
-    (void)ag_service_destroy(state->service);
-    state->closed = true;
-    state->service = nullptr;
+  ag_service* service = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(state->mutex);
+    if (!state->closed && state->service != nullptr && state->in_flight == 0 &&
+        !state->callback_active) {
+      service = state->service;
+      state->closed = true;
+      state->service = nullptr;
+    }
+  }
+  if (service != nullptr) {
+    (void)ag_service_destroy(service);
     destroys.fetch_add(1, std::memory_order_relaxed);
   }
-  if (state->lifecycle != nullptr) (void)napi_delete_reference(env, state->lifecycle);
-  if (state->keys != nullptr) (void)napi_delete_reference(env, state->keys);
-  if (state->observer != nullptr) (void)napi_delete_reference(env, state->observer);
+  if (state->lifecycle != nullptr && !ok(napi_delete_reference(env, state->lifecycle))) clear_exception(env);
+  if (state->keys != nullptr && !ok(napi_delete_reference(env, state->keys))) clear_exception(env);
+  if (state->observer != nullptr && !ok(napi_delete_reference(env, state->observer))) clear_exception(env);
   delete state;
 }
 
@@ -362,9 +470,15 @@ void finalize(napi_env env, void* data, void*) noexcept { delete_state(env, stat
 State* state_arg(napi_env env, napi_callback_info info, std::size_t expected,
     napi_value* argv) noexcept {
   std::size_t argc = expected;
-  if (!ok(napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr)) || argc != expected) return nullptr;
+  if (!ok(napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr)) || argc != expected) {
+    clear_exception(env);
+    return nullptr;
+  }
   void* value = nullptr;
-  if (!ok(napi_get_value_external(env, argv[0], &value))) return nullptr;
+  if (!ok(napi_get_value_external(env, argv[0], &value))) {
+    clear_exception(env);
+    return nullptr;
+  }
   return static_cast<State*>(value);
 }
 
@@ -375,12 +489,22 @@ napi_value status_result(napi_env env, ag_status status, ag_owned_buffer* output
   napi_value buffer{};
   void* bytes_copy = nullptr;
   if (!ok(napi_create_object(env, &result)) || !ok(napi_create_int32(env, status, &status_value)) ||
-      !ok(napi_set_named_property(env, result, "status", status_value))) return nullptr;
+      !ok(napi_set_named_property(env, result, "status", status_value))) {
+    clear_exception(env);
+    return nullptr;
+  }
   if (status == AG_STATUS_OK && output != nullptr) {
-    if (!ok(napi_create_arraybuffer(env, output->len, &bytes_copy, &buffer))) return nullptr;
+    if (!ok(napi_create_arraybuffer(env, output->len, &bytes_copy, &buffer))) {
+      clear_exception(env);
+      return nullptr;
+    }
     if (output->len != 0) std::memcpy(bytes_copy, output->data, output->len);
     if (!ok(napi_create_typedarray(env, napi_uint8_array, output->len, buffer, 0, &data_value)) ||
-        !ok(napi_set_named_property(env, result, "data", data_value))) return nullptr;
+        !ok(napi_set_named_property(env, result, "data", data_value))) {
+      secure_zero(bytes_copy, output->len);
+      clear_exception(env);
+      return nullptr;
+    }
   }
   return result;
 }
@@ -390,16 +514,26 @@ napi_value create(napi_env env, napi_callback_info info) {
     napi_value argv[3]{};
     std::size_t argc = 3;
     if (!ok(napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr)) || argc < 2 || argc > 3 ||
-        ag_abi_version() != AG_ABI_VERSION_1) return nullptr;
+        ag_abi_version() != AG_ABI_VERSION_1) {
+      clear_exception(env);
+      return nullptr;
+    }
     auto* state = new (std::nothrow) State();
     if (state == nullptr) return nullptr;
     state->env = env;
     if (!ok(napi_create_reference(env, argv[0], 1, &state->lifecycle)) ||
-        !ok(napi_create_reference(env, argv[1], 1, &state->keys))) { delete_state(env, state); return nullptr; }
+        !ok(napi_create_reference(env, argv[1], 1, &state->keys))) {
+      clear_exception(env); delete_state(env, state); return nullptr;
+    }
     napi_valuetype observer_type = napi_undefined;
-    if (argc == 3 && ok(napi_typeof(env, argv[2], &observer_type)) && observer_type != napi_null &&
-        observer_type != napi_undefined && !ok(napi_create_reference(env, argv[2], 1, &state->observer))) {
-      delete_state(env, state); return nullptr;
+    if (argc == 3) {
+      if (!ok(napi_typeof(env, argv[2], &observer_type))) {
+        clear_exception(env); delete_state(env, state); return nullptr;
+      }
+      if (observer_type != napi_null && observer_type != napi_undefined &&
+          !ok(napi_create_reference(env, argv[2], 1, &state->observer))) {
+        clear_exception(env); delete_state(env, state); return nullptr;
+      }
     }
     ag_lifecycle_callbacks lifecycle{sizeof(lifecycle), AG_ABI_VERSION_1, state,
       store_issued, begin_attempt, finish_attempt};
@@ -410,13 +544,16 @@ napi_value create(napi_env env, napi_callback_info info) {
     if (status != AG_STATUS_OK) { delete_state(env, state); return status_result(env, status, nullptr); }
     napi_value external{};
     if (!ok(napi_create_external(env, state, finalize, nullptr, &external))) {
-      delete_state(env, state); return nullptr;
+      clear_exception(env); delete_state(env, state); return nullptr;
     }
     napi_value result{};
     napi_value zero{};
     if (!ok(napi_create_object(env, &result)) || !ok(napi_create_int32(env, 0, &zero)) ||
         !ok(napi_set_named_property(env, result, "status", zero)) ||
-        !ok(napi_set_named_property(env, result, "handle", external))) return nullptr;
+        !ok(napi_set_named_property(env, result, "handle", external))) {
+      clear_exception(env);
+      return nullptr;
+    }
     return result;
   } catch (...) { clear_exception(env); return nullptr; }
 }
@@ -426,16 +563,19 @@ napi_value destroy(napi_env env, napi_callback_info info) {
     napi_value argv[1]{};
     State* state = state_arg(env, info, 1, argv);
     ag_status status = AG_STATUS_INVALID_ARGUMENT;
-    if (state != nullptr && !state->callback_active) {
+    ag_service* service = nullptr;
+    if (state != nullptr) {
+      std::lock_guard<std::mutex> lock(state->mutex);
       if (state->closed) status = AG_STATUS_OK;
-      else {
-        status = ag_service_destroy(state->service);
-        if (status == AG_STATUS_OK) {
-          state->closed = true;
-          state->service = nullptr;
-          destroys.fetch_add(1, std::memory_order_relaxed);
-        }
+      else if (!state->callback_active && state->in_flight == 0 && state->service != nullptr) {
+        service = state->service;
+        state->closed = true;
+        state->service = nullptr;
       }
+    }
+    if (service != nullptr) {
+      status = ag_service_destroy(service);
+      if (status == AG_STATUS_OK) destroys.fetch_add(1, std::memory_order_relaxed);
     }
     return status_result(env, status, nullptr);
   } catch (...) { return status_result(env, AG_STATUS_INTERNAL_ERROR, nullptr); }
@@ -445,17 +585,19 @@ napi_value issue(napi_env env, napi_callback_info info) {
   try {
     napi_value argv[4]{};
     State* state = state_arg(env, info, 4, argv);
-    if (state == nullptr || state->closed || state->callback_active) return status_result(env, AG_STATUS_INVALID_ARGUMENT, nullptr);
+    CallGuard call(state);
+    if (!call.entered()) return status_result(env, AG_STATUS_INVALID_ARGUMENT, nullptr);
     const std::uint8_t* version = nullptr;
     const std::uint8_t* binding = nullptr;
     std::size_t version_length = 0;
     std::size_t binding_length = 0;
-    std::uint32_t limit = 0;
+    std::int32_t limit = 0;
     if (!bytes(env, argv[1], &version, &version_length) || !bytes(env, argv[2], &binding, &binding_length) ||
-        !uint32_value(env, argv[3], &limit)) return status_result(env, AG_STATUS_INVALID_ARGUMENT, nullptr);
+        !number_value(env, argv[3], &limit) || (limit != 1 && limit != 2))
+      return status_result(env, AG_STATUS_INVALID_ARGUMENT, nullptr);
     ag_owned_buffer output{};
     const ag_status status = ag_service_issue(state->service, {version, version_length},
-        {binding, binding_length}, limit, &output);
+        {binding, binding_length}, static_cast<ag_attempt_limit>(limit), &output);
     napi_value result = status_result(env, status, &output);
     if (output.data != nullptr) (void)ag_buffer_free(&output);
     return result;
@@ -466,7 +608,8 @@ napi_value verify(napi_env env, napi_callback_info info) {
   try {
     napi_value argv[3]{};
     State* state = state_arg(env, info, 3, argv);
-    if (state == nullptr || state->closed || state->callback_active) return status_result(env, AG_STATUS_INVALID_ARGUMENT, nullptr);
+    CallGuard call(state);
+    if (!call.entered()) return status_result(env, AG_STATUS_INVALID_ARGUMENT, nullptr);
     const std::uint8_t* submission = nullptr;
     const std::uint8_t* binding = nullptr;
     std::size_t submission_length = 0;
@@ -491,6 +634,20 @@ napi_value release_count(napi_env env, napi_callback_info) { return count(env, r
 napi_value destroy_count(napi_env env, napi_callback_info) { return count(env, destroys.load()); }
 napi_value wipe_count(napi_env env, napi_callback_info) { return count(env, wipes.load()); }
 napi_value observation_count(napi_env env, napi_callback_info) { return count(env, observations.load()); }
+napi_value fail_next_napi(napi_env env, napi_callback_info info) {
+  std::size_t argc = 0;
+  if (!ok(napi_get_cb_info(env, info, &argc, nullptr, nullptr, nullptr)) || argc != 0) {
+    clear_exception(env);
+    return nullptr;
+  }
+  fail_next_named_property.store(true, std::memory_order_relaxed);
+  napi_value result{};
+  if (!ok(napi_get_undefined(env, &result))) {
+    clear_exception(env);
+    return nullptr;
+  }
+  return result;
+}
 
 napi_value init(napi_env env, napi_value exports) {
   napi_property_descriptor properties[] = {
@@ -503,11 +660,18 @@ napi_value init(napi_env env, napi_value exports) {
     {"destroyCount", nullptr, destroy_count, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"wipeCount", nullptr, wipe_count, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"observationCount", nullptr, observation_count, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"failNextNapi", nullptr, fail_next_napi, nullptr, nullptr, nullptr, napi_default, nullptr},
   };
-  if (!ok(napi_define_properties(env, exports, sizeof(properties) / sizeof(properties[0]), properties))) return nullptr;
+  if (!ok(napi_define_properties(env, exports, sizeof(properties) / sizeof(properties[0]), properties))) {
+    clear_exception(env);
+    return nullptr;
+  }
   napi_value version{};
   if (!ok(napi_create_uint32(env, NAPI_VERSION, &version)) ||
-      !ok(napi_set_named_property(env, exports, "napiVersion", version))) return nullptr;
+      !ok(napi_set_named_property(env, exports, "napiVersion", version))) {
+    clear_exception(env);
+    return nullptr;
+  }
   return exports;
 }
 

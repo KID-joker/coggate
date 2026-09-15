@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { copyFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { copyFileSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -50,6 +50,33 @@ test('addon exposes N-API 9 and synchronous service issue/verify/close', () => {
     (error) => error instanceof AgentGateError && error.code === 'invalid_argument');
 });
 
+test('issue callback receives exact private schema, binding, limit and challenge-correlated values', () => {
+  let stored;
+  let supplied;
+  let limit;
+  const value = providers({ lifecycle: { storeIssued: (privateJson, seenBinding, seenLimit) => {
+    stored = JSON.parse(new TextDecoder().decode(privateJson));
+    supplied = seenBinding.slice();
+    limit = seenLimit;
+    return 0;
+  } } });
+  const service = new Service(value);
+  const challenge = service.issue(newV1IssueRequest(binding));
+  assert.deepEqual(supplied, binding);
+  assert.equal(limit, 1);
+  assert.deepEqual(new Set(Object.keys(stored)), new Set(['challenge_id', 'generator_version',
+    'nonce', 'issued_at', 'expires_at', 'mac_key_id', 'answer_mac', 'answer_encoding']));
+  assert.equal(stored.challenge_id, challenge.challengeId);
+  assert.equal(stored.generator_version, challenge.generatorVersion);
+  assert.equal(stored.nonce, challenge.nonce);
+  assert.equal(stored.issued_at, challenge.issuedAt);
+  assert.equal(stored.expires_at, challenge.expiresAt);
+  assert.equal(stored.mac_key_id, 'active-2026-09');
+  assert.match(stored.answer_mac, /^[0-9a-f]{64}$/);
+  assert.equal(stored.answer_encoding, 'base64url');
+  service.close();
+});
+
 test('callback exceptions are cleared and observer exceptions are swallowed', () => {
   const throwing = providers({
     lifecycle: { beginAttempt: () => { throw new Error('CALLBACK_EXCEPTION_SENTINEL'); } },
@@ -60,6 +87,114 @@ test('callback exceptions are cleared and observer exceptions are swallowed', ()
     challengeId: 'Y2hhbGxlbmdlLTEyMzQ1Ng', nonce: 'bm9uY2UtMTIzNDU2Nzg5MA', answer: 'YQ',
   }), binding), (error) => error.code === 'internal_error' && !String(error).includes('SENTINEL'));
   assert.doesNotThrow(() => service.close());
+});
+
+test('callback statuses accept only exact closed integer enum values', () => {
+  const invalid = [-1, 4, 0.5, 2 ** 32, Number.NaN, Number.POSITIVE_INFINITY, '0', 0n,
+    new Number(0)];
+  for (const status of invalid) {
+    const issueService = new Service(providers({ lifecycle: { storeIssued: () => status } }));
+    assert.throws(() => issueService.issue(newV1IssueRequest(binding)),
+      (error) => error.code === 'callback_failed' || error.code === 'internal_error');
+    issueService.close();
+
+    const beginService = new Service(providers({ lifecycle: {
+      beginAttempt: () => ({ status, material, token: new Uint8Array() }),
+    } }));
+    assert.throws(() => beginService.verify(new Submission({
+      challengeId: 'Y2hhbGxlbmdlLTEyMzQ1Ng', nonce: 'bm9uY2UtMTIzNDU2Nzg5MA', answer: 'YQ',
+    }), binding), (error) => error.code === 'callback_failed' || error.code === 'internal_error');
+    beginService.close();
+
+    const keyService = new Service(providers({ keys: {
+      keyById: () => ({ status, key }),
+    } }));
+    assert.throws(() => keyService.verify(new Submission({
+      challengeId: 'Y2hhbGxlbmdlLTEyMzQ1Ng', nonce: 'bm9uY2UtMTIzNDU2Nzg5MA', answer: 'YQ',
+    }), binding), (error) => error.code === 'callback_failed' || error.code === 'internal_error');
+    keyService.close();
+
+    const finishService = new Service(providers({ lifecycle: { finishAttempt: () => status } }));
+    assert.throws(() => finishService.verify(new Submission({
+      challengeId: 'Y2hhbGxlbmdlLTEyMzQ1Ng', nonce: 'bm9uY2UtMTIzNDU2Nzg5MA', answer: 'YQ',
+    }), binding), (error) => error.code === 'callback_failed' || error.code === 'internal_error');
+    finishService.close();
+  }
+});
+
+test('addon-created callback input arrays are wiped before returning to the caller', () => {
+  const retained = [];
+  const value = providers({
+    lifecycle: {
+      storeIssued: (...args) => { retained.push(...args.slice(0, 2)); return 0; },
+      beginAttempt: (...args) => {
+        retained.push(...args.slice(0, 2));
+        return { status: 0, material, token: Uint8Array.from([0xaa, 0xbb, 0xcc, 0xdd]) };
+      },
+      finishAttempt: (token) => { retained.push(token); return 0; },
+    },
+    keys: { keyById: (id) => { retained.push(id); return { status: 0, key }; } },
+    observer: (event) => retained.push(event),
+  });
+  const service = new Service(value);
+  service.issue(newV1IssueRequest(binding));
+  service.verify(new Submission({ challengeId: 'Y2hhbGxlbmdlLTEyMzQ1Ng',
+    nonce: 'bm9uY2UtMTIzNDU2Nzg5MA', answer: 'YQ' }), binding);
+  assert.ok(retained.length >= 8);
+  for (const bytes of retained) assert.ok(bytes.every((value) => value === 0));
+  service.close();
+});
+
+test('callback input arrays are wiped on callback and observer failure paths', () => {
+  const retained = [];
+  const issueService = new Service(providers({ lifecycle: { storeIssued: (...args) => {
+    retained.push(...args.slice(0, 2));
+    throw new Error('STORE_FAILURE_SENTINEL');
+  } } }));
+  assert.throws(() => issueService.issue(newV1IssueRequest(binding)));
+  issueService.close();
+  const verifyService = new Service(providers({ lifecycle: { beginAttempt: (...args) => {
+    retained.push(...args.slice(0, 2));
+    throw new Error('BEGIN_FAILURE_SENTINEL');
+  } } }));
+  assert.throws(() => verifyService.verify(new Submission({
+    challengeId: 'Y2hhbGxlbmdlLTEyMzQ1Ng', nonce: 'bm9uY2UtMTIzNDU2Nzg5MA', answer: 'YQ',
+  }), binding));
+  verifyService.close();
+  const observerService = new Service(providers({ observer: (event) => {
+    retained.push(event);
+    throw new Error('OBSERVER_FAILURE_SENTINEL');
+  } }));
+  observerService.issue(newV1IssueRequest(binding));
+  observerService.close();
+  for (const bytes of retained) assert.ok(bytes.every((value) => value === 0));
+});
+
+test('throwing callback result accessors are cleared and later calls stay healthy', () => {
+  let first = true;
+  const value = providers({ lifecycle: { beginAttempt: () => {
+    if (!first) return { status: 0, material, token: Uint8Array.from([0xaa, 0xbb, 0xcc, 0xdd]) };
+    first = false;
+    return Object.defineProperty({}, 'status', { get() { throw new Error('NAPI_SENTINEL'); } });
+  } } });
+  const service = new Service(value);
+  const submission = new Submission({ challengeId: 'Y2hhbGxlbmdlLTEyMzQ1Ng',
+    nonce: 'bm9uY2UtMTIzNDU2Nzg5MA', answer: 'YQ' });
+  assert.throws(() => service.verify(submission, binding),
+    (error) => !String(error).includes('NAPI_SENTINEL'));
+  assert.equal(service.verify(submission, binding).status, 'accepted');
+  service.close();
+});
+
+test('injected N-API property failure fails closed and the next call stays healthy', () => {
+  const service = new Service(providers());
+  const submission = new Submission({ challengeId: 'Y2hhbGxlbmdlLTEyMzQ1Ng',
+    nonce: 'bm9uY2UtMTIzNDU2Nzg5MA', answer: 'YQ' });
+  Service.testFailNextNapi();
+  assert.throws(() => service.verify(submission, binding),
+    (error) => error instanceof AgentGateError && error.code === 'internal_error');
+  assert.equal(service.verify(submission, binding).status, 'accepted');
+  service.close();
 });
 
 test('callback-time close and reentry fail fast', () => {
@@ -80,7 +215,7 @@ test('callback-time close and reentry fail fast', () => {
 test('explicit-length UTF-8 and opaque buffers preserve NUL and non-BMP', () => {
   const unusual = new TextEncoder().encode('nul\0-雪-🚀');
   let seen;
-  const value = providers({ lifecycle: { storeIssued: (_json, supplied) => { seen = supplied; return 0; } } });
+  const value = providers({ lifecycle: { storeIssued: (_json, supplied) => { seen = supplied.slice(); return 0; } } });
   const service = new Service(value);
   service.issue(newV1IssueRequest(unusual));
   assert.deepEqual(seen, unusual);
@@ -123,7 +258,7 @@ test('unclosed service and provider closure cycle finalize with one native destr
       return new WeakRef(service);
     }
     const reference = createCycle();
-    for (let index = 0; index < 200 && Service.testDestroyCount() === before; index += 1) {
+    for (let index = 0; index < 50; index += 1) {
       global.gc();
       await new Promise((resolve) => setImmediate(resolve));
     }
@@ -141,6 +276,9 @@ test('macOS addon is loader-relative and relocates through spaces and non-BMP pa
     const dependencies = linked.stdout.split(/\r?\n/).slice(1).join('\n');
     assert.match(dependencies, /@rpath\/libagentgate_ffi\.dylib/);
     assert.doesNotMatch(dependencies, /agentgate\/.worktrees\/|target\/release/);
+    const identifier = spawnSync('otool', ['-D', dependency], { encoding: 'utf8' });
+    assert.equal(identifier.status, 0, identifier.stderr);
+    assert.match(identifier.stdout.split(/\r?\n/).at(-2) ?? '', /^@rpath\/libagentgate_ffi\.dylib$/);
     const destination = mkdtempSync(join(tmpdir(), 'AgentGate Node 雪🚀 '));
     try {
       const copiedAddon = join(destination, basename(addonPath));
@@ -156,3 +294,24 @@ test('macOS addon is loader-relative and relocates through spaces and non-BMP pa
       rmSync(destination, { recursive: true, force: true });
     }
   });
+
+test('binding config guards Darwin tooling and declares synchronized native state', () => {
+  const gyp = readFileSync(new URL('../binding.gyp', import.meta.url), 'utf8');
+  const addonSource = readFileSync(new URL('../src/addon.cc', import.meta.url), 'utf8');
+  assert.match(gyp, /process\.platform\s*===\s*['"]darwin['"]/);
+  assert.match(gyp, /install_name_tool.*-id/s);
+  assert.match(addonSource, /std::mutex/);
+});
+
+test('service option reflection failures normalize without exposing getter text', () => {
+  const options = Object.defineProperty({}, 'lifecycle', {
+    enumerable: true, get() { throw new Error('OPTIONS_GETTER_SENTINEL'); },
+  });
+  Object.defineProperty(options, 'keys', { enumerable: true, value: providers().keys });
+  assert.throws(() => new Service(options), (error) => error instanceof AgentGateError &&
+    error.code === 'invalid_argument' && !String(error).includes('SENTINEL'));
+  const { proxy, revoke } = Proxy.revocable({}, {});
+  revoke();
+  assert.throws(() => new Service(proxy), (error) => error instanceof AgentGateError &&
+    error.code === 'invalid_argument');
+});
