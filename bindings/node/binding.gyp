@@ -28,10 +28,15 @@
       }],
       ["OS=='linux'", { "ldflags": ["-Wl,-rpath,$$ORIGIN"] }],
       ["agentgate_static=='1'", { "defines": ["AGENTGATE_STATIC"] }],
-      ["OS=='win' and agentgate_runtime_library!=''", {
+      ["OS=='win'", {
         "msvs_settings": { "VCCLCompilerTool": {
-          "AdditionalOptions": ["/std:c++17", "/W4", "/WX"]
-        }},
+          "ExceptionHandling": 1,
+          "WarningLevel": 4,
+          "TreatWarningAsError": True,
+          "AdditionalOptions": ["/std:c++17"]
+        }}
+      }],
+      ["OS=='win' and agentgate_runtime_library!=''", {
         "copies": [{
           "destination": "<(PRODUCT_DIR)",
           "files": ["<(agentgate_runtime_library)"]

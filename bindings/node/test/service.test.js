@@ -95,7 +95,7 @@ test('callback statuses accept only exact closed integer enum values', () => {
   for (const status of invalid) {
     const issueService = new Service(providers({ lifecycle: { storeIssued: () => status } }));
     assert.throws(() => issueService.issue(newV1IssueRequest(binding)),
-      (error) => error.code === 'callback_failed' || error.code === 'internal_error');
+      (error) => error.code === 'callback_failed');
     issueService.close();
 
     const beginService = new Service(providers({ lifecycle: {
@@ -103,7 +103,7 @@ test('callback statuses accept only exact closed integer enum values', () => {
     } }));
     assert.throws(() => beginService.verify(new Submission({
       challengeId: 'Y2hhbGxlbmdlLTEyMzQ1Ng', nonce: 'bm9uY2UtMTIzNDU2Nzg5MA', answer: 'YQ',
-    }), binding), (error) => error.code === 'callback_failed' || error.code === 'internal_error');
+    }), binding), (error) => error.code === 'callback_failed');
     beginService.close();
 
     const keyService = new Service(providers({ keys: {
@@ -111,13 +111,13 @@ test('callback statuses accept only exact closed integer enum values', () => {
     } }));
     assert.throws(() => keyService.verify(new Submission({
       challengeId: 'Y2hhbGxlbmdlLTEyMzQ1Ng', nonce: 'bm9uY2UtMTIzNDU2Nzg5MA', answer: 'YQ',
-    }), binding), (error) => error.code === 'callback_failed' || error.code === 'internal_error');
+    }), binding), (error) => error.code === 'callback_failed');
     keyService.close();
 
     const finishService = new Service(providers({ lifecycle: { finishAttempt: () => status } }));
     assert.throws(() => finishService.verify(new Submission({
       challengeId: 'Y2hhbGxlbmdlLTEyMzQ1Ng', nonce: 'bm9uY2UtMTIzNDU2Nzg5MA', answer: 'YQ',
-    }), binding), (error) => error.code === 'callback_failed' || error.code === 'internal_error');
+    }), binding), (error) => error.code === 'callback_failed');
     finishService.close();
   }
 });
@@ -300,6 +300,9 @@ test('binding config guards Darwin tooling and declares synchronized native stat
   const addonSource = readFileSync(new URL('../src/addon.cc', import.meta.url), 'utf8');
   assert.match(gyp, /process\.platform\s*===\s*['"]darwin['"]/);
   assert.match(gyp, /install_name_tool.*-id/s);
+  assert.match(gyp, /\["OS=='win'",\s*\{[\s\S]*?"ExceptionHandling":\s*1[\s\S]*?"WarningLevel":\s*4[\s\S]*?"TreatWarningAsError":\s*True[\s\S]*?"AdditionalOptions":\s*\["\/std:c\+\+17"\]/);
+  assert.match(gyp, /\["OS=='win' and agentgate_runtime_library!=''",/);
+  assert.match(gyp, /\["agentgate_static=='1'",\s*\{\s*"defines":\s*\["AGENTGATE_STATIC"\]/);
   assert.match(addonSource, /std::mutex/);
 });
 
