@@ -1,0 +1,158 @@
+import assert from 'node:assert/strict';
+import { copyFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { basename, join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import test from 'node:test';
+
+import {
+  AgentGateError,
+  IssueRequest,
+  Service,
+  Submission,
+  newV1IssueRequest,
+} from '../lib/index.js';
+
+const binding = Uint8Array.from([0, 17, 34, 51, 68, 85, 102, 119]);
+const key = Uint8Array.from(Buffer.from('3031323334353637383961626364656630313233343536373839616263646566', 'hex'));
+const material = new TextEncoder().encode('{"challenge_id":"Y2hhbGxlbmdlLTEyMzQ1Ng","generator_version":"1.0","nonce":"bm9uY2UtMTIzNDU2Nzg5MA","issued_at":1788062400,"expires_at":1788062408,"mac_key_id":"2026-08","answer_mac":"b9cb8fd013b40e31c7bc3a1c33b7e36143ef98d045a924ed09ebd38ff07cec2c","answer_encoding":"base64url"}');
+
+function providers(overrides = {}) {
+  return {
+    lifecycle: {
+      storeIssued: () => 0,
+      beginAttempt: () => ({ status: 0, material, token: Uint8Array.from([0xaa, 0xbb, 0xcc, 0xdd]) }),
+      finishAttempt: () => 0,
+      ...overrides.lifecycle,
+    },
+    keys: {
+      activeKey: () => ({ status: 0, keyId: new TextEncoder().encode('active-2026-09'), key }),
+      keyById: () => ({ status: 0, key }),
+      ...overrides.keys,
+    },
+    observer: overrides.observer,
+  };
+}
+
+test('addon exposes N-API 9 and synchronous service issue/verify/close', () => {
+  assert.equal(Service.nativeApiVersion, 9);
+  const service = new Service(providers());
+  const challenge = service.issue(newV1IssueRequest(binding));
+  assert.equal(challenge.generatorVersion, '1.0');
+  const outcome = service.verify(new Submission({
+    challengeId: 'Y2hhbGxlbmdlLTEyMzQ1Ng', nonce: 'bm9uY2UtMTIzNDU2Nzg5MA', answer: 'YQ',
+  }), binding);
+  assert.equal(outcome.status, 'accepted');
+  service.close();
+  service.close();
+  assert.throws(() => service.issue(newV1IssueRequest(binding)),
+    (error) => error instanceof AgentGateError && error.code === 'invalid_argument');
+});
+
+test('callback exceptions are cleared and observer exceptions are swallowed', () => {
+  const throwing = providers({
+    lifecycle: { beginAttempt: () => { throw new Error('CALLBACK_EXCEPTION_SENTINEL'); } },
+    observer: () => { throw new Error('OBSERVER_SECRET_SENTINEL'); },
+  });
+  const service = new Service(throwing);
+  assert.throws(() => service.verify(new Submission({
+    challengeId: 'Y2hhbGxlbmdlLTEyMzQ1Ng', nonce: 'bm9uY2UtMTIzNDU2Nzg5MA', answer: 'YQ',
+  }), binding), (error) => error.code === 'internal_error' && !String(error).includes('SENTINEL'));
+  assert.doesNotThrow(() => service.close());
+});
+
+test('callback-time close and reentry fail fast', () => {
+  let service;
+  const seen = [];
+  const values = providers({ lifecycle: { storeIssued: () => {
+    for (const call of [() => service.close(), () => service.issue(new IssueRequest({
+      version: '1.0', binding, attemptLimit: 1,
+    }))]) assert.throws(call, (error) => (seen.push(error.code), error.code === 'invalid_argument'));
+    return 0;
+  } } });
+  service = new Service(values);
+  service.issue(newV1IssueRequest(binding));
+  assert.deepEqual(seen, ['invalid_argument', 'invalid_argument']);
+  service.close();
+});
+
+test('explicit-length UTF-8 and opaque buffers preserve NUL and non-BMP', () => {
+  const unusual = new TextEncoder().encode('nul\0-雪-🚀');
+  let seen;
+  const value = providers({ lifecycle: { storeIssued: (_json, supplied) => { seen = supplied; return 0; } } });
+  const service = new Service(value);
+  service.issue(newV1IssueRequest(unusual));
+  assert.deepEqual(seen, unusual);
+  service.close();
+});
+
+test('callbacks remain alive after forced GC', { skip: typeof global.gc !== 'function' }, () => {
+  let values = providers();
+  const weak = new WeakRef(values.lifecycle);
+  const service = new Service(values);
+  values = null;
+  for (let index = 0; index < 20; index += 1) global.gc();
+  assert.ok(weak.deref());
+  service.issue(newV1IssueRequest(binding));
+  service.close();
+});
+
+test('host callback allocations are wiped and released exactly once', () => {
+  const allocationBefore = Service.testAllocationCount();
+  const releaseBefore = Service.testReleaseCount();
+  const wipeBefore = Service.testWipeCount();
+  const service = new Service(providers());
+  const outcome = service.verify(new Submission({
+    challengeId: 'Y2hhbGxlbmdlLTEyMzQ1Ng', nonce: 'bm9uY2UtMTIzNDU2Nzg5MA', answer: 'YQ',
+  }), binding);
+  assert.equal(outcome.status, 'accepted');
+  service.close();
+  assert.equal(Service.testAllocationCount() - allocationBefore, 3n);
+  assert.equal(Service.testReleaseCount() - releaseBefore, 3n);
+  assert.equal(Service.testWipeCount() - wipeBefore, 3n);
+});
+
+test('unclosed service and provider closure cycle finalize with one native destroy',
+  { skip: typeof global.gc !== 'function', timeout: 10_000 }, async () => {
+    const before = Service.testDestroyCount();
+    function createCycle() {
+      let service;
+      const value = providers({ lifecycle: { storeIssued: () => service ? 0 : 3 } });
+      service = new Service(value);
+      return new WeakRef(service);
+    }
+    const reference = createCycle();
+    for (let index = 0; index < 200 && Service.testDestroyCount() === before; index += 1) {
+      global.gc();
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    assert.equal(reference.deref(), undefined);
+    assert.equal(Service.testDestroyCount(), before + 1n);
+  });
+
+test('macOS addon is loader-relative and relocates through spaces and non-BMP paths',
+  { skip: process.platform !== 'darwin' }, () => {
+    const release = fileURLToPath(new URL('../build/Release/', import.meta.url));
+    const addonPath = join(release, 'agentgate.node');
+    const dependency = join(release, 'libagentgate_ffi.dylib');
+    const linked = spawnSync('otool', ['-L', addonPath], { encoding: 'utf8' });
+    assert.equal(linked.status, 0, linked.stderr);
+    const dependencies = linked.stdout.split(/\r?\n/).slice(1).join('\n');
+    assert.match(dependencies, /@rpath\/libagentgate_ffi\.dylib/);
+    assert.doesNotMatch(dependencies, /agentgate\/.worktrees\/|target\/release/);
+    const destination = mkdtempSync(join(tmpdir(), 'AgentGate Node 雪🚀 '));
+    try {
+      const copiedAddon = join(destination, basename(addonPath));
+      copyFileSync(addonPath, copiedAddon);
+      copyFileSync(dependency, join(destination, basename(dependency)));
+      const environment = { ...process.env };
+      delete environment.DYLD_LIBRARY_PATH;
+      const loaded = spawnSync(process.execPath,
+        ['-e', `const a=require(${JSON.stringify(copiedAddon)});if(a.napiVersion!==9)process.exit(2)`],
+        { encoding: 'utf8', env: environment });
+      assert.equal(loaded.status, 0, loaded.stderr);
+    } finally {
+      rmSync(destination, { recursive: true, force: true });
+    }
+  });
