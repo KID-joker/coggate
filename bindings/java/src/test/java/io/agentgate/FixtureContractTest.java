@@ -1,9 +1,11 @@
 package io.agentgate;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.fasterxml.jackson.core.JsonFactory;
 import com.fasterxml.jackson.core.JsonParser;
@@ -17,6 +19,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
@@ -70,7 +73,11 @@ final class FixtureContractTest {
     byte[] material = jsonBytes(vectors.get("private_material"));
     byte[] token = hex(string(vectors, "token_hex"));
     byte[] oldKey = hex(string(vectors, "old_key_hex"));
+    byte[] expectedBinding = binding(fixture);
+    byte[] expectedIdentity = identity(fixture);
     boolean[] consumed = {false};
+    List<Long> serverTimes = new ArrayList<>();
+    AtomicReference<AssertionError> callbackAssertion = new AtomicReference<>();
 
     Lifecycle lifecycle = new Lifecycle() {
       public Status storeIssued(byte[] privateJson, byte[] binding, AttemptLimit limit) {
@@ -78,6 +85,12 @@ final class FixtureContractTest {
         return Status.OK;
       }
       public BeginResult beginAttempt(byte[] identity, byte[] binding, long serverTime) {
+        captureAssertion(callbackAssertion, () -> {
+          assertArrayEquals(expectedIdentity, identity, "identity_json");
+          assertArrayEquals(expectedBinding, binding, "begin binding");
+          assertTrue(serverTime > 0, "server_time");
+        });
+        serverTimes.add(serverTime);
         if (Boolean.TRUE.equals(lifecycleSpec.get("callback_exception"))) {
           trace.add("begin_attempt:exception");
           throw new IllegalStateException("CALLBACK_EXCEPTION_SENTINEL");
@@ -86,26 +99,41 @@ final class FixtureContractTest {
         if (Boolean.TRUE.equals(lifecycleSpec.get("replay")) && !consumed[0]) {
           return new BeginResult(BeginStatus.OK, material, token);
         }
+        byte[] rejectedMaterial = firstSentinel(fixture, "MATERIAL_SENTINEL",
+            "BINDING_SENTINEL", "NONCE_SENTINEL", "REPLAY_MATERIAL_SENTINEL");
         return new BeginResult(beginStatus(string(lifecycleSpec, "begin_status")),
-            "primary".equals(lifecycleSpec.get("material")) ? material : null,
+            "primary".equals(lifecycleSpec.get("material")) ? material : rejectedMaterial,
             "default".equals(lifecycleSpec.get("token")) ? token : null);
       }
       public Status finishAttempt(byte[] value, AttemptOutcome outcome) {
+        captureAssertion(callbackAssertion, () -> {
+          assertArrayEquals(token, value, "finish token");
+          AttemptOutcome expected = string(castMap(fixture.get("submission")), "answer")
+              .equals(string(vectors, "answer")) ? AttemptOutcome.ACCEPTED : AttemptOutcome.REJECTED;
+          assertEquals(expected, outcome, "finish outcome");
+        });
         String outcomeName = outcome.name().toLowerCase(java.util.Locale.ROOT);
         trace.add("finish_attempt:" + outcomeName);
         if (outcome == AttemptOutcome.ACCEPTED) consumed[0] = true;
-        return "internal".equals(lifecycleSpec.get("finish_status")) ? Status.INTERNAL : Status.OK;
+        if ("internal".equals(lifecycleSpec.get("finish_status"))) {
+          throw new IllegalStateException("FINISH_FAILURE_SENTINEL");
+        }
+        return Status.OK;
       }
     };
     KeyProvider keys = new KeyProvider() {
       public ActiveResult activeKey() {
         trace.add("active_key");
-        return new ActiveResult(Status.OK,
-            string(vectors, "active_key_id").getBytes(StandardCharsets.UTF_8),
+        return new ActiveResult(Status.OK, "ACTIVE_KEY_SENTINEL".getBytes(StandardCharsets.UTF_8),
             hex(string(vectors, "active_key_hex")));
       }
       public Result keyById(byte[] id) {
-        trace.add("key_by_id:" + string(keysSpec, "key_id"));
+        String actualId = strictUtf8(id);
+        String oldId = string(vectors, "old_key_id");
+        String activeId = string(vectors, "active_key_id");
+        captureAssertion(callbackAssertion, () -> assertEquals(oldId, actualId, "key id"));
+        trace.add("key_by_id:" + (actualId.equals(oldId) ? "old"
+            : actualId.equals(activeId) ? "active" : actualId));
         if (Boolean.TRUE.equals(keysSpec.get("callback_exception"))) {
           throw new IllegalStateException("KEY_CALLBACK_EXCEPTION_SENTINEL");
         }
@@ -140,6 +168,7 @@ final class FixtureContractTest {
     }));
     VerificationOutcome outcome = null;
     AgentGateException error = null;
+    long verifyWindowStart = java.time.Instant.now().getEpochSecond() - 1;
     try (Service service = new Service(lifecycle, keys,
         "release".equals(fixture.get("operation")) ? null : observer)) {
       String operation = string(fixture, "operation");
@@ -161,6 +190,12 @@ final class FixtureContractTest {
       }
     } finally {
       Service.setTestReleaseListener(null);
+    }
+    long verifyWindowEnd = java.time.Instant.now().getEpochSecond() + 1;
+    if (callbackAssertion.get() != null) throw callbackAssertion.get();
+    for (long serverTime : serverTimes) {
+      assertTrue(serverTime >= verifyWindowStart && serverTime <= verifyWindowEnd,
+          "server_time outside verification window");
     }
     int expectedStatus = ((Number) fixture.get("expected_status")).intValue();
     int actualStatus = statusFor(error == null ? "ok" : error.code());
@@ -189,6 +224,46 @@ final class FixtureContractTest {
 
   private static byte[] binding(Map<String, Object> fixture) {
     return hex(string(fixture, "binding_hex"));
+  }
+
+  private static byte[] identity(Map<String, Object> fixture) {
+    @SuppressWarnings("unchecked") Map<String, Object> submission =
+        (Map<String, Object>) fixture.get("submission");
+    if (submission == null) return null;
+    Map<String, Object> identity = new LinkedHashMap<>();
+    identity.put("challenge_id", submission.get("challenge_id"));
+    identity.put("nonce", submission.get("nonce"));
+    return jsonBytes(identity);
+  }
+
+  private static byte[] firstSentinel(Map<String, Object> fixture, String... candidates) {
+    @SuppressWarnings("unchecked") List<String> sentinels =
+        (List<String>) fixture.get("forbidden_sentinels");
+    for (String candidate : candidates) {
+      if (sentinels.contains(candidate)) return candidate.getBytes(StandardCharsets.UTF_8);
+    }
+    return null;
+  }
+
+  private static void captureAssertion(AtomicReference<AssertionError> destination,
+      Runnable assertion) {
+    try {
+      assertion.run();
+    } catch (AssertionError error) {
+      destination.compareAndSet(null, error);
+      throw error;
+    }
+  }
+
+  private static String strictUtf8(byte[] value) {
+    try {
+      return StandardCharsets.UTF_8.newDecoder()
+          .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+          .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+          .decode(java.nio.ByteBuffer.wrap(value)).toString();
+    } catch (java.nio.charset.CharacterCodingException error) {
+      throw new AssertionError("invalid callback UTF-8", error);
+    }
   }
 
   private static VerificationOutcome parseExpectedOutcome(Object value) {
