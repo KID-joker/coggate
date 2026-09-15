@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.fasterxml.jackson.core.JsonFactory;
 import com.fasterxml.jackson.core.JsonParser;
+import com.fasterxml.jackson.core.StreamReadFeature;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -24,6 +25,9 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 final class FixtureContractTest {
+  private static final JsonFactory FACTORY = JsonFactory.builder()
+      .enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION)
+      .build();
   private static final Set<String> REQUIRED = Set.of(
       "accepted", "answer_mismatch", "callback_exception", "close_after_use", "exact_release",
       "finish_failure", "key_rotation_old_key", "lifecycle_already_consumed",
@@ -36,16 +40,12 @@ final class FixtureContractTest {
   static void load() throws IOException {
     Service.loadNative(Path.of(System.getProperty("agentgate.jni.path")));
     Path fixture = Path.of("..", "..", "fixtures", "bindings", "v1.json");
-    try (JsonParser parser = new JsonFactory().createParser(Files.readAllBytes(fixture))) {
-      parser.nextToken();
-      manifest = castMap(readValue(parser));
-    }
+    manifest = parseManifest(Files.readAllBytes(fixture));
   }
 
   @Test
   void everySharedFixtureIsConsumedWithExactStatusOutcomeTraceAndReleaseCount() {
-    @SuppressWarnings("unchecked") List<Map<String, Object>> cases =
-        (List<Map<String, Object>>) manifest.get("cases");
+    List<Map<String, Object>> cases = objectList(manifest, "cases");
     List<String> consumed = new ArrayList<>();
     for (Map<String, Object> fixture : cases) {
       String id = string(fixture, "id");
@@ -60,15 +60,26 @@ final class FixtureContractTest {
     assertEquals(REQUIRED.size(), consumed.size());
   }
 
+  @Test
+  void fixtureParserRejectsDuplicateTrailingMissingWrongTypesAndUnknownStatuses() {
+    assertThrows(AssertionError.class,
+        () -> parseManifest("{\"a\":1,\"a\":2}".getBytes(StandardCharsets.UTF_8)));
+    assertThrows(AssertionError.class,
+        () -> parseManifest("{} {}".getBytes(StandardCharsets.UTF_8)));
+    assertThrows(AssertionError.class, () -> string(Map.of(), "missing"));
+    assertThrows(AssertionError.class, () -> string(Map.of("value", 1L), "value"));
+    assertThrows(AssertionError.class, () -> bool(Map.of("value", "true"), "value"));
+    assertThrows(AssertionError.class, () -> integer(Map.of("value", "1"), "value"));
+    assertThrows(AssertionError.class, () -> object(Map.of("value", List.of()), "value"));
+    assertThrows(AssertionError.class, () -> beginStatus("future_status"));
+    assertThrows(AssertionError.class, () -> keyStatus("future_status"));
+  }
+
   private static void runFixture(Map<String, Object> fixture) {
-    @SuppressWarnings("unchecked") Map<String, Object> vectors =
-        (Map<String, Object>) manifest.get("vectors");
-    @SuppressWarnings("unchecked") Map<String, Object> lifecycleSpec =
-        (Map<String, Object>) fixture.get("lifecycle");
-    @SuppressWarnings("unchecked") Map<String, Object> keysSpec =
-        (Map<String, Object>) fixture.get("keys");
-    @SuppressWarnings("unchecked") List<String> expectedTrace =
-        (List<String>) fixture.get("expected_trace");
+    Map<String, Object> vectors = object(manifest, "vectors");
+    Map<String, Object> lifecycleSpec = object(fixture, "lifecycle");
+    Map<String, Object> keysSpec = object(fixture, "keys");
+    List<String> expectedTrace = stringList(fixture, "expected_trace");
     List<String> trace = new ArrayList<>();
     byte[] material = jsonBytes(vectors.get("private_material"));
     byte[] token = hex(string(vectors, "token_hex"));
@@ -91,17 +102,17 @@ final class FixtureContractTest {
           assertTrue(serverTime > 0, "server_time");
         });
         serverTimes.add(serverTime);
-        if (Boolean.TRUE.equals(lifecycleSpec.get("callback_exception"))) {
+        if (bool(lifecycleSpec, "callback_exception")) {
           trace.add("begin_attempt:exception");
           throw new IllegalStateException("CALLBACK_EXCEPTION_SENTINEL");
         }
         trace.add("begin_attempt");
-        if (Boolean.TRUE.equals(lifecycleSpec.get("replay")) && !consumed[0]) {
+        if (bool(lifecycleSpec, "replay") && !consumed[0]) {
           return new BeginResult(BeginStatus.OK, material, token);
         }
         return new BeginResult(beginStatus(string(lifecycleSpec, "begin_status")),
-            "primary".equals(lifecycleSpec.get("material")) ? material : null,
-            "default".equals(lifecycleSpec.get("token")) ? token : null);
+            "primary".equals(string(lifecycleSpec, "material")) ? material : null,
+            "default".equals(string(lifecycleSpec, "token")) ? token : null);
       }
       public Status finishAttempt(byte[] value, AttemptOutcome outcome) {
         captureAssertion(callbackAssertion, () -> {
@@ -113,7 +124,8 @@ final class FixtureContractTest {
         String outcomeName = outcome.name().toLowerCase(java.util.Locale.ROOT);
         trace.add("finish_attempt:" + outcomeName);
         if (outcome == AttemptOutcome.ACCEPTED) consumed[0] = true;
-        return "internal".equals(lifecycleSpec.get("finish_status")) ? Status.INTERNAL : Status.OK;
+        return "internal".equals(string(lifecycleSpec, "finish_status"))
+            ? Status.INTERNAL : Status.OK;
       }
     };
     KeyProvider keys = new KeyProvider() {
@@ -130,10 +142,10 @@ final class FixtureContractTest {
         captureAssertion(callbackAssertion, () -> assertEquals(oldId, actualId, "key id"));
         trace.add("key_by_id:" + (actualId.equals(oldId) ? "old"
             : actualId.equals(activeId) ? "active" : actualId));
-        if (Boolean.TRUE.equals(keysSpec.get("callback_exception"))) {
+        if (bool(keysSpec, "callback_exception")) {
           throw new IllegalStateException("KEY_CALLBACK_EXCEPTION_SENTINEL");
         }
-        if (Boolean.TRUE.equals(lifecycleSpec.get("replay")) && !consumed[0]) {
+        if (bool(lifecycleSpec, "replay") && !consumed[0]) {
           return new Result(Status.OK, oldKey);
         }
         return new Result(keyStatus(string(keysSpec, "status")), oldKey);
@@ -144,13 +156,11 @@ final class FixtureContractTest {
       String name = eventText.replaceAll(".*\\\"event\\\":\\\"([^\\\"]+)\\\".*", "$1");
       trace.add("observe:" + name);
       if ("observer_allowlist".equals(string(fixture, "id"))) {
-        @SuppressWarnings("unchecked") List<String> allow =
-            (List<String>) vectors.get("observer_allowlist");
+        List<String> allow = stringList(vectors, "observer_allowlist");
         Map<String, Object> object = parseObject(event);
         assertFalse(object.keySet().stream().anyMatch(key -> !allow.contains(key)));
       }
-      @SuppressWarnings("unchecked") List<String> sentinels =
-          (List<String>) fixture.get("forbidden_sentinels");
+      List<String> sentinels = stringList(fixture, "forbidden_sentinels");
       for (String sentinel : sentinels) assertFalse(eventText.contains(sentinel));
     };
 
@@ -166,9 +176,9 @@ final class FixtureContractTest {
     AgentGateException error = null;
     long verifyWindowStart = java.time.Instant.now().getEpochSecond() - 1;
     try (Service service = new Service(lifecycle, keys,
-        "release".equals(fixture.get("operation")) ? null : observer)) {
+        "release".equals(string(fixture, "operation")) ? null : observer)) {
       String operation = string(fixture, "operation");
-      if (Boolean.TRUE.equals(lifecycleSpec.get("replay"))) {
+      if (bool(lifecycleSpec, "replay")) {
         assertEquals(VerificationOutcome.accepted(), service.verify(submission(fixture), binding(fixture)));
         trace.clear();
         releasesBefore = Service.testReleaseCount();
@@ -193,28 +203,26 @@ final class FixtureContractTest {
       assertTrue(serverTime >= verifyWindowStart && serverTime <= verifyWindowEnd,
           "server_time outside verification window");
     }
-    int expectedStatus = ((Number) fixture.get("expected_status")).intValue();
+    int expectedStatus = integer(fixture, "expected_status");
     int actualStatus = statusFor(error == null ? "ok" : error.code());
     assertEquals(expectedStatus, actualStatus, string(fixture, "id"));
     assertEquals(expectedStatus == 0 ? null : string(fixture, "expected_code"),
         error == null ? null : error.code(), string(fixture, "id"));
-    Object expectedOutcome = fixture.get("expected_outcome");
+    Object expectedOutcome = requiredNullable(fixture, "expected_outcome");
     if (expectedOutcome != null) {
       assertNotNull(outcome);
       assertEquals(parseExpectedOutcome(expectedOutcome), outcome);
     }
     assertEquals(expectedTrace, trace, string(fixture, "id"));
-    assertEquals(((Number) fixture.get("expected_release_count")).longValue(),
+    assertEquals(longInteger(fixture, "expected_release_count"),
         Service.testReleaseCount() - releasesBefore, string(fixture, "id"));
-    @SuppressWarnings("unchecked") List<String> sentinels =
-        (List<String>) fixture.get("forbidden_sentinels");
+    List<String> sentinels = stringList(fixture, "forbidden_sentinels");
     String publicText = String.valueOf(error) + String.valueOf(outcome);
     for (String sentinel : sentinels) assertFalse(publicText.contains(sentinel));
   }
 
   private static Submission submission(Map<String, Object> fixture) {
-    @SuppressWarnings("unchecked") Map<String, Object> value =
-        (Map<String, Object>) fixture.get("submission");
+    Map<String, Object> value = object(fixture, "submission");
     return new Submission(string(value, "challenge_id"), string(value, "nonce"), string(value, "answer"));
   }
 
@@ -223,8 +231,8 @@ final class FixtureContractTest {
   }
 
   private static byte[] identity(Map<String, Object> fixture) {
-    @SuppressWarnings("unchecked") Map<String, Object> submission =
-        (Map<String, Object>) fixture.get("submission");
+    Object rawSubmission = fixture.get("submission");
+    Map<String, Object> submission = rawSubmission == null ? null : castMap(rawSubmission);
     if (submission == null) return null;
     Map<String, Object> identity = new LinkedHashMap<>();
     identity.put("challenge_id", submission.get("challenge_id"));
@@ -260,7 +268,7 @@ final class FixtureContractTest {
   private static byte[] jsonBytes(Object value) {
     try {
       java.io.ByteArrayOutputStream output = new java.io.ByteArrayOutputStream();
-      try (com.fasterxml.jackson.core.JsonGenerator generator = new JsonFactory().createGenerator(output)) {
+      try (com.fasterxml.jackson.core.JsonGenerator generator = FACTORY.createGenerator(output)) {
         writeValue(generator, value);
       }
       return output.toByteArray();
@@ -270,9 +278,11 @@ final class FixtureContractTest {
   }
 
   private static Map<String, Object> parseObject(byte[] bytes) {
-    try (JsonParser parser = new JsonFactory().createParser(bytes)) {
-      parser.nextToken();
-      return castMap(readValue(parser));
+    try (JsonParser parser = FACTORY.createParser(bytes)) {
+      if (parser.nextToken() == null) throw new AssertionError("missing JSON root");
+      Map<String, Object> result = castMap(readValue(parser));
+      if (parser.nextToken() != null) throw new AssertionError("trailing JSON root");
+      return result;
     } catch (IOException error) {
       throw new AssertionError(error);
     }
@@ -290,7 +300,7 @@ final class FixtureContractTest {
       case "binding_mismatch" -> Lifecycle.BeginStatus.BINDING_MISMATCH;
       case "nonce_mismatch" -> Lifecycle.BeginStatus.NONCE_MISMATCH;
       case "attempts_exhausted" -> Lifecycle.BeginStatus.ATTEMPTS_EXHAUSTED;
-      default -> Lifecycle.BeginStatus.INTERNAL;
+      default -> throw new AssertionError("unknown begin status: " + value);
     };
   }
 
@@ -300,20 +310,81 @@ final class FixtureContractTest {
       case "unavailable" -> KeyProvider.Status.UNAVAILABLE;
       case "not_found" -> KeyProvider.Status.NOT_FOUND;
       case "invalid_material" -> KeyProvider.Status.INVALID_MATERIAL;
-      default -> KeyProvider.Status.UNAVAILABLE;
+      default -> throw new AssertionError("unknown key status: " + value);
     };
   }
 
   private static int statusFor(String code) {
-    @SuppressWarnings("unchecked") Map<String, Object> statuses =
-        (Map<String, Object>) manifest.get("statuses");
-    @SuppressWarnings("unchecked") Map<String, Object> status =
-        (Map<String, Object>) statuses.get(code);
-    return ((Number) status.get("value")).intValue();
+    Map<String, Object> statuses = object(manifest, "statuses");
+    Map<String, Object> status = object(statuses, code);
+    return integer(status, "value");
   }
 
   private static String string(Map<String, Object> map, String key) {
-    return String.valueOf(map.get(key));
+    Object value = map.get(key);
+    if (!(value instanceof String string)) {
+      throw new AssertionError("missing or non-string fixture field: " + key);
+    }
+    return string;
+  }
+
+  private static Map<String, Object> object(Map<String, Object> map, String key) {
+    if (!map.containsKey(key)) throw new AssertionError("missing fixture field: " + key);
+    return castMap(map.get(key));
+  }
+
+  private static Object requiredNullable(Map<String, Object> map, String key) {
+    if (!map.containsKey(key)) throw new AssertionError("missing fixture field: " + key);
+    return map.get(key);
+  }
+
+  private static List<Map<String, Object>> objectList(Map<String, Object> map, String key) {
+    Object value = map.get(key);
+    if (!(value instanceof List<?> list)) {
+      throw new AssertionError("missing or non-array fixture field: " + key);
+    }
+    List<Map<String, Object>> result = new ArrayList<>();
+    for (Object item : list) result.add(castMap(item));
+    return result;
+  }
+
+  private static List<String> stringList(Map<String, Object> map, String key) {
+    Object value = map.get(key);
+    if (!(value instanceof List<?> list)) {
+      throw new AssertionError("missing or non-array fixture field: " + key);
+    }
+    List<String> result = new ArrayList<>();
+    for (Object item : list) {
+      if (!(item instanceof String string)) {
+        throw new AssertionError("non-string fixture array item: " + key);
+      }
+      result.add(string);
+    }
+    return result;
+  }
+
+  private static boolean bool(Map<String, Object> map, String key) {
+    Object value = map.get(key);
+    if (!(value instanceof Boolean result)) {
+      throw new AssertionError("missing or non-boolean fixture field: " + key);
+    }
+    return result;
+  }
+
+  private static long longInteger(Map<String, Object> map, String key) {
+    Object value = map.get(key);
+    if (!(value instanceof Long result)) {
+      throw new AssertionError("missing or non-integer fixture field: " + key);
+    }
+    return result;
+  }
+
+  private static int integer(Map<String, Object> map, String key) {
+    long value = longInteger(map, key);
+    if (value < Integer.MIN_VALUE || value > Integer.MAX_VALUE) {
+      throw new AssertionError("fixture integer out of range: " + key);
+    }
+    return (int) value;
   }
 
   private static byte[] hex(String value) { return HexFormat.of().parseHex(value); }
@@ -373,6 +444,21 @@ final class FixtureContractTest {
 
   @SuppressWarnings("unchecked")
   private static Map<String, Object> castMap(Object value) {
+    if (!(value instanceof Map<?, ?> map)
+        || map.keySet().stream().anyMatch(key -> !(key instanceof String))) {
+      throw new AssertionError("expected fixture object");
+    }
     return (Map<String, Object>) value;
+  }
+
+  private static Map<String, Object> parseManifest(byte[] payload) {
+    try (JsonParser parser = FACTORY.createParser(payload)) {
+      if (parser.nextToken() == null) throw new AssertionError("missing fixture root");
+      Map<String, Object> result = castMap(readValue(parser));
+      if (parser.nextToken() != null) throw new AssertionError("trailing fixture root");
+      return result;
+    } catch (IOException error) {
+      throw new AssertionError("invalid fixture JSON", error);
+    }
   }
 }

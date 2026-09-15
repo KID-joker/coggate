@@ -20,7 +20,7 @@ endif()
 add_library(agentgate_jni SHARED src/main/cpp/agentgate_jni.cpp)
 target_compile_features(agentgate_jni PRIVATE cxx_std_17)
 target_include_directories(agentgate_jni PRIVATE "${AGENTGATE_INCLUDE_DIR}" ${JNI_INCLUDE_DIRS})
-target_link_libraries(agentgate_jni PRIVATE "${AGENTGATE_LIBRARY}" ${JNI_LIBRARIES})
+target_link_libraries(agentgate_jni PRIVATE "${AGENTGATE_LIBRARY}")
 set_target_properties(agentgate_jni PROPERTIES
   CXX_EXTENSIONS OFF
   POSITION_INDEPENDENT_CODE ON)
@@ -31,24 +31,50 @@ else()
   target_compile_options(agentgate_jni PRIVATE -Wall -Wextra -Wpedantic -Werror)
 endif()
 
-get_filename_component(AGENTGATE_LIBRARY_DIRECTORY "${AGENTGATE_LIBRARY}" DIRECTORY)
 if(APPLE)
   set_target_properties(agentgate_jni PROPERTIES
-    BUILD_RPATH "${AGENTGATE_LIBRARY_DIRECTORY}"
+    BUILD_RPATH "@loader_path"
     INSTALL_RPATH "@loader_path")
 elseif(UNIX)
   set_target_properties(agentgate_jni PROPERTIES
-    BUILD_RPATH "${AGENTGATE_LIBRARY_DIRECTORY}"
+    BUILD_RPATH "$ORIGIN"
     INSTALL_RPATH "$ORIGIN")
 endif()
 
-if(WIN32 AND AGENTGATE_RUNTIME_LIBRARY)
+set(AGENTGATE_RUNTIME_SOURCE "")
+if(AGENTGATE_RUNTIME_LIBRARY)
   if(NOT EXISTS "${AGENTGATE_RUNTIME_LIBRARY}")
     message(FATAL_ERROR "AGENTGATE_RUNTIME_LIBRARY does not exist")
   endif()
+  set(AGENTGATE_RUNTIME_SOURCE "${AGENTGATE_RUNTIME_LIBRARY}")
+elseif(UNIX)
+  set(AGENTGATE_RUNTIME_SOURCE "${AGENTGATE_LIBRARY}")
+endif()
+
+if(AGENTGATE_RUNTIME_SOURCE)
   add_custom_command(TARGET agentgate_jni POST_BUILD
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-      "${AGENTGATE_RUNTIME_LIBRARY}" "$<TARGET_FILE_DIR:agentgate_jni>"
+      "${AGENTGATE_RUNTIME_SOURCE}" "$<TARGET_FILE_DIR:agentgate_jni>"
+    VERBATIM)
+endif()
+
+if(APPLE)
+  find_program(OTOOL_EXECUTABLE NAMES otool REQUIRED)
+  find_program(INSTALL_NAME_TOOL_EXECUTABLE NAMES install_name_tool REQUIRED)
+  execute_process(COMMAND "${OTOOL_EXECUTABLE}" -D "${AGENTGATE_LIBRARY}"
+    RESULT_VARIABLE AGENTGATE_OTOOL_RESULT
+    OUTPUT_VARIABLE AGENTGATE_OTOOL_OUTPUT
+    OUTPUT_STRIP_TRAILING_WHITESPACE)
+  if(NOT AGENTGATE_OTOOL_RESULT EQUAL 0)
+    message(FATAL_ERROR "Unable to inspect AgentGate dylib install name")
+  endif()
+  string(REPLACE "\n" ";" AGENTGATE_OTOOL_LINES "${AGENTGATE_OTOOL_OUTPUT}")
+  list(GET AGENTGATE_OTOOL_LINES -1 AGENTGATE_INSTALL_NAME)
+  get_filename_component(AGENTGATE_RUNTIME_BASENAME "${AGENTGATE_RUNTIME_SOURCE}" NAME)
+  add_custom_command(TARGET agentgate_jni POST_BUILD
+    COMMAND "${INSTALL_NAME_TOOL_EXECUTABLE}" -change
+      "${AGENTGATE_INSTALL_NAME}" "@rpath/${AGENTGATE_RUNTIME_BASENAME}"
+      "$<TARGET_FILE:agentgate_jni>"
     VERBATIM)
 endif()
 

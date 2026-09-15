@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTimeout;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.fasterxml.jackson.core.JsonFactory;
@@ -19,6 +20,7 @@ import java.nio.charset.CharacterCodingException;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.nio.file.Files;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -249,14 +251,89 @@ final class ServiceTest {
     KeyProvider keys = keys((id) -> new KeyProvider.Result(KeyProvider.Status.OK, key));
     long allocations = Service.testAllocationCount();
     long releases = Service.testReleaseCount();
-    try (Service service = new Service(lifecycle, keys, null)) {
-      assertEquals(VerificationOutcome.accepted(), service.verify(submission(), BINDING));
+    long wipes = Service.testWipeCount();
+    long wipeFailures = Service.testWipeFailureCount();
+    AtomicInteger releaseSequence = new AtomicInteger();
+    AtomicReference<AssertionError> wipeOrderingFailure = new AtomicReference<>();
+    Service.setTestReleaseListener(tag -> {
+      try {
+        assertEquals(wipes + releaseSequence.incrementAndGet(), Service.testWipeCount(),
+            "host buffer must be wiped before release notification");
+      } catch (AssertionError error) {
+        wipeOrderingFailure.compareAndSet(null, error);
+        throw error;
+      }
+    });
+    try {
+      try (Service service = new Service(lifecycle, keys, null)) {
+        assertEquals(VerificationOutcome.accepted(), service.verify(submission(), BINDING));
+      }
+    } finally {
+      Service.setTestReleaseListener(null);
     }
     assertEquals(allocations + 3, Service.testAllocationCount());
     assertEquals(releases + 3, Service.testReleaseCount());
+    assertEquals(wipes + 3, Service.testWipeCount());
+    assertEquals(wipeFailures, Service.testWipeFailureCount());
+    assertEquals(3, releaseSequence.get());
+    if (wipeOrderingFailure.get() != null) throw wipeOrderingFailure.get();
     assertArrayEquals(MATERIAL, material);
     assertArrayEquals(hex("aabbccdd"), token);
     assertArrayEquals(KEY, key);
+  }
+
+  @Test
+  void preNativeFailureCannotLeakInflightOrBlockClose() {
+    Service service = new Service(lifecycle(), keys(), null);
+    Service.setTestBeforeNativeHook(() -> { throw new IllegalStateException("ENCODE_SENTINEL"); });
+    try {
+      AgentGateException error = assertThrows(AgentGateException.class,
+          () -> service.verify(submission(), BINDING));
+      assertEquals("internal_error", error.code());
+      assertFalse(error.toString().contains("ENCODE_SENTINEL"));
+    } finally {
+      Service.setTestBeforeNativeHook(null);
+    }
+    assertTimeout(Duration.ofSeconds(2), service::close);
+  }
+
+  @Test
+  @Timeout(10)
+  void cleanerCollectsCallbackCycleAndDestroysExactlyOnce() throws Exception {
+    long before = Service.testDestroyCount();
+    WeakReference<Service> reference = cyclicUnclosedService();
+    long deadline = System.nanoTime() + Duration.ofSeconds(8).toNanos();
+    while ((reference.get() != null || Service.testDestroyCount() == before)
+        && System.nanoTime() < deadline) {
+      System.gc();
+      System.runFinalization();
+      Thread.sleep(20);
+    }
+    assertNull(reference.get());
+    assertEquals(before + 1, Service.testDestroyCount());
+  }
+
+  @Test
+  void pendingCallbackExceptionCleanupClearsBeforeExitCallback() {
+    assertTrue(Service.testPendingExceptionCleanup());
+    assertDoesNotThrow(Service::testReleaseCount);
+  }
+
+  @Test
+  void nativeBuildAndWindowsLoadingUseExplicitRelocatableDependencies() throws IOException {
+    String cmake = Files.readString(Path.of("CMakeLists.txt"));
+    assertFalse(cmake.contains("${JNI_LIBRARIES}"));
+    assertFalse(cmake.contains("if(WIN32 AND AGENTGATE_RUNTIME_LIBRARY)"));
+    assertTrue(cmake.contains("copy_if_different"));
+    assertTrue(cmake.contains("@loader_path"));
+    assertTrue(cmake.contains("$ORIGIN"));
+
+    String service = Files.readString(
+        Path.of("src", "main", "java", "io", "agentgate", "Service.java"));
+    int coreLoad = service.indexOf("System.load(core.toString())");
+    int shimLoad = service.indexOf("System.load(shim.toString())");
+    assertTrue(coreLoad >= 0 && shimLoad > coreLoad);
+    assertTrue(service.contains("agentgate_ffi.dll"));
   }
 
   @Test
@@ -474,6 +551,17 @@ final class ServiceTest {
 
   private static WeakReference<Service> unclosedService() {
     Service service = new Service(lifecycle(), keys(), null);
+    return new WeakReference<>(service);
+  }
+
+  private static WeakReference<Service> cyclicUnclosedService() {
+    AtomicReference<Service> holder = new AtomicReference<>();
+    Lifecycle lifecycle = lifecycle((privateJson, binding, limit) -> {
+      if (holder.get() == null) throw new AssertionError("missing service cycle");
+      return Lifecycle.Status.OK;
+    }, null, null);
+    Service service = new Service(lifecycle, keys(), null);
+    holder.set(service);
     return new WeakReference<>(service);
   }
 

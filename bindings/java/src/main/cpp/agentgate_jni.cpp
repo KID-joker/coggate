@@ -52,11 +52,13 @@ std::atomic<std::uint64_t> g_releases{0};
 std::atomic<std::uint64_t> g_destroys{0};
 std::atomic<std::uint64_t> g_attaches{0};
 std::atomic<std::uint64_t> g_detaches{0};
+std::atomic<std::uint64_t> g_wipes{0};
+std::atomic<std::uint64_t> g_wipe_failures{0};
 
 struct NativeState {
-  jobject lifecycle = nullptr;
-  jobject keys = nullptr;
-  jobject observer = nullptr;
+  jweak lifecycle = nullptr;
+  jweak keys = nullptr;
+  jweak observer = nullptr;
   ag_service* service = nullptr;
 };
 
@@ -102,6 +104,7 @@ class CallbackScope {
   }
 
   ~CallbackScope() {
+    if (env_->ExceptionCheck()) env_->ExceptionClear();
     if (entered_) {
       env_->CallStaticVoidMethod(g_service_class, g_exit_callback);
       (void)clear_exception(env_);
@@ -139,7 +142,27 @@ jbyteArray byte_array(JNIEnv* env, ag_byte_slice value) noexcept {
   return result;
 }
 
-bool copy_java_bytes(JNIEnv* env, jbyteArray input, std::vector<std::uint8_t>& output) {
+void secure_zero(void* pointer, std::size_t length) noexcept {
+  auto* bytes = static_cast<volatile std::uint8_t*>(pointer);
+  while (length-- != 0) *bytes++ = 0;
+}
+
+class SensitiveBuffer {
+ public:
+  SensitiveBuffer() = default;
+  SensitiveBuffer(const SensitiveBuffer&) = delete;
+  SensitiveBuffer& operator=(const SensitiveBuffer&) = delete;
+  ~SensitiveBuffer() { secure_zero(value_.data(), value_.size()); }
+  void resize(std::size_t size) { value_.resize(size); }
+  std::uint8_t* data() noexcept { return value_.data(); }
+  const std::uint8_t* data() const noexcept { return value_.data(); }
+  std::size_t size() const noexcept { return value_.size(); }
+
+ private:
+  std::vector<std::uint8_t> value_;
+};
+
+bool copy_java_bytes(JNIEnv* env, jbyteArray input, SensitiveBuffer& output) {
   if (input == nullptr) return false;
   const jsize length = env->GetArrayLength(input);
   if (env->ExceptionCheck() || length < 0) return false;
@@ -154,13 +177,14 @@ void clear_java_bytes(JNIEnv* env, jbyteArray value) noexcept {
   if (value == nullptr) return;
   const jsize length = env->GetArrayLength(value);
   if (env->ExceptionCheck() || length <= 0) return;
-  std::vector<jbyte> zero(static_cast<std::size_t>(length), 0);
-  env->SetByteArrayRegion(value, 0, length, zero.data());
-  std::fill(zero.begin(), zero.end(), 0);
-}
-
-void clear_vector(std::vector<std::uint8_t>& value) noexcept {
-  std::fill(value.begin(), value.end(), static_cast<std::uint8_t>(0));
+  jbyte zero[256]{};
+  for (jsize offset = 0; offset < length && !env->ExceptionCheck();) {
+    const jsize remaining = length - offset;
+    const jsize count = remaining < static_cast<jsize>(sizeof(zero))
+        ? remaining : static_cast<jsize>(sizeof(zero));
+    env->SetByteArrayRegion(value, offset, count, zero);
+    offset += count;
+  }
 }
 
 int enum_value(JNIEnv* env, jobject value, jmethodID method, int fallback) noexcept {
@@ -175,6 +199,16 @@ void AG_CALL release_host(void* release_data, std::uint8_t* data, std::size_t le
     (void)len;
     auto* allocation = static_cast<HostAllocation*>(release_data);
     if (allocation == nullptr || allocation->data != data) return;
+    secure_zero(data, len);
+    bool wiped = true;
+    for (std::size_t index = 0; index < len; ++index) {
+      if (static_cast<volatile std::uint8_t*>(data)[index] != 0) wiped = false;
+    }
+    if (wiped) {
+      g_wipes.fetch_add(1, std::memory_order_relaxed);
+    } else {
+      g_wipe_failures.fetch_add(1, std::memory_order_relaxed);
+    }
     EnvScope scope;
     if (JNIEnv* env = scope.get(); env != nullptr) {
       env->CallStaticVoidMethod(g_service_class, g_released, allocation->tag);
@@ -203,6 +237,7 @@ bool host_buffer_from_array(JNIEnv* env, jbyteArray value, ag_host_buffer* outpu
   if (length != 0) {
     env->GetByteArrayRegion(value, 0, length, reinterpret_cast<jbyte*>(bytes));
     if (env->ExceptionCheck()) {
+      secure_zero(bytes, allocation_size);
       delete allocation;
       std::free(bytes);
       return false;
@@ -226,16 +261,21 @@ ag_lifecycle_status AG_CALL store_issued(void* user_data, ag_byte_slice private_
     if (!callback.entered()) return AG_LIFECYCLE_STATUS_INTERNAL;
     if (env->PushLocalFrame(8) != JNI_OK) return AG_LIFECYCLE_STATUS_INTERNAL;
     auto* state = static_cast<NativeState*>(user_data);
+    jobject lifecycle = env->NewLocalRef(state->lifecycle);
     jbyteArray private_value = byte_array(env, private_json);
     jbyteArray binding_value = byte_array(env, binding);
     jobject attempt = limit == AG_ATTEMPT_LIMIT_ONE ? g_attempt_one
         : limit == AG_ATTEMPT_LIMIT_TWO ? g_attempt_two : nullptr;
     jobject result = nullptr;
-    if (private_value != nullptr && binding_value != nullptr && attempt != nullptr) {
-      result = env->CallObjectMethod(state->lifecycle, g_store_issued,
+    if (lifecycle != nullptr && private_value != nullptr && binding_value != nullptr
+        && attempt != nullptr) {
+      result = env->CallObjectMethod(lifecycle, g_store_issued,
           private_value, binding_value, attempt);
     }
     const bool failed = CallbackScope::clear_exception(env);
+    clear_java_bytes(env, private_value);
+    clear_java_bytes(env, binding_value);
+    (void)CallbackScope::clear_exception(env);
     const int status = failed ? AG_LIFECYCLE_STATUS_INTERNAL
         : enum_value(env, result, g_lifecycle_status_value, AG_LIFECYCLE_STATUS_INTERNAL);
     env->PopLocalFrame(nullptr);
@@ -255,14 +295,19 @@ ag_begin_status AG_CALL begin_attempt(void* user_data, ag_byte_slice identity,
     CallbackScope callback(env);
     if (!callback.entered() || env->PushLocalFrame(12) != JNI_OK) return AG_BEGIN_STATUS_INTERNAL;
     auto* state = static_cast<NativeState*>(user_data);
+    jobject lifecycle = env->NewLocalRef(state->lifecycle);
     jbyteArray identity_value = byte_array(env, identity);
     jbyteArray binding_value = byte_array(env, binding);
     jobject result = nullptr;
-    if (identity_value != nullptr && binding_value != nullptr) {
-      result = env->CallObjectMethod(state->lifecycle, g_begin_attempt,
+    if (lifecycle != nullptr && identity_value != nullptr && binding_value != nullptr) {
+      result = env->CallObjectMethod(lifecycle, g_begin_attempt,
           identity_value, binding_value, static_cast<jlong>(server_time));
     }
-    if (CallbackScope::clear_exception(env) || result == nullptr) {
+    const bool callback_failed = CallbackScope::clear_exception(env);
+    clear_java_bytes(env, identity_value);
+    clear_java_bytes(env, binding_value);
+    (void)CallbackScope::clear_exception(env);
+    if (callback_failed || result == nullptr) {
       env->PopLocalFrame(nullptr);
       return AG_BEGIN_STATUS_INTERNAL;
     }
@@ -306,15 +351,18 @@ ag_lifecycle_status AG_CALL finish_attempt(void* user_data, ag_byte_slice token,
     CallbackScope callback(env);
     if (!callback.entered() || env->PushLocalFrame(6) != JNI_OK) return AG_LIFECYCLE_STATUS_INTERNAL;
     auto* state = static_cast<NativeState*>(user_data);
+    jobject lifecycle = env->NewLocalRef(state->lifecycle);
     jbyteArray token_value = byte_array(env, token);
     jobject outcome_value = outcome == AG_ATTEMPT_OUTCOME_ACCEPTED ? g_outcome_accepted
         : outcome == AG_ATTEMPT_OUTCOME_REJECTED ? g_outcome_rejected
         : outcome == AG_ATTEMPT_OUTCOME_SYSTEM_FAILURE ? g_outcome_system_failure : nullptr;
     jobject result = nullptr;
-    if (token_value != nullptr && outcome_value != nullptr) {
-      result = env->CallObjectMethod(state->lifecycle, g_finish_attempt, token_value, outcome_value);
+    if (lifecycle != nullptr && token_value != nullptr && outcome_value != nullptr) {
+      result = env->CallObjectMethod(lifecycle, g_finish_attempt, token_value, outcome_value);
     }
     const bool failed = CallbackScope::clear_exception(env);
+    clear_java_bytes(env, token_value);
+    (void)CallbackScope::clear_exception(env);
     const int status = failed ? AG_LIFECYCLE_STATUS_INTERNAL
         : enum_value(env, result, g_lifecycle_status_value, AG_LIFECYCLE_STATUS_INTERNAL);
     env->PopLocalFrame(nullptr);
@@ -333,7 +381,8 @@ ag_key_status AG_CALL active_key(void* user_data, ag_host_buffer* key_id_out,
     CallbackScope callback(env);
     if (!callback.entered() || env->PushLocalFrame(10) != JNI_OK) return AG_KEY_STATUS_UNAVAILABLE;
     auto* state = static_cast<NativeState*>(user_data);
-    jobject result = env->CallObjectMethod(state->keys, g_active_key);
+    jobject keys = env->NewLocalRef(state->keys);
+    jobject result = keys == nullptr ? nullptr : env->CallObjectMethod(keys, g_active_key);
     if (CallbackScope::clear_exception(env) || result == nullptr) {
       env->PopLocalFrame(nullptr);
       return AG_KEY_STATUS_UNAVAILABLE;
@@ -375,9 +424,14 @@ ag_key_status AG_CALL key_by_id(void* user_data, ag_byte_slice key_id, ag_host_b
     CallbackScope callback(env);
     if (!callback.entered() || env->PushLocalFrame(8) != JNI_OK) return AG_KEY_STATUS_UNAVAILABLE;
     auto* state = static_cast<NativeState*>(user_data);
+    jobject keys = env->NewLocalRef(state->keys);
     jbyteArray id = byte_array(env, key_id);
-    jobject result = id == nullptr ? nullptr : env->CallObjectMethod(state->keys, g_key_by_id, id);
-    if (CallbackScope::clear_exception(env) || result == nullptr) {
+    jobject result = keys == nullptr || id == nullptr ? nullptr
+        : env->CallObjectMethod(keys, g_key_by_id, id);
+    const bool callback_failed = CallbackScope::clear_exception(env);
+    clear_java_bytes(env, id);
+    (void)CallbackScope::clear_exception(env);
+    if (callback_failed || result == nullptr) {
       env->PopLocalFrame(nullptr);
       return AG_KEY_STATUS_UNAVAILABLE;
     }
@@ -410,8 +464,9 @@ void AG_CALL observe(void* user_data, ag_byte_slice event_json) {
     CallbackScope callback(env);
     if (!callback.entered() || env->PushLocalFrame(4) != JNI_OK) return;
     auto* state = static_cast<NativeState*>(user_data);
+    jobject observer = env->NewLocalRef(state->observer);
     jbyteArray event = byte_array(env, event_json);
-    if (event != nullptr) env->CallVoidMethod(state->observer, g_observe, event);
+    if (observer != nullptr && event != nullptr) env->CallVoidMethod(observer, g_observe, event);
     (void)CallbackScope::clear_exception(env);
     env->PopLocalFrame(nullptr);
   } catch (...) {
@@ -420,9 +475,9 @@ void AG_CALL observe(void* user_data, ag_byte_slice event_json) {
 
 void delete_state(JNIEnv* env, NativeState* state) noexcept {
   if (state == nullptr) return;
-  if (state->lifecycle != nullptr) env->DeleteGlobalRef(state->lifecycle);
-  if (state->keys != nullptr) env->DeleteGlobalRef(state->keys);
-  if (state->observer != nullptr) env->DeleteGlobalRef(state->observer);
+  if (state->lifecycle != nullptr) env->DeleteWeakGlobalRef(state->lifecycle);
+  if (state->keys != nullptr) env->DeleteWeakGlobalRef(state->keys);
+  if (state->observer != nullptr) env->DeleteWeakGlobalRef(state->observer);
   delete state;
 }
 
@@ -537,9 +592,9 @@ JNIEXPORT jlong JNICALL Java_io_agentgate_Service_nativeCreate(
       throw_status(env, AG_STATUS_INTERNAL_ERROR);
       return 0;
     }
-    state->lifecycle = env->NewGlobalRef(lifecycle);
-    state->keys = env->NewGlobalRef(keys);
-    state->observer = observer == nullptr ? nullptr : env->NewGlobalRef(observer);
+    state->lifecycle = env->NewWeakGlobalRef(lifecycle);
+    state->keys = env->NewWeakGlobalRef(keys);
+    state->observer = observer == nullptr ? nullptr : env->NewWeakGlobalRef(observer);
     if (state->lifecycle == nullptr || state->keys == nullptr
         || (observer != nullptr && state->observer == nullptr)) {
       delete_state(env, state.release());
@@ -597,12 +652,10 @@ JNIEXPORT jbyteArray JNICALL Java_io_agentgate_Service_nativeIssue(JNIEnv* env, 
     jlong handle, jbyteArray version, jbyteArray binding, jint limit) {
   try {
     auto* state = reinterpret_cast<NativeState*>(handle);
-    std::vector<std::uint8_t> version_bytes;
-    std::vector<std::uint8_t> binding_bytes;
+    SensitiveBuffer version_bytes;
+    SensitiveBuffer binding_bytes;
     if (state == nullptr || !copy_java_bytes(env, version, version_bytes)
         || !copy_java_bytes(env, binding, binding_bytes)) {
-      clear_vector(version_bytes);
-      clear_vector(binding_bytes);
       if (!env->ExceptionCheck()) throw_status(env, AG_STATUS_INVALID_ARGUMENT);
       return nullptr;
     }
@@ -610,13 +663,12 @@ JNIEXPORT jbyteArray JNICALL Java_io_agentgate_Service_nativeIssue(JNIEnv* env, 
     const ag_status status = ag_service_issue(state->service,
         {version_bytes.data(), version_bytes.size()}, {binding_bytes.data(), binding_bytes.size()},
         static_cast<ag_attempt_limit>(limit), &output);
-    clear_vector(version_bytes);
-    clear_vector(binding_bytes);
     if (status != AG_STATUS_OK) {
       throw_status(env, status);
       return nullptr;
     }
     jbyteArray result = byte_array(env, {output.data, output.len});
+    secure_zero(output.data, output.len);
     const ag_status free_status = ag_buffer_free(&output);
     if (free_status != AG_STATUS_OK && !env->ExceptionCheck()) throw_status(env, free_status);
     return result;
@@ -630,12 +682,10 @@ JNIEXPORT jbyteArray JNICALL Java_io_agentgate_Service_nativeVerify(JNIEnv* env,
     jlong handle, jbyteArray submission, jbyteArray binding) {
   try {
     auto* state = reinterpret_cast<NativeState*>(handle);
-    std::vector<std::uint8_t> submission_bytes;
-    std::vector<std::uint8_t> binding_bytes;
+    SensitiveBuffer submission_bytes;
+    SensitiveBuffer binding_bytes;
     if (state == nullptr || !copy_java_bytes(env, submission, submission_bytes)
         || !copy_java_bytes(env, binding, binding_bytes)) {
-      clear_vector(submission_bytes);
-      clear_vector(binding_bytes);
       if (!env->ExceptionCheck()) throw_status(env, AG_STATUS_INVALID_ARGUMENT);
       return nullptr;
     }
@@ -643,13 +693,12 @@ JNIEXPORT jbyteArray JNICALL Java_io_agentgate_Service_nativeVerify(JNIEnv* env,
     const ag_status status = ag_service_verify(state->service,
         {submission_bytes.data(), submission_bytes.size()},
         {binding_bytes.data(), binding_bytes.size()}, &output);
-    clear_vector(submission_bytes);
-    clear_vector(binding_bytes);
     if (status != AG_STATUS_OK) {
       throw_status(env, status);
       return nullptr;
     }
     jbyteArray result = byte_array(env, {output.data, output.len});
+    secure_zero(output.data, output.len);
     const ag_status free_status = ag_buffer_free(&output);
     if (free_status != AG_STATUS_OK && !env->ExceptionCheck()) throw_status(env, free_status);
     return result;
@@ -697,6 +746,27 @@ JNIEXPORT jlong JNICALL Java_io_agentgate_Service_nativeTestReleaseCount(JNIEnv*
 }
 JNIEXPORT jlong JNICALL Java_io_agentgate_Service_nativeTestDestroyCount(JNIEnv*, jclass) {
   return static_cast<jlong>(g_destroys.load(std::memory_order_relaxed));
+}
+JNIEXPORT jlong JNICALL Java_io_agentgate_Service_nativeTestWipeCount(JNIEnv*, jclass) {
+  return static_cast<jlong>(g_wipes.load(std::memory_order_relaxed));
+}
+JNIEXPORT jlong JNICALL Java_io_agentgate_Service_nativeTestWipeFailureCount(JNIEnv*, jclass) {
+  return static_cast<jlong>(g_wipe_failures.load(std::memory_order_relaxed));
+}
+JNIEXPORT jboolean JNICALL Java_io_agentgate_Service_nativeTestPendingExceptionCleanup(
+    JNIEnv* env, jclass) {
+  try {
+    {
+      CallbackScope callback(env);
+      if (!callback.entered()) return JNI_FALSE;
+      (void)env->FindClass("io/agentgate/DeliberatelyMissingForPendingExceptionTest");
+      if (!env->ExceptionCheck()) return JNI_FALSE;
+    }
+    return env->ExceptionCheck() ? JNI_FALSE : JNI_TRUE;
+  } catch (...) {
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    return JNI_FALSE;
+  }
 }
 
 }  // extern "C"
