@@ -99,10 +99,8 @@ final class FixtureContractTest {
         if (Boolean.TRUE.equals(lifecycleSpec.get("replay")) && !consumed[0]) {
           return new BeginResult(BeginStatus.OK, material, token);
         }
-        byte[] rejectedMaterial = firstSentinel(fixture, "MATERIAL_SENTINEL",
-            "BINDING_SENTINEL", "NONCE_SENTINEL", "REPLAY_MATERIAL_SENTINEL");
         return new BeginResult(beginStatus(string(lifecycleSpec, "begin_status")),
-            "primary".equals(lifecycleSpec.get("material")) ? material : rejectedMaterial,
+            "primary".equals(lifecycleSpec.get("material")) ? material : null,
             "default".equals(lifecycleSpec.get("token")) ? token : null);
       }
       public Status finishAttempt(byte[] value, AttemptOutcome outcome) {
@@ -115,16 +113,14 @@ final class FixtureContractTest {
         String outcomeName = outcome.name().toLowerCase(java.util.Locale.ROOT);
         trace.add("finish_attempt:" + outcomeName);
         if (outcome == AttemptOutcome.ACCEPTED) consumed[0] = true;
-        if ("internal".equals(lifecycleSpec.get("finish_status"))) {
-          throw new IllegalStateException("FINISH_FAILURE_SENTINEL");
-        }
-        return Status.OK;
+        return "internal".equals(lifecycleSpec.get("finish_status")) ? Status.INTERNAL : Status.OK;
       }
     };
     KeyProvider keys = new KeyProvider() {
       public ActiveResult activeKey() {
         trace.add("active_key");
-        return new ActiveResult(Status.OK, "ACTIVE_KEY_SENTINEL".getBytes(StandardCharsets.UTF_8),
+        return new ActiveResult(Status.OK,
+            string(vectors, "active_key_id").getBytes(StandardCharsets.UTF_8),
             hex(string(vectors, "active_key_hex")));
       }
       public Result keyById(byte[] id) {
@@ -234,15 +230,6 @@ final class FixtureContractTest {
     identity.put("challenge_id", submission.get("challenge_id"));
     identity.put("nonce", submission.get("nonce"));
     return jsonBytes(identity);
-  }
-
-  private static byte[] firstSentinel(Map<String, Object> fixture, String... candidates) {
-    @SuppressWarnings("unchecked") List<String> sentinels =
-        (List<String>) fixture.get("forbidden_sentinels");
-    for (String candidate : candidates) {
-      if (sentinels.contains(candidate)) return candidate.getBytes(StandardCharsets.UTF_8);
-    }
-    return null;
   }
 
   private static void captureAssertion(AtomicReference<AssertionError> destination,

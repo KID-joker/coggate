@@ -116,6 +116,22 @@ final class ServiceTest {
   }
 
   @Test
+  void finishExceptionSentinelIsClearedAndMappedWithoutLeakingText() {
+    List<byte[]> events = new ArrayList<>();
+    Lifecycle lifecycle = lifecycle(null,
+        (identity, binding, time) -> new Lifecycle.BeginResult(
+            Lifecycle.BeginStatus.OK, MATERIAL, hex("aabbccdd")),
+        (token, outcome) -> { throw new IllegalStateException("FINISH_FAILURE_SENTINEL"); });
+    try (Service service = new Service(lifecycle, keys(), event -> events.add(event.clone()))) {
+      AgentGateException error = assertThrows(AgentGateException.class,
+          () -> service.verify(submission(), BINDING));
+      assertEquals("internal_error", error.code());
+      assertFalse((error + eventsText(events)).contains("FINISH_FAILURE_SENTINEL"));
+      assertDoesNotThrow(service::close);
+    }
+  }
+
+  @Test
   void observerExceptionIsSwallowed() {
     Observer observer = event -> { throw new AssertionError("OBSERVER_SECRET_SENTINEL"); };
     try (Service service = new Service(lifecycle(), keys(), observer)) {
