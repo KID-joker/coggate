@@ -91,7 +91,7 @@ public final class JsonCodec {
       long issuedAt = 0;
       long expiresAt = 0;
       String question = null;
-      String answerEncoding = null;
+      PublicChallenge.AnswerEncoding answerEncoding = null;
       int seen = 0;
       boolean unknown = false;
       while (parser.nextToken() != JsonToken.END_OBJECT) {
@@ -127,7 +127,8 @@ public final class JsonCodec {
             seen |= 32;
           }
           case "answer_encoding" -> {
-            answerEncoding = requireString(parser, valueToken);
+            answerEncoding = PublicChallenge.AnswerEncoding.fromWireValue(
+                requireString(parser, valueToken));
             seen |= 64;
           }
           default -> {
@@ -158,7 +159,7 @@ public final class JsonCodec {
       generator.writeNumberField("issued_at", challenge.issuedAt());
       generator.writeNumberField("expires_at", challenge.expiresAt());
       generator.writeStringField("question", challenge.question());
-      generator.writeStringField("answer_encoding", challenge.answerEncoding());
+      generator.writeStringField("answer_encoding", challenge.answerEncoding().wireValue());
       generator.writeEndObject();
     });
   }

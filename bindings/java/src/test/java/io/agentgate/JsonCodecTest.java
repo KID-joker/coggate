@@ -51,7 +51,8 @@ final class JsonCodecTest {
     String questionSecret = "QUESTION_SENTINEL";
     IssueRequest request = IssueRequest.newV1IssueRequest(bindingSecret.getBytes(UTF_8));
     PublicChallenge challenge = new PublicChallenge(
-        "challenge", "1.0", nonceSecret, 1L, 2L, questionSecret, "base64url");
+        "challenge", "1.0", nonceSecret, 1L, 2L, questionSecret,
+        PublicChallenge.AnswerEncoding.BASE64URL);
     Submission submission = new Submission("challenge", nonceSecret, answerSecret);
 
     for (String rendered : List.of(request.toString(), challenge.toString(), submission.toString())) {
@@ -76,9 +77,12 @@ final class JsonCodecTest {
   @Test
   void publicChallengeRoundTripsWithExactInt64AndEncoding() {
     PublicChallenge expected = new PublicChallenge(
-        "challenge", "1.0", "nonce", Long.MIN_VALUE, Long.MAX_VALUE, "雪🚀", "base64url");
+        "challenge", "1.0", "nonce", Long.MIN_VALUE, Long.MAX_VALUE, "雪🚀",
+        PublicChallenge.AnswerEncoding.BASE64URL);
     byte[] encoded = JsonCodec.encodePublicChallenge(expected);
 
+    assertEquals(PublicChallenge.AnswerEncoding.BASE64URL, expected.answerEncoding());
+    assertEquals("base64url", expected.answerEncoding().wireValue());
     assertEquals(
         "{\"challenge_id\":\"challenge\",\"generator_version\":\"1.0\","
             + "\"nonce\":\"nonce\",\"issued_at\":-9223372036854775808,"
