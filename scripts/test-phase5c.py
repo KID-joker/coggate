@@ -75,7 +75,12 @@ def _version_output(path, *arguments):
 
 
 def detect_capabilities(tool_lookup=shutil.which, version_output=_version_output):
-    paths = {name: tool_lookup(name) for name in ("go", "java", "javac", "node", "cmake", "ctest")}
+    paths = {
+        name: tool_lookup(name)
+        for name in (
+            "go", "java", "javac", "node", "cmake", "ctest", "mvn", "node-gyp"
+        )
+    }
 
     def capability(key, name, arguments):
         path = paths[key]
@@ -99,8 +104,10 @@ def detect_capabilities(tool_lookup=shutil.which, version_output=_version_output
         "javac": capability("javac", "Java compiler", ("-version",)),
         "node": node,
         "node_api": node_api,
-        "cmake": Capability("CMake", paths["cmake"], None),
-        "ctest": Capability("CTest", paths["ctest"], None),
+        "cmake": capability("cmake", "CMake", ("--version",)),
+        "ctest": capability("ctest", "CTest", ("--version",)),
+        "maven": Capability("Maven", paths["mvn"], None),
+        "node_gyp": capability("node-gyp", "node-gyp", ("--version",)),
     }
 
 
@@ -158,8 +165,13 @@ def discover_library(root, explicit, system):
 def _missing_capabilities(runtime, capabilities):
     minimums = {
         "go": (("go", (1, 24)),),
-        "java": (("java", (17,)), ("javac", (17,))),
-        "node": (("node", (22,)), ("node_api", (9,))),
+        "java": (
+            ("java", (17,)),
+            ("javac", (17,)),
+            ("cmake", (3, 26)),
+            ("ctest", (3, 26)),
+        ),
+        "node": (("node", (22,)), ("node_api", (9,)), ("node_gyp", (10,))),
     }
     missing = [
         "missing capability: %s %s+"
@@ -171,7 +183,7 @@ def _missing_capabilities(runtime, capabilities):
         if require_version(capabilities[key], minimum) == "MISSING"
     ]
     if runtime == "java":
-        for key in ("cmake", "ctest"):
+        for key in ("maven",):
             if capabilities[key].path is None:
                 missing.append("missing capability: %s" % capabilities[key].name)
     return missing
@@ -184,6 +196,8 @@ def build_plan(
     system,
     root=ROOT,
     environment=None,
+    staging_directory=None,
+    path_is_file=None,
 ):
     if runtime not in {"go", "java", "node", "all"}:
         raise RunnerError("unsupported runtime: %s" % runtime)
@@ -207,6 +221,7 @@ def build_plan(
     runtime_library = str(library.runtime_path)
     link_library = str(library.link_path)
     environment = os.environ if environment is None else environment
+    path_is_file = (lambda path: path.is_file()) if path_is_file is None else path_is_file
     commands = []
     if "go" in available:
         go_environment = ()
@@ -246,8 +261,23 @@ def build_plan(
                 go_environment,
             )
         )
+        commands.append(
+            PlannedCommand(
+                (
+                    capabilities["go"].path,
+                    "run",
+                    "./examples/complete",
+                    "--library",
+                    runtime_library,
+                ),
+                root / "bindings" / "go",
+                go_environment,
+            )
+        )
     if "java" in available:
         build = root / "target" / "phase5c" / "java"
+        java_home = str(Path(capabilities["javac"].path).resolve().parent.parent)
+        java_environment = (("JAVA_HOME", java_home),)
         commands.append(
             PlannedCommand(
                 (
@@ -258,28 +288,136 @@ def build_plan(
                     str(build),
                     "-DAGENTGATE_LIBRARY=" + link_library,
                     "-DAGENTGATE_RUNTIME_LIBRARY=" + runtime_library,
-                    "-DJAVA_EXECUTABLE=" + capabilities["java"].path,
-                    "-DJAVAC_EXECUTABLE=" + capabilities["javac"].path,
+                    "-DAGENTGATE_INCLUDE_DIR=" + str(root / "packages" / "ffi" / "include"),
+                    "-DMAVEN_EXECUTABLE=" + capabilities["maven"].path,
+                    "-DAGENTGATE_STATIC_LINK=OFF",
+                    "-DBUILD_TESTING=ON",
                 ),
                 root,
+                java_environment,
             )
         )
         build_argv = [capabilities["cmake"].path, "--build", str(build)]
-        ctest_argv = [capabilities["ctest"].path, "--test-dir", str(build), "--output-on-failure"]
+        ctest_argv = [
+            capabilities["ctest"].path,
+            "--test-dir",
+            str(build),
+            "--output-on-failure",
+            "--no-tests=error",
+        ]
         if system == "Windows":
             build_argv.extend(("--config", "Release"))
             ctest_argv.extend(("-C", "Release"))
-        commands.extend((PlannedCommand(tuple(build_argv), root), PlannedCommand(tuple(ctest_argv), root)))
-    if "node" in available:
-        commands.append(
-            PlannedCommand(
-                (
-                    capabilities["node"].path,
-                    "--test",
-                    "bindings/node/tests",
+        if system == "Windows":
+            shim = build / "Release" / "agentgate_jni.dll"
+        elif system == "Darwin":
+            shim = build / "libagentgate_jni.dylib"
+        else:
+            shim = build / "libagentgate_jni.so"
+        classpath_separator = ";" if system == "Windows" else ":"
+        jackson = (
+            build / "m2" / "com" / "fasterxml" / "jackson" / "core" /
+            "jackson-core" / "2.18.3" / "jackson-core-2.18.3.jar"
+        )
+        classpath = classpath_separator.join(
+            (
+                str(build),
+                str(root / "bindings" / "java" / "target" / "classes"),
+                str(jackson),
+            )
+        )
+        commands.extend(
+            (
+                PlannedCommand(tuple(build_argv), root, java_environment),
+                PlannedCommand(tuple(ctest_argv), root, java_environment),
+                PlannedCommand(
+                    (
+                        capabilities["javac"].path,
+                        "-cp",
+                        classpath,
+                        "-d",
+                        str(build),
+                        str(root / "bindings" / "java" / "examples" / "Complete.java"),
+                    ),
+                    root,
+                    java_environment,
                 ),
-                root,
-                (("AGENTGATE_LIBRARY_PATH", runtime_library),),
+                PlannedCommand(
+                    (
+                        capabilities["java"].path,
+                        "-cp",
+                        classpath,
+                        "io.agentgate.examples.Complete",
+                        str(shim),
+                    ),
+                    root,
+                    java_environment,
+                ),
+            )
+        )
+    if "node" in available:
+        node_root = Path(capabilities["node"].path).resolve().parent.parent
+        node_link_library = link_library
+        node_runtime_library = runtime_library
+        if system != "Windows" and (
+            re.search(r"\s", link_library) or re.search(r"\s", runtime_library)
+        ):
+            if staging_directory is None:
+                raise RunnerError("Node native staging directory is required")
+            staged_library = Path(staging_directory) / library.runtime_path.name
+            stage_script = (
+                "const fs=require('node:fs'),path=require('node:path');"
+                "const [source,destination]=process.argv.slice(1);"
+                "fs.mkdirSync(path.dirname(destination),{recursive:true});"
+                "fs.copyFileSync(source,destination);"
+            )
+            commands.append(
+                PlannedCommand(
+                    (
+                        capabilities["node"].path,
+                        "-e",
+                        stage_script,
+                        runtime_library,
+                        str(staged_library),
+                    ),
+                    root,
+                )
+            )
+            node_link_library = str(staged_library)
+            node_runtime_library = str(staged_library)
+        node_environment = (
+            ("AGENTGATE_INCLUDE_DIR", str(root / "packages" / "ffi" / "include")),
+            ("AGENTGATE_LIBRARY", node_link_library),
+            ("AGENTGATE_RUNTIME_LIBRARY", node_runtime_library),
+        )
+        node_gyp_argv = [capabilities["node_gyp"].path, "rebuild", "--release"]
+        if path_is_file(node_root / "include" / "node" / "node_api.h"):
+            node_gyp_argv.append("--nodedir=" + str(node_root))
+        node_cwd = root / "bindings" / "node"
+        commands.extend(
+            (
+                PlannedCommand(
+                    tuple(node_gyp_argv),
+                    node_cwd,
+                    node_environment,
+                ),
+                PlannedCommand(
+                    (
+                        capabilities["node"].path,
+                        "--expose-gc",
+                        "--test",
+                        "test/models.test.js",
+                        "test/fixtures.test.js",
+                        "test/service.test.js",
+                    ),
+                    node_cwd,
+                    node_environment,
+                ),
+                PlannedCommand(
+                    (capabilities["node"].path, "examples/complete.js"),
+                    node_cwd,
+                    node_environment,
+                ),
             )
         )
     return commands
@@ -375,11 +513,31 @@ def run_phase5c(args, **injections):
     status = "PLANNED" if args.dry_run else "PASS"
     for selected_runtime in available:
         try:
-            plan = build_plan(
-                selected_runtime, library, capabilities, system, root
-            )
-            for command in plan:
-                run_command(command, command_runner, args.dry_run)
+            with contextlib.ExitStack() as stack:
+                staging_directory = None
+                if selected_runtime == "node" and system != "Windows" and (
+                    re.search(r"\s", str(library.link_path))
+                    or re.search(r"\s", str(library.runtime_path))
+                ):
+                    temporary_directory = injections.get(
+                        "temporary_directory", tempfile.TemporaryDirectory
+                    )
+                    staging_directory = Path(
+                        stack.enter_context(
+                            temporary_directory(prefix="agentgate-phase5c-node-")
+                        )
+                    )
+                plan = build_plan(
+                    selected_runtime,
+                    library,
+                    capabilities,
+                    system,
+                    root,
+                    staging_directory=staging_directory,
+                    path_is_file=injections.get("path_is_file"),
+                )
+                for command in plan:
+                    run_command(command, command_runner, args.dry_run)
         except RunnerError:
             reporter("phase5c: runtime=%s status=FAIL" % selected_runtime)
             reporter("phase5c: overall status=FAIL")
@@ -406,22 +564,26 @@ class RunnerSelfTests(unittest.TestCase):
             "java": "/tools/java",
             "javac": None,
             "node": "/tools/node",
-            "cmake": None,
-            "ctest": None,
+            "cmake": "/tools/cmake",
+            "ctest": "/tools/ctest",
         }
         outputs = {
             ("/tools/java", "-version"): 'openjdk version "17.0.12"',
             ("/tools/node", "--version"): "v22.5.0",
             ("/tools/node", "-p", "process.versions.napi"): "9",
+            ("/tools/cmake", "--version"): "cmake version 3.31.6",
+            ("/tools/ctest", "--version"): "ctest version 3.31.6",
         }
         capabilities = detect_capabilities(paths.get, lambda path, *args: outputs[(path, *args)])
 
         self.assertEqual(capabilities["go"], Capability("Go", None, None))
         self.assertEqual(capabilities["java"].version, (17, 0, 12))
         self.assertEqual(capabilities["node_api"].version, (9,))
-        with self.assertRaisesRegex(RunnerError, "missing capability: Go 1.24\+"):
+        self.assertEqual(capabilities["cmake"].version, (3, 31, 6))
+        self.assertEqual(capabilities["ctest"].version, (3, 31, 6))
+        with self.assertRaisesRegex(RunnerError, r"missing capability: Go 1.24\+"):
             build_plan("go", NativeLibrary(Path("lib.so"), Path("lib.so")), capabilities, "Linux")
-        with self.assertRaisesRegex(RunnerError, "missing capability: Java compiler 17\+"):
+        with self.assertRaisesRegex(RunnerError, r"missing capability: Java compiler 17\+"):
             build_plan("java", NativeLibrary(Path("lib.so"), Path("lib.so")), capabilities, "Linux")
 
     def test_runtime_selection_only_plans_selected_available_runtime(self):
@@ -434,9 +596,29 @@ class RunnerSelfTests(unittest.TestCase):
             Path("/repo"),
         )
 
-        self.assertEqual(len(plan), 1)
-        self.assertEqual(plan[0].argv[0], "/tools/node")
-        self.assertIn("bindings/node/tests", plan[0].argv)
+        self.assertEqual(len(plan), 3)
+        self.assertEqual(plan[0].argv[:3], ("/tools/node-gyp", "rebuild", "--release"))
+        self.assertFalse(any(argument.startswith("--nodedir=") for argument in plan[0].argv))
+        self.assertEqual(
+            plan[1].argv,
+            (
+                "/tools/node",
+                "--expose-gc",
+                "--test",
+                "test/models.test.js",
+                "test/fixtures.test.js",
+                "test/service.test.js",
+            ),
+        )
+        self.assertEqual(
+            plan[2].argv,
+            ("/tools/node", "examples/complete.js"),
+        )
+        self.assertTrue(all(command.cwd == Path("/repo/bindings/node") for command in plan))
+        node_environment = dict(plan[0].env)
+        self.assertEqual(node_environment["AGENTGATE_INCLUDE_DIR"], "/repo/packages/ffi/include")
+        self.assertEqual(node_environment["AGENTGATE_LIBRARY"], "/native/libagentgate_ffi.so")
+        self.assertEqual(node_environment["AGENTGATE_RUNTIME_LIBRARY"], "/native/libagentgate_ffi.so")
 
     def test_all_selection_skips_missing_runtime_but_rejects_bad_available_version(self):
         capabilities = self._capabilities()
@@ -451,7 +633,7 @@ class RunnerSelfTests(unittest.TestCase):
         self.assertFalse(any(command.argv[0] == "/tools/go" for command in plan))
 
         capabilities["node"] = Capability("Node", "/tools/node", (21, 9, 0))
-        with self.assertRaisesRegex(RunnerError, "Node version is below \(22,\)"):
+        with self.assertRaisesRegex(RunnerError, r"Node version is below \(22,\)"):
             build_plan("all", NativeLibrary(Path("lib.so"), Path("lib.so")), capabilities, "Linux")
 
     def test_shared_library_discovery_rejects_static_libraries(self):
@@ -485,12 +667,152 @@ class RunnerSelfTests(unittest.TestCase):
         java_build = next(command for command in plan if command.argv[:2] == ("/tools/cmake", "--build"))
         java_ctest = next(command for command in plan if command.argv[0] == "/tools/ctest")
         go = next(command for command in plan if command.argv[0] == "/tools/go")
-        node = next(command for command in plan if command.argv[0] == "/tools/node")
+        java_configure = next(command for command in plan if command.argv[:2] == ("/tools/cmake", "-S"))
+        java_example = next(command for command in plan if "io.agentgate.examples.Complete" in command.argv)
+        node_build = next(command for command in plan if command.argv[0] == "/tools/node-gyp")
+        node_test = next(command for command in plan if command.argv[:3] == ("/tools/node", "--expose-gc", "--test"))
+        self.assertEqual(
+            node_test.argv[-3:],
+            (
+                "test/models.test.js",
+                "test/fixtures.test.js",
+                "test/service.test.js",
+            ),
+        )
         self.assertIn(("--config", "Release"), tuple(zip(java_build.argv, java_build.argv[1:])))
         self.assertIn(("-C", "Release"), tuple(zip(java_ctest.argv, java_ctest.argv[1:])))
         self.assertIn("--agentgate-library", go.argv)
         self.assertEqual(go.argv[go.argv.index("--agentgate-library") + 1], str(dll))
-        self.assertEqual(dict(node.env)["AGENTGATE_LIBRARY_PATH"], str(dll))
+        self.assertIn("-DAGENTGATE_LIBRARY=" + str(library.link_path), java_configure.argv)
+        self.assertIn("-DAGENTGATE_RUNTIME_LIBRARY=" + str(dll), java_configure.argv)
+        self.assertIn("-DMAVEN_EXECUTABLE=/tools/mvn", java_configure.argv)
+        self.assertEqual(java_example.argv[-1], "C:/source tree/target/phase5c/java/Release/agentgate_jni.dll")
+        self.assertEqual(node_build.argv[:3], ("/tools/node-gyp", "rebuild", "--release"))
+        self.assertEqual(dict(node_build.env)["AGENTGATE_LIBRARY"], str(library.link_path))
+        self.assertEqual(dict(node_build.env)["AGENTGATE_RUNTIME_LIBRARY"], str(dll))
+        self.assertEqual(dict(node_test.env)["AGENTGATE_RUNTIME_LIBRARY"], str(dll))
+
+    def test_go_plan_runs_tests_and_complete_example_with_explicit_library(self):
+        library = NativeLibrary(
+            Path("/native path/libagentgate_ffi.dylib"),
+            Path("/native path/libagentgate_ffi.dylib"),
+        )
+
+        plan = build_plan("go", library, self._capabilities(), "Darwin", Path("/source tree"))
+
+        self.assertEqual(len(plan), 2)
+        self.assertEqual(plan[0].argv[:3], ("/tools/go", "test", "./..."))
+        self.assertEqual(
+            plan[1].argv,
+            (
+                "/tools/go", "run", "./examples/complete", "--library",
+                "/native path/libagentgate_ffi.dylib",
+            ),
+        )
+        self.assertEqual(plan[0].cwd, Path("/source tree/bindings/go"))
+        self.assertEqual(plan[1].env, plan[0].env)
+
+    def test_java_plan_runs_maven_backed_ctest_and_complete_example(self):
+        root = Path("/source tree/镜像 Ω")
+        library = NativeLibrary(
+            Path("/native path/镜像 Ω/libagentgate_ffi.dylib"),
+            Path("/native path/镜像 Ω/libagentgate_ffi.dylib"),
+        )
+
+        plan = build_plan("java", library, self._capabilities(), "Darwin", root)
+
+        configure, build, ctest, javac, java = plan
+        self.assertIn("-DAGENTGATE_INCLUDE_DIR=" + str(root / "packages/ffi/include"), configure.argv)
+        self.assertIn("-DMAVEN_EXECUTABLE=/tools/mvn", configure.argv)
+        self.assertIn("-DAGENTGATE_STATIC_LINK=OFF", configure.argv)
+        self.assertIn("-DBUILD_TESTING=ON", configure.argv)
+        self.assertIn("--no-tests=error", ctest.argv)
+        self.assertFalse(any(argument.startswith("-DJAVA_EXECUTABLE=") for argument in configure.argv))
+        self.assertFalse(any(argument.startswith("-DJAVAC_EXECUTABLE=") for argument in configure.argv))
+        self.assertEqual(build.argv[:2], ("/tools/cmake", "--build"))
+        self.assertEqual(ctest.argv[0], "/tools/ctest")
+        self.assertEqual(javac.argv[0], "/tools/javac")
+        self.assertIn("jackson-core-2.18.3.jar", javac.argv[javac.argv.index("-cp") + 1])
+        self.assertEqual(java.argv[0], "/tools/java")
+        self.assertIn("io.agentgate.examples.Complete", java.argv)
+        self.assertEqual(java.argv[-1], str(root / "target/phase5c/java/libagentgate_jni.dylib"))
+        self.assertTrue(all(dict(command.env)["JAVA_HOME"] == "/" for command in plan))
+
+    def test_missing_build_tools_are_runtime_capabilities(self):
+        capabilities = self._capabilities()
+        capabilities["maven"] = Capability("Maven", None, None)
+        with self.assertRaisesRegex(RunnerError, "missing capability: Maven"):
+            build_plan("java", NativeLibrary(Path("lib.so"), Path("lib.so")), capabilities, "Linux")
+
+        capabilities = self._capabilities()
+        capabilities["node_gyp"] = Capability("node-gyp", None, None)
+        with self.assertRaisesRegex(RunnerError, r"missing capability: node-gyp 10\+"):
+            build_plan("node", NativeLibrary(Path("lib.so"), Path("lib.so")), capabilities, "Linux")
+
+    def test_java_requires_cmake_and_ctest_326_for_strict_empty_test_failure(self):
+        capabilities = self._capabilities()
+        capabilities["cmake"] = Capability("CMake", "/tools/cmake", (3, 25, 3))
+        with self.assertRaisesRegex(RunnerError, r"CMake version is below \(3, 26\)"):
+            build_plan("java", NativeLibrary(Path("lib.so"), Path("lib.so")), capabilities, "Linux")
+
+        capabilities = self._capabilities()
+        capabilities["ctest"] = Capability("CTest", "/tools/ctest", (3, 25, 3))
+        with self.assertRaisesRegex(RunnerError, r"CTest version is below \(3, 26\)"):
+            build_plan("java", NativeLibrary(Path("lib.so"), Path("lib.so")), capabilities, "Linux")
+
+    def test_node_gyp_version_is_checked(self):
+        capabilities = self._capabilities()
+        capabilities["node_gyp"] = Capability("node-gyp", "/tools/node-gyp", (9, 4, 1))
+        with self.assertRaisesRegex(RunnerError, r"node-gyp version is below \(10,\)"):
+            build_plan("node", NativeLibrary(Path("lib.so"), Path("lib.so")), capabilities, "Linux")
+
+    def test_node_unix_stages_spaced_native_library_before_gyp(self):
+        library = NativeLibrary(
+            Path("/native path/镜像 Ω/libagentgate_ffi.dylib"),
+            Path("/native path/镜像 Ω/libagentgate_ffi.dylib"),
+        )
+
+        plan = build_plan(
+            "node",
+            library,
+            self._capabilities(),
+            "Darwin",
+            Path("/repo"),
+            staging_directory=Path("/private/tmp/unique-stage"),
+        )
+
+        self.assertEqual(len(plan), 4)
+        self.assertEqual(plan[0].argv[:2], ("/tools/node", "-e"))
+        self.assertEqual(plan[0].argv[-2], str(library.runtime_path))
+        staged = plan[0].argv[-1]
+        self.assertNotRegex(staged, r"\s")
+        self.assertEqual(dict(plan[1].env)["AGENTGATE_LIBRARY"], staged)
+        self.assertEqual(dict(plan[1].env)["AGENTGATE_RUNTIME_LIBRARY"], staged)
+
+    def test_node_gyp_uses_local_headers_only_when_the_header_exists(self):
+        library = NativeLibrary(Path("/native/lib.so"), Path("/native/lib.so"))
+
+        with_headers = build_plan(
+            "node",
+            library,
+            self._capabilities(),
+            "Linux",
+            Path("/repo"),
+            path_is_file=lambda path: path == Path("/include/node/node_api.h"),
+        )
+        without_headers = build_plan(
+            "node",
+            library,
+            self._capabilities(),
+            "Linux",
+            Path("/repo"),
+            path_is_file=lambda path: False,
+        )
+
+        self.assertIn("--nodedir=/", with_headers[0].argv)
+        self.assertFalse(
+            any(argument.startswith("--nodedir=") for argument in without_headers[0].argv)
+        )
 
     def test_go_unix_plan_links_and_loads_from_discovered_spaced_unicode_parent(self):
         capabilities = self._capabilities()
@@ -763,8 +1085,10 @@ class RunnerSelfTests(unittest.TestCase):
                 "java": None,
                 "javac": None,
                 "node": "/tools/node",
+                "node-gyp": "/tools/node-gyp",
                 "cmake": None,
                 "ctest": None,
+                "mvn": None,
             }
 
             status = run_phase5c(
@@ -772,7 +1096,10 @@ class RunnerSelfTests(unittest.TestCase):
                 root=root,
                 platform_name=lambda: "Linux",
                 tool_lookup=paths.get,
-                version_output=lambda path, *arguments: "v22.5.0" if arguments == ("--version",) else "9",
+                version_output=lambda path, *arguments: (
+                    "v12.1.0" if path == "/tools/node-gyp"
+                    else "v22.5.0" if arguments == ("--version",) else "9"
+                ),
                 command_runner=lambda *args, **kwargs: self.fail("dry-run invoked a command"),
                 reporter=messages.append,
             )
@@ -784,8 +1111,9 @@ class RunnerSelfTests(unittest.TestCase):
                     "missing capability: Go 1.24+",
                     "missing capability: Java 17+",
                     "missing capability: Java compiler 17+",
-                    "missing capability: CMake",
-                    "missing capability: CTest",
+                    "missing capability: CMake 3.26+",
+                    "missing capability: CTest 3.26+",
+                    "missing capability: Maven",
                     "phase5c: runtime=go status=MISSING",
                     "phase5c: runtime=java status=MISSING",
                     "phase5c: runtime=node status=PLANNED",
@@ -801,8 +1129,10 @@ class RunnerSelfTests(unittest.TestCase):
             "javac": Capability("Java compiler", "/tools/javac", (17, 0, 12)),
             "node": Capability("Node", "/tools/node", (22, 5, 0)),
             "node_api": Capability("Node-API", "/tools/node", (9,)),
-            "cmake": Capability("CMake", "/tools/cmake", None),
-            "ctest": Capability("CTest", "/tools/ctest", None),
+            "cmake": Capability("CMake", "/tools/cmake", (3, 31, 6)),
+            "ctest": Capability("CTest", "/tools/ctest", (3, 31, 6)),
+            "maven": Capability("Maven", "/tools/mvn", None),
+            "node_gyp": Capability("node-gyp", "/tools/node-gyp", (12, 1, 0)),
         }
 
 

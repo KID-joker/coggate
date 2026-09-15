@@ -300,8 +300,12 @@ test('binding config guards Darwin tooling and declares synchronized native stat
   const addonSource = readFileSync(new URL('../src/addon.cc', import.meta.url), 'utf8');
   assert.match(gyp, /process\.platform\s*===\s*['"]darwin['"]/);
   assert.match(gyp, /install_name_tool.*-id/s);
+  assert.match(
+    gyp,
+    /"inputs": \["<\(PRODUCT_DIR\)\/agentgate\.node", "<\(agentgate_runtime_source\)"\]/,
+  );
   assert.match(gyp, /\["OS=='win'",\s*\{[\s\S]*?"ExceptionHandling":\s*1[\s\S]*?"WarningLevel":\s*4[\s\S]*?"TreatWarningAsError":\s*True[\s\S]*?"AdditionalOptions":\s*\["\/std:c\+\+17"\]/);
-  assert.match(gyp, /\["OS=='win' and agentgate_runtime_library!=''",/);
+  assert.match(gyp, /\["OS=='win' and agentgate_static!='1' and agentgate_runtime_library!=''",/);
   assert.match(gyp, /\["agentgate_static=='1'",\s*\{\s*"defines":\s*\["AGENTGATE_STATIC"\]/);
   assert.match(addonSource, /std::mutex/);
 });

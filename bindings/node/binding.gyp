@@ -36,7 +36,7 @@
           "AdditionalOptions": ["/std:c++17"]
         }}
       }],
-      ["OS=='win' and agentgate_runtime_library!=''", {
+      ["OS=='win' and agentgate_static!='1' and agentgate_runtime_library!=''", {
         "copies": [{
           "destination": "<(PRODUCT_DIR)",
           "files": ["<(agentgate_runtime_library)"]
