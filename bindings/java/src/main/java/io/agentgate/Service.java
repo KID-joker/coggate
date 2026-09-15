@@ -2,6 +2,7 @@ package io.agentgate;
 
 import java.lang.ref.Cleaner;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Objects;
@@ -37,7 +38,7 @@ public final class Service implements AutoCloseable {
             Path core = configuredCore == null || configuredCore.isBlank()
                 ? shim.resolveSibling("agentgate_ffi.dll")
                 : Path.of(configuredCore).toAbsolutePath().normalize();
-            System.load(core.toString());
+            if (Files.isRegularFile(core)) System.load(core.toString());
           }
           System.load(shim.toString());
           loaded = true;
@@ -171,6 +172,10 @@ public final class Service implements AutoCloseable {
   static long testWipeCount() { return nativeTestWipeCount(); }
   static long testWipeFailureCount() { return nativeTestWipeFailureCount(); }
   static boolean testPendingExceptionCleanup() { return nativeTestPendingExceptionCleanup(); }
+  static boolean testPendingExceptionAudit(
+      Lifecycle.BeginResult result, Lifecycle.Status status) {
+    return nativeTestPendingExceptionAudit(result, status);
+  }
   static void setTestReleaseListener(IntConsumer listener) { testReleaseListener = listener; }
   static void setTestBeforeNativeHook(Runnable hook) { testBeforeNativeHook = hook; }
 
@@ -199,4 +204,6 @@ public final class Service implements AutoCloseable {
   private static native long nativeTestWipeCount();
   private static native long nativeTestWipeFailureCount();
   private static native boolean nativeTestPendingExceptionCleanup();
+  private static native boolean nativeTestPendingExceptionAudit(
+      Lifecycle.BeginResult result, Lifecycle.Status status);
 }

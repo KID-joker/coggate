@@ -316,6 +316,9 @@ final class ServiceTest {
   @Test
   void pendingCallbackExceptionCleanupClearsBeforeExitCallback() {
     assertTrue(Service.testPendingExceptionCleanup());
+    assertTrue(Service.testPendingExceptionAudit(
+        new Lifecycle.BeginResult(Lifecycle.BeginStatus.OK, MATERIAL, new byte[0]),
+        Lifecycle.Status.OK));
     assertDoesNotThrow(Service::testReleaseCount);
   }
 
@@ -327,6 +330,10 @@ final class ServiceTest {
     assertTrue(cmake.contains("copy_if_different"));
     assertTrue(cmake.contains("@loader_path"));
     assertTrue(cmake.contains("$ORIGIN"));
+    assertTrue(cmake.contains("option(AGENTGATE_STATIC_LINK"));
+    assertTrue(cmake.contains("AGENTGATE_STATIC"));
+    assertTrue(cmake.contains("WIN32 AND NOT AGENTGATE_STATIC_LINK"));
+    assertTrue(cmake.contains("AGENTGATE_RUNTIME_LIBRARY is required"));
 
     String service = Files.readString(
         Path.of("src", "main", "java", "io", "agentgate", "Service.java"));
@@ -334,6 +341,7 @@ final class ServiceTest {
     int shimLoad = service.indexOf("System.load(shim.toString())");
     assertTrue(coreLoad >= 0 && shimLoad > coreLoad);
     assertTrue(service.contains("agentgate_ffi.dll"));
+    assertTrue(service.contains("Files.isRegularFile(core)"));
   }
 
   @Test
