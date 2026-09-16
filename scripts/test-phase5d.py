@@ -82,6 +82,44 @@ def workflow_action_references(source: str) -> list[str]:
     return re.findall(r"^\s*uses:\s*([^\s#]+)", source, flags=re.MULTILINE)
 
 
+def workflow_condition(step: str) -> str:
+    matches = re.findall(r"^        if:\s*(.+?)\s*$", step, flags=re.MULTILINE)
+    if len(matches) != 1:
+        raise AssertionError("workflow step must have exactly one condition")
+    return matches[0]
+
+
+def workflow_run_script(step: str) -> str:
+    """Normalize the two YAML run forms used by this workflow."""
+    lines = step.splitlines()
+    matches = [
+        (index, line[len("        run:"):].lstrip())
+        for index, line in enumerate(lines)
+        if line.startswith("        run:")
+    ]
+    if len(matches) != 1:
+        raise AssertionError("workflow step must have exactly one run command")
+    index, value = matches[0]
+    if value != "|":
+        if not value or value in {">", ">-", "|-"}:
+            raise AssertionError("unsupported workflow run scalar")
+        return value.strip()
+    body = lines[index + 1:]
+    while body and not body[-1].strip():
+        body.pop()
+    if not body or any(line and not line.startswith("          ") for line in body):
+        raise AssertionError("invalid workflow run block indentation")
+    return "\n".join(line[10:] if line else "" for line in body)
+
+
+WORKFLOW_CONTRACT_TESTS = (
+    "test_workflow_has_exact_triggers_permissions_concurrency_and_jobs",
+    "test_workflow_qualification_matrix_and_artifact_contract_are_exact",
+    "test_workflow_pins_actions_and_configures_language_caches_safely",
+    "test_workflow_platform_setup_versions_and_sanitizers_are_scoped",
+)
+
+
 class RunnerError(Exception):
     pass
 
@@ -135,6 +173,47 @@ def build_fixture_artifact(parent: Path) -> Path:
 
 
 class RunnerSelfTests(unittest.TestCase):
+    def _workflow_contract_result(self, source):
+        with tempfile.TemporaryDirectory() as directory:
+            workflow = Path(directory) / "phase5d.yml"
+            workflow.write_text(source, encoding="utf-8")
+            suite = unittest.TestSuite(
+                RunnerSelfTests(name) for name in WORKFLOW_CONTRACT_TESTS
+            )
+            result = unittest.TestResult()
+            with mock.patch.object(
+                sys.modules[__name__], "PHASE5D_WORKFLOW", workflow
+            ):
+                suite.run(result)
+            return result
+
+    def _assert_workflow_mutant_rejected(self, source, label):
+        result = self._workflow_contract_result(source)
+        self.assertFalse(
+            result.wasSuccessful(),
+            f"workflow contract accepted mutant: {label}",
+        )
+
+    def _remove_workflow_step(self, source, job_name, step_name):
+        jobs = workflow_block(source, "jobs")
+        job = workflow_block(jobs, job_name, 2)
+        step = workflow_step(job, step_name)
+        job_start = source.index(job)
+        step_start = source.index(step, job_start, job_start + len(job))
+        return source[:step_start] + source[step_start + len(step):]
+
+    def _replace_in_workflow_step(
+        self, source, job_name, step_name, before, after
+    ):
+        jobs = workflow_block(source, "jobs")
+        job = workflow_block(jobs, job_name, 2)
+        step = workflow_step(job, step_name)
+        self.assertEqual(step.count(before), 1)
+        changed = step.replace(before, after, 1)
+        job_start = source.index(job)
+        step_start = source.index(step, job_start, job_start + len(job))
+        return source[:step_start] + changed + source[step_start + len(step):]
+
     def _reparse_stat(self, path):
         original = Path(path).lstat()
         value = mock.Mock()
@@ -2858,12 +2937,19 @@ Dump of file agentgate_ffi.dll
             ],
         )
         run = workflow_step(qualification, "Run qualification")
-        self.assertRegex(
-            run,
-            re.escape(
-                "python scripts/test-phase5d.py --ci --stage qualification "
-                "--output target/phase5d/${{ matrix.target }}"
-            ),
+        qualification_command = (
+            "python scripts/test-phase5d.py --ci --stage qualification "
+            "--output target/phase5d/${{ matrix.target }}"
+        )
+        self.assertEqual(workflow_condition(run), "runner.os != 'Windows'")
+        self.assertEqual(workflow_run_script(run), qualification_command)
+        windows_run = workflow_step(qualification, "Run Windows qualification")
+        self.assertEqual(workflow_condition(windows_run), "runner.os == 'Windows'")
+        self.assertEqual(
+            workflow_run_script(windows_run),
+            "call \"%ProgramFiles%\\Microsoft Visual Studio\\2022\\Enterprise"
+            "\\Common7\\Tools\\VsDevCmd.bat\" -arch=amd64\n"
+            + qualification_command,
         )
         upload = workflow_step(qualification, "Upload verified artifact")
         self.assertIn(
@@ -2874,7 +2960,7 @@ Dump of file agentgate_ffi.dll
 
     def test_workflow_pins_actions_and_configures_language_caches_safely(self):
         source = read_phase5d_workflow()
-        expected = {
+        qualification_actions = [
             "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
             "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
             "actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e",
@@ -2882,63 +2968,219 @@ Dump of file agentgate_ffi.dll
             "actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903",
             "actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
             "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
-        }
+        ]
+        sanitizer_actions = qualification_actions[:-1]
         references = workflow_action_references(source)
-        self.assertEqual(set(references), expected)
         self.assertTrue(
             all(re.fullmatch(r"[^@]+@[0-9a-f]{40}", item) for item in references)
         )
         qualification = workflow_block(workflow_block(source, "jobs"), "qualification", 2)
+        self.assertEqual(
+            workflow_action_references(qualification), qualification_actions
+        )
         checkout = workflow_step(qualification, "Check out source")
         self.assertIn("persist-credentials: false", checkout)
+        python = workflow_step(qualification, "Set up Python")
+        self.assertIn("python-version: '3.11'", python)
         go = workflow_step(qualification, "Set up Go")
+        self.assertIn("go-version: '1.24.0'", go)
         self.assertIn("cache: true", go)
         self.assertIn("cache-dependency-path: bindings/go/go.mod", go)
         java = workflow_step(qualification, "Set up Java")
+        self.assertIn("java-version: '17'", java)
         self.assertIn("cache: maven", java)
         node = workflow_step(qualification, "Set up Node.js")
+        self.assertIn("node-version: '22.18.0'", node)
         self.assertNotRegex(node, r"(?m)^\s+cache:")
         cargo = workflow_step(qualification, "Cache Cargo registry and Git index")
         self.assertIn("~/.cargo/registry", cargo)
         self.assertIn("~/.cargo/git", cargo)
-        self.assertNotRegex(cargo, r"(?m)^\s+target\s*$")
+        self.assertNotRegex(cargo, r"(?m)^\s+target(?:/.*)?\s*$")
         install = workflow_step(qualification, "Install pinned toolchains")
-        self.assertIn("rustup toolchain install 1.85.0", install)
-        self.assertIn("npm install --global node-gyp@12.1.0", install)
+        self.assertEqual(
+            workflow_run_script(install),
+            "rustup toolchain install 1.85.0 --profile minimal\n"
+            "rustup override set 1.85.0\n"
+            "npm install --global node-gyp@12.1.0",
+        )
         sanitizers = workflow_block(workflow_block(source, "jobs"), "sanitizers", 2)
+        self.assertEqual(workflow_action_references(sanitizers), sanitizer_actions)
         sanitizer_checkout = workflow_step(sanitizers, "Check out source")
         self.assertIn("persist-credentials: false", sanitizer_checkout)
+        sanitizer_python = workflow_step(sanitizers, "Set up Python")
+        self.assertIn("python-version: '3.11'", sanitizer_python)
+        sanitizer_go = workflow_step(sanitizers, "Set up Go")
+        self.assertIn("go-version: '1.24.0'", sanitizer_go)
+        self.assertIn("cache: true", sanitizer_go)
+        self.assertIn(
+            "cache-dependency-path: bindings/go/go.mod", sanitizer_go
+        )
+        sanitizer_java = workflow_step(sanitizers, "Set up Java")
+        self.assertIn("java-version: '17'", sanitizer_java)
+        self.assertIn("cache: maven", sanitizer_java)
+        sanitizer_node = workflow_step(sanitizers, "Set up Node.js")
+        self.assertIn("node-version: '22.18.0'", sanitizer_node)
+        self.assertNotRegex(sanitizer_node, r"(?m)^\s+cache:")
+        sanitizer_cargo = workflow_step(
+            sanitizers, "Cache Cargo registry and Git index"
+        )
+        self.assertIn("~/.cargo/registry", sanitizer_cargo)
+        self.assertIn("~/.cargo/git", sanitizer_cargo)
+        self.assertNotRegex(sanitizer_cargo, r"(?m)^\s+target(?:/.*)?\s*$")
+        sanitizer_install = workflow_step(sanitizers, "Install pinned toolchains")
+        self.assertEqual(
+            workflow_run_script(sanitizer_install), workflow_run_script(install)
+        )
 
     def test_workflow_platform_setup_versions_and_sanitizers_are_scoped(self):
         source = read_phase5d_workflow()
         jobs = workflow_block(source, "jobs")
         qualification = workflow_block(jobs, "qualification", 2)
         linux = workflow_step(qualification, "Install Linux native dependencies")
+        self.assertEqual(workflow_condition(linux), "runner.os == 'Linux'")
         for package in ("clang", "cmake", "ninja-build", "nlohmann-json3-dev"):
             self.assertIn(package, linux)
         macos = workflow_step(qualification, "Install macOS native dependencies")
+        self.assertEqual(workflow_condition(macos), "runner.os == 'macOS'")
         for package in ("llvm", "cmake", "ninja", "nlohmann-json"):
             self.assertIn(package, macos)
         windows = workflow_step(qualification, "Install Windows native dependencies")
+        self.assertEqual(workflow_condition(windows), "runner.os == 'Windows'")
         self.assertIn("vcpkg install nlohmann-json:x64-windows", windows)
         self.assertIn("CMAKE_TOOLCHAIN_FILE=", windows)
         versions = workflow_step(qualification, "Confirm tool versions")
-        for command in (
-            "python --version", "go version", "java -version", "javac -version",
-            "mvn --version", "node --version", "npm --version", "node-gyp --version",
-            "rustc --version", "cargo --version", "cmake --version", "ninja --version",
-        ):
-            self.assertIn(command, versions)
-        self.assertRegex(versions, r"(?m)^\s+(clang --version|cl /\?)$")
+        self.assertEqual(workflow_condition(versions), "runner.os != 'Windows'")
+        unix_version_script = (
+            "python --version\ngo version\njava -version\njavac -version\n"
+            "mvn --version\nnode --version\nnpm --version\nnode-gyp --version\n"
+            "rustc --version\ncargo --version\nclang --version\nclang++ --version\n"
+            "cmake --version\nctest --version\nninja --version"
+        )
+        self.assertEqual(workflow_run_script(versions), unix_version_script)
+        windows_versions = workflow_step(
+            qualification, "Confirm Windows tool versions"
+        )
+        self.assertEqual(
+            workflow_condition(windows_versions), "runner.os == 'Windows'"
+        )
+        self.assertEqual(
+            workflow_run_script(windows_versions),
+            "call \"%ProgramFiles%\\Microsoft Visual Studio\\2022\\Enterprise"
+            "\\Common7\\Tools\\VsDevCmd.bat\" -arch=amd64\n"
+            "python --version\ngo version\njava -version\njavac -version\n"
+            "mvn --version\nnode --version\nnpm --version\nnode-gyp --version\n"
+            "rustc --version\ncargo --version\ncl /?\ncmake --version\n"
+            "ctest --version\nninja --version",
+        )
         sanitizers = workflow_block(jobs, "sanitizers", 2)
         self.assertRegex(sanitizers, r"(?m)^    runs-on: ubuntu-24\.04$")
         self.assertRegex(sanitizers, r"(?m)^    timeout-minutes: 30$")
         sanitizer_run = workflow_step(sanitizers, "Run sanitizers")
-        self.assertIn(
-            "python scripts/test-phase5d.py --ci --stage sanitizers", sanitizer_run
+        self.assertEqual(
+            workflow_run_script(sanitizer_run),
+            "python scripts/test-phase5d.py --ci --stage sanitizers",
+        )
+        sanitizer_dependencies = workflow_step(
+            sanitizers, "Install Linux native dependencies"
+        )
+        for package in ("clang", "cmake", "ninja-build", "nlohmann-json3-dev"):
+            self.assertIn(package, sanitizer_dependencies)
+        sanitizer_versions = workflow_step(sanitizers, "Confirm tool versions")
+        self.assertEqual(
+            workflow_run_script(sanitizer_versions), unix_version_script
         )
         self.assertNotIn("actions/upload-artifact@", sanitizers)
         self.assertNotRegex(source, r"(?i)\b(publish|release)\b")
+
+    def test_workflow_contract_rejects_missing_windows_execution_details(self):
+        source = read_phase5d_workflow()
+        for step_name in ("Confirm Windows tool versions", "Run Windows qualification"):
+            with self.subTest(step=step_name):
+                self._assert_workflow_mutant_rejected(
+                    self._remove_workflow_step(
+                        source, "qualification", step_name
+                    ),
+                    f"missing {step_name}",
+                )
+        self._assert_workflow_mutant_rejected(
+            source.replace("          cl /?\n", "", 1),
+            "missing cl version probe",
+        )
+
+    def test_workflow_contract_rejects_commands_that_can_hide_failures(self):
+        source = read_phase5d_workflow()
+        self._assert_workflow_mutant_rejected(
+            source.replace(
+                "run: python scripts/test-phase5d.py --ci --stage qualification "
+                "--output target/phase5d/${{ matrix.target }}",
+                "run: python scripts/test-phase5d.py --ci --stage qualification "
+                "--output target/phase5d/${{ matrix.target }} || true",
+                1,
+            ),
+            "qualification command with || true",
+        )
+        self._assert_workflow_mutant_rejected(
+            source.replace(
+                "run: python scripts/test-phase5d.py --ci --stage sanitizers",
+                "run: python scripts/test-phase5d.py --ci --stage sanitizers; exit 0",
+                1,
+            ),
+            "sanitizer command with forced success",
+        )
+        windows_command = (
+            "python scripts/test-phase5d.py --ci --stage qualification "
+            "--output target/phase5d/${{ matrix.target }}"
+        )
+        self._assert_workflow_mutant_rejected(
+            self._replace_in_workflow_step(
+                source,
+                "qualification",
+                "Run Windows qualification",
+                windows_command,
+                windows_command + " & exit /b 0",
+            ),
+            "Windows qualification command with forced success",
+        )
+
+    def test_workflow_contract_rejects_each_missing_sanitizer_prerequisite(self):
+        source = read_phase5d_workflow()
+        steps = (
+            "Check out source",
+            "Set up Python",
+            "Set up Go",
+            "Set up Java",
+            "Set up Node.js",
+            "Cache Cargo registry and Git index",
+            "Install pinned toolchains",
+            "Install Linux native dependencies",
+            "Confirm tool versions",
+        )
+        for step_name in steps:
+            with self.subTest(step=step_name):
+                self._assert_workflow_mutant_rejected(
+                    self._remove_workflow_step(source, "sanitizers", step_name),
+                    f"sanitizers missing {step_name}",
+                )
+
+    def test_workflow_contract_rejects_platform_steps_with_wrong_conditions(self):
+        source = read_phase5d_workflow()
+        mutations = (
+            ("Install Linux native dependencies", "'Linux'", "'macOS'"),
+            ("Install macOS native dependencies", "'macOS'", "'Linux'"),
+            ("Install Windows native dependencies", "'Windows'", "'Linux'"),
+            ("Confirm tool versions", "!= 'Windows'", "== 'Windows'"),
+            ("Confirm Windows tool versions", "== 'Windows'", "== 'Linux'"),
+            ("Run qualification", "!= 'Windows'", "== 'Windows'"),
+            ("Run Windows qualification", "== 'Windows'", "== 'Linux'"),
+        )
+        for step_name, before, after in mutations:
+            with self.subTest(step=step_name):
+                self._assert_workflow_mutant_rejected(
+                    self._replace_in_workflow_step(
+                        source, "qualification", step_name, before, after
+                    ),
+                    f"wrong condition on {step_name}",
+                )
 
 
 @dataclass(frozen=True)
