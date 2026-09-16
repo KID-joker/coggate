@@ -82,6 +82,36 @@ def workflow_action_references(source: str) -> list[str]:
     return re.findall(r"^\s*uses:\s*([^\s#]+)", source, flags=re.MULTILINE)
 
 
+def workflow_mapping_keys(source: str, indentation: int) -> tuple[str, ...]:
+    prefix = " " * indentation
+    pattern = re.compile(
+        r"^" + re.escape(prefix) + r"([a-zA-Z][a-zA-Z0-9_-]*)\s*:"
+    )
+    return tuple(
+        match.group(1)
+        for line in source.splitlines()
+        if (match := pattern.match(line)) is not None
+    )
+
+
+def workflow_step_names(job: str) -> tuple[str, ...]:
+    entries = [line for line in job.splitlines() if line.startswith("      - ")]
+    names = []
+    for entry in entries:
+        match = re.fullmatch(r"      - name:\s*(\S(?:.*\S)?)", entry)
+        if match is None:
+            raise AssertionError("every workflow step must have exactly one name")
+        names.append(match.group(1))
+    return tuple(names)
+
+
+def workflow_step_keys(step: str) -> tuple[str, ...]:
+    lines = step.splitlines()
+    if not lines or re.fullmatch(r"      - name:\s*\S(?:.*\S)?", lines[0]) is None:
+        raise AssertionError("workflow step must begin with a name")
+    return ("name",) + workflow_mapping_keys(step, 8)
+
+
 def workflow_condition(step: str) -> str:
     matches = re.findall(r"^        if:\s*(.+?)\s*$", step, flags=re.MULTILINE)
     if len(matches) != 1:
@@ -2950,6 +2980,104 @@ Dump of file agentgate_ffi.dll
             set(re.findall(r"(?m)^  ([a-z][a-z0-9-]*):\s*$", jobs)),
             {"qualification", "sanitizers"},
         )
+        qualification = workflow_block(jobs, "qualification", 2)
+        sanitizers = workflow_block(jobs, "sanitizers", 2)
+        self.assertNotIn("permissions", workflow_mapping_keys(qualification, 4))
+        self.assertNotIn("permissions", workflow_mapping_keys(sanitizers, 4))
+        self.assertEqual(
+            workflow_step_names(qualification),
+            (
+                "Check out source",
+                "Set up Python",
+                "Set up Go",
+                "Set up Java",
+                "Set up Node.js",
+                "Cache Cargo registry and Git index",
+                "Install pinned toolchains",
+                "Install Linux native dependencies",
+                "Install macOS native dependencies",
+                "Install Windows native dependencies",
+                "Confirm tool versions",
+                "Confirm Windows tool versions",
+                "Run qualification",
+                "Run Windows qualification",
+                "Upload verified artifact",
+            ),
+        )
+        self.assertEqual(
+            workflow_step_names(sanitizers),
+            (
+                "Check out source",
+                "Set up Python",
+                "Set up Go",
+                "Set up Java",
+                "Set up Node.js",
+                "Cache Cargo registry and Git index",
+                "Install pinned toolchains",
+                "Install Linux native dependencies",
+                "Confirm tool versions",
+                "Run sanitizers",
+            ),
+        )
+        qualification_shapes = {
+            "Check out source": ("name", "uses", "with"),
+            "Set up Python": ("name", "uses", "with"),
+            "Set up Go": ("name", "uses", "with"),
+            "Set up Java": ("name", "uses", "with"),
+            "Set up Node.js": ("name", "uses", "with"),
+            "Cache Cargo registry and Git index": ("name", "uses", "with"),
+            "Install pinned toolchains": ("name", "run"),
+            "Install Linux native dependencies": ("name", "if", "run"),
+            "Install macOS native dependencies": ("name", "if", "run"),
+            "Install Windows native dependencies": (
+                "name", "if", "shell", "run"
+            ),
+            "Confirm tool versions": ("name", "if", "run"),
+            "Confirm Windows tool versions": ("name", "if", "shell", "run"),
+            "Run qualification": ("name", "if", "run"),
+            "Run Windows qualification": ("name", "if", "shell", "run"),
+            "Upload verified artifact": ("name", "uses", "with"),
+        }
+        sanitizer_shapes = {
+            "Check out source": ("name", "uses", "with"),
+            "Set up Python": ("name", "uses", "with"),
+            "Set up Go": ("name", "uses", "with"),
+            "Set up Java": ("name", "uses", "with"),
+            "Set up Node.js": ("name", "uses", "with"),
+            "Cache Cargo registry and Git index": ("name", "uses", "with"),
+            "Install pinned toolchains": ("name", "run"),
+            "Install Linux native dependencies": ("name", "run"),
+            "Confirm tool versions": ("name", "run"),
+            "Run sanitizers": ("name", "run"),
+        }
+        for name, keys in qualification_shapes.items():
+            self.assertEqual(
+                workflow_step_keys(workflow_step(qualification, name)), keys
+            )
+        for name, keys in sanitizer_shapes.items():
+            self.assertEqual(
+                workflow_step_keys(workflow_step(sanitizers, name)), keys
+            )
+
+    def test_workflow_structure_helpers_respect_indentation_and_run_blocks(self):
+        job = (
+            "  sample:\n"
+            "    permissions : {}\n"
+            "    steps:\n"
+            "      - name: First\n"
+            "        run: |\n"
+            "          echo 'permissions: contents: write'\n"
+            "          echo '- name: not a step'\n"
+            "      - name: Second\n"
+            "        run: echo done\n"
+        )
+        self.assertEqual(
+            workflow_mapping_keys(job, 4), ("permissions", "steps")
+        )
+        self.assertEqual(workflow_step_names(job), ("First", "Second"))
+        self.assertEqual(
+            workflow_step_keys(workflow_step(job, "First")), ("name", "run")
+        )
 
     def test_workflow_qualification_matrix_and_artifact_contract_are_exact(self):
         source = read_phase5d_workflow()
@@ -3336,6 +3464,73 @@ Dump of file agentgate_ffi.dll
                     ),
                 )
             )
+        for label, mutant in mutations:
+            with self.subTest(label=label):
+                self._assert_workflow_mutant_rejected(mutant, label)
+
+    def test_workflow_contract_rejects_job_permissions_and_extra_steps(self):
+        source = read_phase5d_workflow()
+        mutations = []
+        for job_name in ("qualification", "sanitizers"):
+            marker = f"  {job_name}:\n"
+            for value in ("contents: write", "{}", "read-all"):
+                mutations.append(
+                    (
+                        f"{job_name} permissions {value}",
+                        source.replace(
+                            marker,
+                            marker + f"    permissions: {value}\n",
+                            1,
+                        ),
+                    )
+                )
+        mutations.extend(
+            (
+                (
+                    "qualification extra run step",
+                    source.replace(
+                        "      - name: Upload verified artifact\n",
+                        "      - name: Unexpected qualification command\n"
+                        "        run: echo unexpected\n\n"
+                        "      - name: Upload verified artifact\n",
+                        1,
+                    ),
+                ),
+                (
+                    "sanitizers extra run step",
+                    source.replace(
+                        "      - name: Run sanitizers\n",
+                        "      - name: Unexpected sanitizer command\n"
+                        "        run: echo unexpected\n\n"
+                        "      - name: Run sanitizers\n",
+                        1,
+                    ),
+                ),
+                (
+                    "checkout action with extra run",
+                    self._replace_in_workflow_step(
+                        source,
+                        "qualification",
+                        "Check out source",
+                        "        uses: actions/checkout@",
+                        "        run: echo unexpected\n"
+                        "        uses: actions/checkout@",
+                    ),
+                ),
+                (
+                    "qualification run with extra inputs",
+                    self._replace_in_workflow_step(
+                        source,
+                        "qualification",
+                        "Run qualification",
+                        "target/phase5d/${{ matrix.target }}",
+                        "target/phase5d/${{ matrix.target }}\n"
+                        "        with:\n"
+                        "          unexpected: true",
+                    ),
+                ),
+            )
+        )
         for label, mutant in mutations:
             with self.subTest(label=label):
                 self._assert_workflow_mutant_rejected(mutant, label)
