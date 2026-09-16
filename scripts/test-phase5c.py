@@ -738,6 +738,15 @@ class RunnerSelfTests(unittest.TestCase):
         self.assertEqual(java.argv[-1], str(root / "target/phase5c/java/libagentgate_jni.dylib"))
         self.assertTrue(all(dict(command.env)["JAVA_HOME"] == "/" for command in plan))
 
+    def test_java_main_jar_is_configured_as_a_self_contained_shaded_output(self):
+        pom = (ROOT / "bindings" / "java" / "pom.xml").read_text(encoding="utf-8")
+        self.assertIn("<artifactId>maven-shade-plugin</artifactId>", pom)
+        self.assertIn("<version>3.6.0</version>", pom)
+        self.assertIn("<phase>package</phase>", pom)
+        self.assertIn("<goal>shade</goal>", pom)
+        self.assertIn("<shadedArtifactAttached>false</shadedArtifactAttached>", pom)
+        self.assertIn("<createDependencyReducedPom>false</createDependencyReducedPom>", pom)
+
     def test_missing_build_tools_are_runtime_capabilities(self):
         capabilities = self._capabilities()
         capabilities["maven"] = Capability("Maven", None, None)

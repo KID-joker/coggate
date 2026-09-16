@@ -1440,6 +1440,200 @@ Dump of file agentgate_ffi.dll
         self.assertEqual(run_c_static.cwd, build_root)
         self.assertEqual(Path(run_c_shared.argv[0]).parent, build_root)
 
+    def test_smoke_plan_never_uses_source_build_outputs(self):
+        artifact = Path("/isolated/镜像 Ω/agentgate")
+        plan = smoke_plan(
+            target_fixture(), artifact, Path("/tmp/smoke-build"),
+            complete_capabilities(),
+        )
+        rendered = "\n".join(" ".join(command.argv) for command in plan)
+        self.assertNotIn("/repo/target", rendered)
+        self.assertNotIn("/repo/bindings", rendered)
+        self.assertIn(str(artifact / "native/libagentgate_ffi.so"), rendered)
+
+    def test_smoke_plan_orders_every_consumer_inside_extracted_artifact(self):
+        artifact = Path("/isolated/路径 with spaces Ω/agentgate")
+        build = Path("/fresh/smoke build")
+        plan = smoke_plan(target_fixture(), artifact, build, complete_capabilities())
+        self.assertEqual(len(plan), 14)
+        self.assertEqual(
+            [command.purpose for command in plan],
+            [
+                "abi-probe-compile-c-shared", "abi-probe-run-c-shared",
+                "abi-probe-compile-cpp-shared", "abi-probe-run-cpp-shared",
+                "abi-probe-compile-c-static", "abi-probe-run-c-static",
+                "abi-probe-compile-cpp-static", "abi-probe-run-cpp-static",
+                "smoke-python-ctypes", "smoke-go-test", "smoke-go-complete",
+                "smoke-java-compile", "smoke-java-complete", "smoke-node-complete",
+            ],
+        )
+        rendered = "\n".join(
+            " ".join(command.argv) + " " + str(command.cwd) + " " +
+            " ".join(f"{key}={value}" for key, value in command.env)
+            for command in plan
+        )
+        for forbidden in ("/repo", "/source", "/target", "/bindings"):
+            self.assertNotIn(forbidden, rendered)
+        self.assertTrue(all(
+            command.cwd == build or _is_within(command.cwd, artifact)
+            for command in plan
+        ))
+        self.assertIn(str(artifact / "smoke/abi_probe.c"), plan[0].argv)
+        self.assertIn(str(artifact / "include"), plan[0].argv)
+        self.assertIn(str(artifact / "native/libagentgate_ffi.a"), plan[4].argv)
+        self.assertIn("-DAGENTGATE_STATIC", plan[4].argv)
+        self.assertEqual(plan[9].argv[-2:], ("--agentgate-library", str(artifact / "native/libagentgate_ffi.so")))
+        self.assertEqual(plan[10].argv[-2:], ("--library", str(artifact / "native/libagentgate_ffi.so")))
+        self.assertEqual(plan[-1].cwd, artifact / "node")
+
+    def test_windows_smoke_plan_links_import_library_and_stages_only_shared_dll(self):
+        target = Target.for_host("Windows", "AMD64")
+        artifact = Path("C:/isolated/路径 with spaces Ω/agentgate")
+        build = Path("C:/fresh/smoke build")
+        plan = smoke_plan(target, artifact, build, complete_capabilities())
+        shared_compiles = (plan[0], plan[2])
+        static_compiles = (plan[4], plan[6])
+        for command in shared_compiles:
+            self.assertIn(str(artifact / "native/agentgate_ffi.dll.lib"), command.argv)
+            self.assertNotIn("/DAGENTGATE_STATIC", command.argv)
+        for command in static_compiles:
+            self.assertIn(str(artifact / "native/agentgate_ffi.lib"), command.argv)
+            self.assertIn("/DAGENTGATE_STATIC", command.argv)
+        self.assertEqual(plan[8].argv[0], "/tools/python")
+        self.assertIn("WinDLL", plan[8].argv[-1])
+        java = plan[12]
+        self.assertIn(
+            "-Dagentgate.core.path=" + str(artifact / "native/agentgate_ffi.dll"),
+            java.argv,
+        )
+
+    def test_artifact_smoke_copies_to_unicode_child_and_verifies_before_and_after(self):
+        temporary_roots = []
+        copied_roots = []
+        with tempfile.TemporaryDirectory() as directory:
+            artifact = self._assembled_fixture(Path(directory))
+
+            def temporary_directory(**kwargs):
+                context = tempfile.TemporaryDirectory(**kwargs)
+                temporary_roots.append(Path(context.name))
+                return context
+
+            def copy_file(source, destination, relative, **kwargs):
+                copied_roots.append(Path(destination))
+                return safe_copy_file(source, destination, relative, **kwargs)
+
+            calls = []
+            with mock.patch.object(
+                sys.modules[__name__], "verify_artifact", wraps=verify_artifact
+            ) as verifier:
+                self.assertEqual(
+                    run_artifact_smoke(
+                        target_fixture(), artifact, complete_capabilities(),
+                        command_runner=lambda argv, **kwargs: (
+                            calls.append((tuple(argv), kwargs)) or mock.Mock(returncode=0)
+                        ),
+                        temporary_directory=temporary_directory,
+                        copy_file=copy_file,
+                    ),
+                    "PASS",
+                )
+            extracted = temporary_roots[0] / "路径 with spaces Ω"
+            self.assertTrue(all(root == extracted for root in copied_roots))
+            self.assertEqual([call.args[0] for call in verifier.call_args_list], [artifact, extracted])
+            self.assertTrue(all(
+                str(artifact) not in argument
+                for argv, _ in calls for argument in argv
+            ))
+            self.assertFalse(temporary_roots[0].exists())
+
+    def test_artifact_smoke_rejects_invalid_or_tampered_copy_before_commands(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+            invalid = build_fixture_artifact(parent / "invalid")
+            write_checksums(invalid)
+            runner = mock.Mock(side_effect=AssertionError("must not execute"))
+            with self.assertRaises(RunnerError):
+                run_artifact_smoke(target_fixture(), invalid, complete_capabilities(), command_runner=runner)
+            runner.assert_not_called()
+
+            artifact = self._assembled_fixture(parent / "valid")
+
+            def tampering_copy(source, destination, relative, **kwargs):
+                copied = safe_copy_file(source, destination, relative, **kwargs)
+                if relative == CHECKSUM_NAME:
+                    (Path(destination) / "include/agentgate.h").write_text("tampered", encoding="utf-8")
+                return copied
+
+            with self.assertRaises(RunnerError):
+                run_artifact_smoke(
+                    target_fixture(), artifact, complete_capabilities(),
+                    command_runner=runner, copy_file=tampering_copy,
+                )
+            runner.assert_not_called()
+
+    def test_artifact_smoke_clears_inherited_loader_and_agentgate_environment(self):
+        with tempfile.TemporaryDirectory() as directory:
+            artifact = self._assembled_fixture(Path(directory))
+            environments = []
+            forbidden = {
+                "LD_LIBRARY_PATH": "inherited-loader",
+                "DYLD_LIBRARY_PATH": "inherited-loader",
+                "AGENTGATE_LIBRARY_PATH": "inherited-agentgate",
+                "AGENTGATE_LIBRARY": "inherited-agentgate",
+                "AGENTGATE_RUNTIME_LIBRARY": "inherited-agentgate",
+                "GOWORK": "/repo/go.work",
+                "GOFLAGS": "-modfile=/repo/go.mod",
+            }
+            with mock.patch.dict(os.environ, forbidden, clear=True):
+                self.assertEqual(
+                    run_artifact_smoke(
+                        target_fixture(), artifact, complete_capabilities(),
+                        command_runner=lambda argv, **kwargs: (
+                            environments.append(kwargs["env"]) or mock.Mock(returncode=0)
+                        ),
+                    ),
+                    "PASS",
+                )
+            for environment in environments:
+                for key in forbidden:
+                    if key == "GOWORK" and environment.get(key) == "off":
+                        continue
+                    if key in environment:
+                        self.assertIn(
+                            "路径 with spaces Ω",
+                            environment[key],
+                        )
+                        self.assertNotIn(str(artifact), environment[key])
+            self.assertFalse(any("GOFLAGS" in environment for environment in environments))
+            self.assertEqual(
+                sum(environment.get("GOWORK") == "off" for environment in environments),
+                2,
+            )
+
+    def test_artifact_smoke_fails_closed_and_cleans_temporary_directory(self):
+        for failure in (OSError("launch"), mock.Mock(returncode=9)):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
+                roots = []
+                artifact = self._assembled_fixture(Path(directory))
+
+                def temporary_directory(**kwargs):
+                    context = tempfile.TemporaryDirectory(**kwargs)
+                    roots.append(Path(context.name))
+                    return context
+
+                def runner(argv, **kwargs):
+                    if isinstance(failure, BaseException):
+                        raise failure
+                    return failure
+
+                with self.assertRaisesRegex(RunnerError, "unable to run|exit code 9"):
+                    run_artifact_smoke(
+                        target_fixture(), artifact, complete_capabilities(),
+                        command_runner=runner, temporary_directory=temporary_directory,
+                    )
+                self.assertEqual(len(roots), 1)
+                self.assertFalse(roots[0].exists())
+
     def test_ci_requires_every_tool_and_minimum_version(self):
         capabilities = complete_capabilities()
         capabilities["go"] = Capability("Go", "/tools/go", (1, 23, 9))
@@ -2061,6 +2255,7 @@ Dump of file agentgate_ffi.dll
         artifact = Path("/output/artifact")
         assembler = mock.Mock(return_value=artifact)
         verifier = mock.Mock(return_value="PASS")
+        smoker = mock.Mock(return_value="PASS")
         stdout = io.StringIO()
         with mock.patch.object(
             sys.modules[__name__], "detect_capabilities",
@@ -2069,6 +2264,8 @@ Dump of file agentgate_ffi.dll
             sys.modules[__name__], "assemble_artifact", assembler
         ), mock.patch.object(
             sys.modules[__name__], "verify_artifact", verifier
+        ), mock.patch.object(
+            sys.modules[__name__], "run_artifact_smoke", smoker
         ), contextlib.redirect_stdout(stdout):
             self.assertEqual(
                 main(
@@ -2081,6 +2278,10 @@ Dump of file agentgate_ffi.dll
             )
         assembler.assert_called_once()
         verifier.assert_called_once_with(artifact, target_fixture())
+        smoker.assert_called_once_with(
+            target_fixture(), artifact, complete_capabilities(),
+            command_runner=subprocess.run,
+        )
         self.assertIn("qualification=NOT_RUN artifact=PASS", stdout.getvalue())
 
     def test_artifact_dry_run_plans_without_filesystem_writes(self):
@@ -2120,6 +2321,10 @@ Dump of file agentgate_ffi.dll
             events.append("verification")
             return "PASS"
 
+        def smoke(*args, **kwargs):
+            events.append("smoke")
+            return "PASS"
+
         stdout = io.StringIO()
         with mock.patch.object(
             sys.modules[__name__], "detect_capabilities",
@@ -2130,6 +2335,8 @@ Dump of file agentgate_ffi.dll
             sys.modules[__name__], "assemble_artifact", assemble
         ), mock.patch.object(
             sys.modules[__name__], "verify_artifact", verify
+        ), mock.patch.object(
+            sys.modules[__name__], "run_artifact_smoke", smoke
         ), contextlib.redirect_stdout(stdout):
             self.assertEqual(
                 main(
@@ -2140,7 +2347,7 @@ Dump of file agentgate_ffi.dll
                 ),
                 0,
             )
-        self.assertEqual(events, ["qualification", "assembly", "verification"])
+        self.assertEqual(events, ["qualification", "assembly", "verification", "smoke"])
         self.assertIn("qualification=PASS artifact=PASS", stdout.getvalue())
 
     def test_all_fails_before_discovery_execution_or_success_output(self):
@@ -2624,6 +2831,9 @@ def _probe_compile_command(
     build_directory: Path,
     language: str,
     linkage: str,
+    *,
+    source_directory: Path | None = None,
+    include_directory: Path | None = None,
 ) -> PlannedCommand:
     is_cpp = language == "cpp"
     compiler_key = "cxx" if is_cpp else "cc"
@@ -2631,11 +2841,19 @@ def _probe_compile_command(
     if compiler is None:
         label = "C++" if is_cpp else "C"
         raise RunnerError(f"required capability: {label} compiler")
-    source = root / "tests" / "qualification" / f"abi_probe.{language}"
+    source = (
+        root / "tests" / "qualification" / f"abi_probe.{language}"
+        if source_directory is None
+        else Path(source_directory) / f"abi_probe.{language}"
+    )
     output = _probe_output_path(target, build_directory, language, linkage)
     library_name = target.shared_name if linkage == "shared" else target.static_name
     library = artifact_directory / library_name
-    include_directory = root / "packages" / "ffi" / "include"
+    include_directory = (
+        root / "packages" / "ffi" / "include"
+        if include_directory is None
+        else Path(include_directory)
+    )
 
     if target.system == "Windows":
         link_library = (
@@ -2723,6 +2941,151 @@ def abi_probe_plan(
                     ),
                 ]
             )
+    return commands
+
+
+SMOKE_CLEARED_ENVIRONMENT = frozenset(
+    {
+        "LD_LIBRARY_PATH",
+        "DYLD_LIBRARY_PATH",
+        "AGENTGATE_LIBRARY_PATH",
+        "AGENTGATE_LIBRARY",
+        "AGENTGATE_RUNTIME_LIBRARY",
+        "GOWORK",
+        "GOFLAGS",
+    }
+)
+
+
+def smoke_plan(
+    target: Target,
+    artifact: Path,
+    build_directory: Path,
+    capabilities: dict[str, Capability],
+) -> list[PlannedCommand]:
+    """Plan consumers against an extracted artifact and fresh smoke output only."""
+    artifact = Path(artifact)
+    build_directory = Path(build_directory)
+    native = artifact / "native"
+    shared_library = native / target.shared_name
+    commands = []
+    for linkage in ("shared", "static"):
+        for language in ("c", "cpp"):
+            compile_command = _probe_compile_command(
+                target,
+                artifact,
+                native,
+                capabilities,
+                build_directory,
+                language,
+                linkage,
+                source_directory=artifact / "smoke",
+                include_directory=artifact / "include",
+            )
+            runtime_environment = ()
+            if linkage == "shared" and target.system == "Linux":
+                runtime_environment = (("LD_LIBRARY_PATH", str(native)),)
+            elif linkage == "shared" and target.system == "Darwin":
+                runtime_environment = (("DYLD_LIBRARY_PATH", str(native)),)
+            commands.extend(
+                (
+                    compile_command,
+                    PlannedCommand(
+                        (str(_probe_output_path(target, build_directory, language, linkage)),),
+                        build_directory,
+                        runtime_environment,
+                        purpose=f"abi-probe-run-{language}-{linkage}",
+                    ),
+                )
+            )
+
+    python = capabilities["python"].path
+    go = capabilities["go"].path
+    javac = capabilities["javac"].path
+    java = capabilities["java"].path
+    node = capabilities["node"].path
+    if None in (python, go, javac, java, node):
+        raise RunnerError("required capability missing for artifact smoke")
+    loader = "ctypes.WinDLL" if target.system == "Windows" else "ctypes.CDLL"
+    ctypes_script = (
+        "import ctypes; library=" + loader + "(" + repr(str(shared_library)) + "); "
+        "assert library.ag_abi_version() == 1"
+    )
+    commands.append(
+        PlannedCommand(
+            (python, "-c", ctypes_script), artifact,
+            purpose="smoke-python-ctypes",
+        )
+    )
+
+    go_environment = ()
+    if target.system in {"Linux", "Darwin"}:
+        loader_variable = (
+            "LD_LIBRARY_PATH" if target.system == "Linux" else "DYLD_LIBRARY_PATH"
+        )
+        go_environment = (
+            ("CGO_LDFLAGS", "-L" + str(native)),
+            (loader_variable, str(native)),
+            ("GOWORK", "off"),
+        )
+    else:
+        go_environment = (("GOWORK", "off"),)
+    commands.extend(
+        (
+            PlannedCommand(
+                (go, "test", "./...", "-args", "--agentgate-library", str(shared_library)),
+                artifact / "go", go_environment, purpose="smoke-go-test",
+            ),
+            PlannedCommand(
+                (go, "run", "./examples/complete", "--library", str(shared_library)),
+                artifact / "go", go_environment, purpose="smoke-go-complete",
+            ),
+        )
+    )
+
+    classes = build_directory / "java-classes"
+    main_jar = artifact / "java" / "agentgate-java-0.1.0-SNAPSHOT.jar"
+    shim = artifact / "java" / JNI_SHIM_NAMES[target.system]
+    classpath_separator = ";" if target.system == "Windows" else ":"
+    classpath = classpath_separator.join((str(classes), str(main_jar)))
+    java_environment = ()
+    if target.system in {"Linux", "Darwin"}:
+        loader_variable = (
+            "LD_LIBRARY_PATH" if target.system == "Linux" else "DYLD_LIBRARY_PATH"
+        )
+        java_environment = ((loader_variable, str(artifact / "java")),)
+    commands.append(
+        PlannedCommand(
+            (javac, "-cp", classpath, "-d", str(classes), str(artifact / "java/examples/Complete.java")),
+            artifact / "java", java_environment, purpose="smoke-java-compile",
+        )
+    )
+    java_argv = [java, "-cp", classpath]
+    if target.system == "Windows":
+        java_argv.append("-Dagentgate.core.path=" + str(shared_library))
+    java_argv.extend(("io.agentgate.examples.Complete", str(shim)))
+    commands.append(
+        PlannedCommand(
+            tuple(java_argv), artifact / "java", java_environment,
+            purpose="smoke-java-complete",
+        )
+    )
+
+    node_environment = (
+        ("AGENTGATE_LIBRARY", str(shared_library)),
+        ("AGENTGATE_RUNTIME_LIBRARY", str(shared_library)),
+    )
+    if target.system in {"Linux", "Darwin"}:
+        loader_variable = (
+            "LD_LIBRARY_PATH" if target.system == "Linux" else "DYLD_LIBRARY_PATH"
+        )
+        node_environment += ((loader_variable, str(native)),)
+    commands.append(
+        PlannedCommand(
+            (node, "examples/complete.js"), artifact / "node", node_environment,
+            purpose="smoke-node-complete",
+        )
+    )
     return commands
 
 
@@ -4169,12 +4532,18 @@ def safe_copy_file(
     relative: str,
     *,
     source_root: Path | None = None,
+    allow_reserved: bool = False,
 ) -> Path:
     source = Path(source)
     root = Path(artifact_root)
     _require_regular_file(source, "artifact source")
     _require_directory(root, "artifact root")
-    normalized = normalize_artifact_path(relative)
+    if allow_reserved:
+        if relative not in RESERVED_ARTIFACT_NAMES:
+            raise RunnerError(f"unexpected reserved artifact file: {relative}")
+        normalized = relative
+    else:
+        normalized = normalize_artifact_path(relative)
     root_resolved = root.resolve(strict=True)
     destination = root / Path(*normalized.split("/"))
     current = root
@@ -4445,6 +4814,111 @@ def run_command(
     return "PASS"
 
 
+def _copy_verified_artifact(
+    source: Path,
+    destination: Path,
+    target: Target,
+    *,
+    copy_file=safe_copy_file,
+) -> Path:
+    """Copy a verified artifact without following links or copying unlisted files."""
+    source = Path(source)
+    destination = Path(destination)
+    verify_artifact(source, target)
+    if destination.exists() or destination.is_symlink():
+        raise RunnerError(f"smoke extraction destination already exists: {destination}")
+    destination.mkdir()
+    _require_directory(destination, "smoke extraction destination")
+    files = _walk_regular_files(source, exclude_metadata=True)
+    for relative, file_path in files:
+        copy_file(file_path, destination, relative, source_root=source)
+    for relative in (MANIFEST_NAME, CHECKSUM_NAME):
+        copy_file(
+            source / relative,
+            destination,
+            relative,
+            source_root=source,
+            allow_reserved=True,
+        )
+    verify_artifact(destination, target)
+    return destination
+
+
+def run_smoke_command(
+    command: PlannedCommand,
+    command_runner=subprocess.run,
+    *,
+    dry_run: bool = False,
+    windows: bool = False,
+) -> str:
+    """Launch a smoke command with inherited loader and AgentGate paths removed."""
+    formatted = _format_command(command.argv, windows)
+    print("+ " + formatted)
+    if dry_run:
+        return "PLANNED"
+    environment = os.environ.copy()
+    for name in SMOKE_CLEARED_ENVIRONMENT:
+        environment.pop(name, None)
+    environment.update(dict(command.env))
+    try:
+        completed = command_runner(
+            list(command.argv), cwd=command.cwd, env=environment, shell=False,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise RunnerError(f"unable to run {command.argv[0]}: {error}") from error
+    if completed.returncode != 0:
+        raise RunnerError(
+            f"command failed: {formatted} (exit code {completed.returncode})"
+        )
+    return "PASS"
+
+
+def run_artifact_smoke(
+    target: Target,
+    artifact: Path,
+    capabilities: dict[str, Capability],
+    *,
+    command_runner=subprocess.run,
+    dry_run: bool = False,
+    temporary_directory=tempfile.TemporaryDirectory,
+    copy_file=safe_copy_file,
+) -> str:
+    """Reverify, extract, and exercise a package without accessing build outputs."""
+    artifact = Path(artifact)
+    if dry_run:
+        plan = smoke_plan(
+            target,
+            artifact,
+            Path("/tmp/agentgate-phase5d-smoke-plan/build"),
+            capabilities,
+        )
+        for command in plan:
+            run_smoke_command(
+                command, command_runner, dry_run=True,
+                windows=target.system == "Windows",
+            )
+        return "PLANNED"
+    with temporary_directory(prefix="agentgate-phase5d-smoke-") as temporary_root:
+        temporary_root = Path(temporary_root)
+        extracted = _copy_verified_artifact(
+            artifact, temporary_root / "路径 with spaces Ω", target, copy_file=copy_file,
+        )
+        build_directory = temporary_root / "build"
+        build_directory.mkdir()
+        if target.system == "Windows":
+            safe_copy_file(
+                extracted / "native" / target.shared_name,
+                build_directory,
+                target.shared_name,
+                source_root=extracted,
+            )
+        for command in smoke_plan(target, extracted, build_directory, capabilities):
+            run_smoke_command(
+                command, command_runner, windows=target.system == "Windows",
+            )
+    return "PASS"
+
+
 def run_symbol_inspection(
     command: PlannedCommand,
     system: str,
@@ -4608,6 +5082,13 @@ def main(
     if arguments.stage == "artifact":
         if arguments.dry_run:
             print(f"+ assemble verified artifact {arguments.output / 'artifact'}")
+            run_artifact_smoke(
+                target,
+                arguments.output / "artifact",
+                capabilities,
+                command_runner=command_runner,
+                dry_run=True,
+            )
             print("phase5d: qualification=NOT_RUN artifact=PLANNED")
             return 0
         artifact = assemble_artifact(
@@ -4617,6 +5098,9 @@ def main(
             tool_versions_from_capabilities(capabilities),
         )
         verify_artifact(artifact, target)
+        run_artifact_smoke(
+            target, artifact, capabilities, command_runner=command_runner,
+        )
         print("phase5d: qualification=NOT_RUN artifact=PASS")
         return 0
 
@@ -4632,6 +5116,13 @@ def main(
         )
         if arguments.dry_run:
             print(f"+ assemble verified artifact {arguments.output / 'artifact'}")
+            run_artifact_smoke(
+                target,
+                arguments.output / "artifact",
+                capabilities,
+                command_runner=command_runner,
+                dry_run=True,
+            )
             print(f"phase5d: qualification={status} artifact=PLANNED")
             return 0
         artifact = assemble_artifact(
@@ -4641,6 +5132,9 @@ def main(
             tool_versions_from_capabilities(capabilities),
         )
         verify_artifact(artifact, target)
+        run_artifact_smoke(
+            target, artifact, capabilities, command_runner=command_runner,
+        )
         print(f"phase5d: qualification={status} artifact=PASS")
         return 0
 
