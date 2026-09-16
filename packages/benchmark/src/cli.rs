@@ -7,15 +7,13 @@ use std::{
 };
 
 use crate::{
-    baseline::{
-        Baseline, direct::DirectBaseline, fingerprint::FingerprintBaseline,
-        regex_extract::RegexBaseline, score_baseline, simple_parser::SimpleParserBaseline,
-    },
+    baseline::direct::DirectBaseline,
     corpus::Corpus,
     llm::{export_llm_file, score_llm_results},
     manifest::{ProfileName, SuiteManifest},
     process::{CommandSpec, ProcessOutcome, ProcessRunner, ToolId},
-    report::{QualificationReport, ReportBinding, ReportCase, verify_report, write_report_bundle},
+    qualification::qualify_baselines,
+    report::{QualificationReport, verify_report, write_report_bundle},
 };
 
 pub const EXIT_SUCCESS: u8 = 0;
@@ -236,31 +234,10 @@ fn run_baselines(
     }
 
     let corpus = Corpus::generate(suite, profile).map_err(|_| CliError::Internal)?;
-    let fingerprint = FingerprintBaseline::train(corpus.calibration());
-    let regex = RegexBaseline::new().map_err(|_| CliError::Internal)?;
-    let parser = SimpleParserBaseline;
-
-    let mut reports = vec![
-        score_report(
-            suite,
-            profile,
-            &fingerprint,
-            corpus.scored(),
-            BTreeMap::new(),
-        )?,
-        score_report(suite, profile, &regex, corpus.scored(), BTreeMap::new())?,
-        score_report(suite, profile, &parser, corpus.scored(), BTreeMap::new())?,
-    ];
-
     let (runner, versions) = production_runner(suite)?;
     let direct = DirectBaseline::new(runner);
-    reports.push(score_report(
-        suite,
-        profile,
-        &direct,
-        corpus.scored(),
-        versions,
-    )?);
+    let reports = qualify_baselines(suite, profile, &corpus, &direct, versions)
+        .map_err(|_| CliError::Internal)?;
     for report in &reports {
         write_report_bundle(output, report).map_err(|_| CliError::InputOrInfrastructure)?;
     }
@@ -270,30 +247,6 @@ fn run_baselines(
         qualified,
         format!("phase6a: baselines=COMPLETE qualified={qualified}\n"),
     ))
-}
-
-fn score_report(
-    suite: &SuiteManifest,
-    profile: ProfileName,
-    baseline: &impl Baseline,
-    cases: &[crate::corpus::CorpusCase],
-    tool_versions: BTreeMap<String, String>,
-) -> Result<QualificationReport, CliError> {
-    let binding = ReportBinding::baseline(suite, profile, baseline.id(), tool_versions)
-        .map_err(|_| CliError::Internal)?;
-    let cases = score_baseline(baseline, cases)
-        .into_iter()
-        .map(|result| {
-            ReportCase::new(
-                result.case_id().to_owned(),
-                result.outcome(),
-                result.reason(),
-                result.duration_ms(),
-            )
-            .map_err(|_| CliError::Internal)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    QualificationReport::from_cases(binding, cases).map_err(|_| CliError::Internal)
 }
 
 fn production_runner(
