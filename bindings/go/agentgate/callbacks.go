@@ -87,7 +87,8 @@ func (KeyResult) LogValue() slog.Value { return slog.StringValue("KeyResult()") 
 
 // Lifecycle owns issued challenge state. All byte slices received by these
 // methods are independent copies whose contents are guaranteed only for the
-// duration of the callback.
+// duration of the callback. Implementations must not call Issue, Verify, or
+// Close on the Service currently invoking the callback.
 type Lifecycle interface {
 	StoreIssued(privateJSON []byte, binding []byte, limit AttemptLimit) LifecycleStatus
 	BeginAttempt(identityJSON []byte, binding []byte, serverTime int64) BeginAttemptResult
@@ -95,12 +96,14 @@ type Lifecycle interface {
 }
 
 // KeyProvider supplies the active signing key and exact historical key lookups.
+// Implementations must not reenter the Service currently invoking the callback.
 type KeyProvider interface {
 	ActiveKey() ActiveKeyResult
 	KeyByID(keyID string) KeyResult
 }
 
 // Observer receives best-effort public event JSON. Panics are swallowed.
+// Implementations must not reenter the Service currently invoking the callback.
 type Observer interface{ Observe(eventJSON []byte) }
 
 type callbackAdapter struct {

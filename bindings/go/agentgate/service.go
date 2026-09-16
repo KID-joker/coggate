@@ -5,15 +5,21 @@ import (
 	"reflect"
 	"runtime"
 	"sync"
-	"sync/atomic"
 )
 
 // Service is a serialized, explicitly closable AgentGate native service.
+// Calls from different goroutines wait for the current call to finish, including
+// waiting until an active callback returns. A callback must not synchronously
+// reenter the Service that invoked it: reentry will deadlock. Go cannot reliably
+// identify the calling goroutine, so the Service cannot fail fast instead.
 type Service struct {
 	callMu    sync.Mutex
 	native    *nativeService
 	callbacks *callbackAdapter
-	active    *atomic.Bool
+
+	// beforeCallMuLockForTest is a per-service test hook invoked immediately
+	// before a public call waits on callMu.
+	beforeCallMuLockForTest func()
 }
 
 // NewService initializes the native library and creates a service. On Unix the
@@ -33,16 +39,17 @@ func NewService(lifecycle Lifecycle, keys KeyProvider, observer Observer, native
 	if err != nil {
 		return nil, err
 	}
-	service := &Service{native: native, callbacks: callbacks, active: &callbacks.active}
+	service := &Service{native: native, callbacks: callbacks}
 	runtime.SetFinalizer(service, finalizeService)
 	return service, nil
 }
 
 // Issue creates and stores a challenge, returning only its public portion.
 func (service *Service) Issue(request IssueRequest) (PublicChallenge, error) {
-	if service == nil || service.callbackActive() {
+	if service == nil {
 		return PublicChallenge{}, errorForStatus(100)
 	}
+	service.notifyBeforeCallMuLockForTest()
 	service.callMu.Lock()
 	defer service.callMu.Unlock()
 	if service.native == nil || !validIssueRequest(request) {
@@ -64,9 +71,10 @@ func (service *Service) Issue(request IssueRequest) (PublicChallenge, error) {
 // Verify checks one submission. Lifecycle rejection is returned as an outcome;
 // native failures are returned as stable AgentGateError values.
 func (service *Service) Verify(submission Submission, binding []byte) (VerificationOutcome, error) {
-	if service == nil || service.callbackActive() {
+	if service == nil {
 		return VerificationOutcome{}, errorForStatus(100)
 	}
+	service.notifyBeforeCallMuLockForTest()
 	service.callMu.Lock()
 	defer service.callMu.Unlock()
 	if service.native == nil || len(binding) == 0 || len(binding) > maxBindingBytes {
@@ -87,13 +95,20 @@ func (service *Service) Verify(submission Submission, binding []byte) (Verificat
 	return outcome, nil
 }
 
-// Close destroys the native service exactly once. Calls made from a callback
-// fail fast; an external call that reaches the service lock waits for in-flight work.
+// Close destroys the native service exactly once. Concurrent external calls wait
+// for in-flight work to finish.
 func (service *Service) Close() error {
-	if service == nil || service.callbackActive() {
+	if service == nil {
 		return errorForStatus(100)
 	}
+	service.notifyBeforeCallMuLockForTest()
 	return service.closeWaitingForInflight()
+}
+
+func (service *Service) notifyBeforeCallMuLockForTest() {
+	if hook := service.beforeCallMuLockForTest; hook != nil {
+		hook()
+	}
 }
 
 func (service *Service) closeWaitingForInflight() error {
@@ -111,10 +126,6 @@ func (service *Service) closeWaitingForInflight() error {
 	service.callbacks = nil
 	runtime.SetFinalizer(service, nil)
 	return nil
-}
-
-func (service *Service) callbackActive() bool {
-	return service.active != nil && service.active.Load()
 }
 
 func finalizeService(service *Service) {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -68,6 +69,92 @@ func validServiceProviders() (*serviceLifecycle, *serviceKeys) {
 	return &serviceLifecycle{}, &serviceKeys{activeFn: func() ActiveKeyResult {
 		return ActiveKeyResult{Status: KeyStatusOK, KeyID: "active", Key: bytes.Repeat([]byte{0x11}, 32)}
 	}}
+}
+
+const serviceCallDeadline = 3 * time.Second
+
+func awaitServiceSignal(t *testing.T, signal <-chan struct{}, name string) {
+	t.Helper()
+	select {
+	case <-signal:
+	case <-time.After(serviceCallDeadline):
+		t.Fatalf("timed out waiting for %s", name)
+	}
+}
+
+func awaitServiceRelease(t *testing.T, signal <-chan struct{}, name string) {
+	t.Helper()
+	select {
+	case <-signal:
+	case <-time.After(serviceCallDeadline):
+		t.Errorf("timed out waiting for %s", name)
+	}
+}
+
+func awaitServiceCall(t *testing.T, done <-chan error, name string) {
+	t.Helper()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+	case <-time.After(serviceCallDeadline):
+		t.Fatalf("timed out waiting for %s", name)
+	}
+}
+
+func gateNextServiceCall(t *testing.T, service *Service) (<-chan struct{}, func()) {
+	t.Helper()
+	started := make(chan struct{})
+	proceed := make(chan struct{})
+	proceedingToLock := make(chan struct{})
+	service.beforeCallMuLockForTest = func() {
+		close(started)
+		awaitServiceRelease(t, proceed, "test call gate release")
+		close(proceedingToLock)
+	}
+	var once sync.Once
+	release := func() {
+		once.Do(func() {
+			close(proceed)
+			awaitServiceSignal(t, proceedingToLock, "call proceeding to service lock")
+			service.beforeCallMuLockForTest = nil
+		})
+	}
+	t.Cleanup(release)
+	return started, release
+}
+
+func assertServiceCallWaitsForCallback(
+	t *testing.T,
+	service *Service,
+	callbackEntered <-chan struct{},
+	releaseCallback func(),
+	inFlightCall func() error,
+	waitingCall func() error,
+) {
+	t.Helper()
+	inFlightDone := make(chan error, 1)
+	go func() { inFlightDone <- inFlightCall() }()
+	awaitServiceSignal(t, callbackEntered, "callback entry")
+
+	callStarted, releaseCall := gateNextServiceCall(t, service)
+	waitingDone := make(chan error, 1)
+	go func() { waitingDone <- waitingCall() }()
+	awaitServiceSignal(t, callStarted, "waiting call start")
+	releaseCall()
+	runtime.Gosched()
+	select {
+	case err := <-waitingDone:
+		releaseCallback()
+		awaitServiceCall(t, inFlightDone, "in-flight call")
+		t.Fatalf("waiting call returned during callback: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	releaseCallback()
+	awaitServiceCall(t, inFlightDone, "in-flight call")
+	awaitServiceCall(t, waitingDone, "waiting call")
 }
 
 func TestCallbackStatusesAndResultsHaveSafeFormatting(t *testing.T) {
@@ -231,51 +318,16 @@ func TestFinalizerPathIsBestEffortAndIdempotent(t *testing.T) {
 	}
 }
 
-func TestSameServiceCallbackReentryFailsWithoutDeadlock(t *testing.T) {
-	requireDirectLinkedNativeLibrary(t)
-	lifecycle, keys := validServiceProviders()
-	var service *Service
-	results := make(chan string, 3)
-	lifecycle.storeFn = func([]byte, []byte, AttemptLimit) LifecycleStatus {
-		request, _ := NewV1IssueRequest([]byte("nested"))
-		_, issueErr := service.Issue(request)
-		results <- stableErrorCode(issueErr)
-		_, verifyErr := service.Verify(Submission{}, []byte("nested"))
-		results <- stableErrorCode(verifyErr)
-		results <- stableErrorCode(service.Close())
-		return LifecycleStatusOK
-	}
-	var err error
-	service, err = NewService(lifecycle, keys, nil, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer service.Close()
-	request, _ := NewV1IssueRequest([]byte("binding"))
-	done := make(chan error, 1)
-	go func() { _, issueErr := service.Issue(request); done <- issueErr }()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("Issue deadlocked on callback reentry")
-	}
-	for range 3 {
-		if got := <-results; got != "invalid_argument" {
-			t.Fatalf("reentry error = %q", got)
-		}
-	}
-}
-
-func TestPublicCloseDuringCallbackFailsFastThenClosesIdempotently(t *testing.T) {
+func TestPublicCloseDuringCallbackWaitsThenClosesIdempotently(t *testing.T) {
 	requireDirectLinkedNativeLibrary(t)
 	lifecycle, keys := validServiceProviders()
 	entered, release := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	releaseCallback := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseCallback)
 	lifecycle.storeFn = func([]byte, []byte, AttemptLimit) LifecycleStatus {
 		close(entered)
-		<-release
+		awaitServiceRelease(t, release, "callback release")
 		return LifecycleStatusOK
 	}
 	service, err := NewService(lifecycle, keys, nil, "")
@@ -283,22 +335,79 @@ func TestPublicCloseDuringCallbackFailsFastThenClosesIdempotently(t *testing.T) 
 		t.Fatal(err)
 	}
 	request, _ := NewV1IssueRequest([]byte("binding"))
-	issueDone := make(chan error, 1)
-	go func() { _, e := service.Issue(request); issueDone <- e }()
-	<-entered
-	if err := service.Close(); stableErrorCode(err) != "invalid_argument" {
-		t.Fatalf("Close during callback = %v", err)
-	}
-	close(release)
-	if err := <-issueDone; err != nil {
-		t.Fatal(err)
-	}
+	assertServiceCallWaitsForCallback(t, service, entered, releaseCallback,
+		func() error { _, err := service.Issue(request); return err },
+		service.Close,
+	)
 	if err := service.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := service.Close(); err != nil {
+}
+
+func TestIssueDuringCallbackWaitsThenSucceeds(t *testing.T) {
+	requireDirectLinkedNativeLibrary(t)
+	lifecycle, keys := validServiceProviders()
+	entered, release := make(chan struct{}), make(chan struct{})
+	var blockOnce, releaseOnce sync.Once
+	releaseCallback := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseCallback)
+	lifecycle.storeFn = func([]byte, []byte, AttemptLimit) LifecycleStatus {
+		blockOnce.Do(func() {
+			close(entered)
+			awaitServiceRelease(t, release, "callback release")
+		})
+		return LifecycleStatusOK
+	}
+	service, err := NewService(lifecycle, keys, nil, "")
+	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		releaseCallback()
+		service.beforeCallMuLockForTest = nil
+		_ = service.Close()
+	})
+	request, _ := NewV1IssueRequest([]byte("binding"))
+	issue := func() error { _, err := service.Issue(request); return err }
+	assertServiceCallWaitsForCallback(t, service, entered, releaseCallback, issue, issue)
+}
+
+func TestVerifyDuringCallbackWaitsThenSucceeds(t *testing.T) {
+	requireDirectLinkedNativeLibrary(t)
+	fixture := loadGoFixture(t)
+	material, err := json.Marshal(fixture.Vectors.PrivateMaterial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := mustHex(t, fixture.Vectors.TokenHex)
+	oldKey := mustHex(t, fixture.Vectors.OldKeyHex)
+	entered, release := make(chan struct{}), make(chan struct{})
+	var blockOnce, releaseOnce sync.Once
+	releaseCallback := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseCallback)
+	lifecycle := &serviceLifecycle{beginFn: func([]byte, []byte, int64) BeginAttemptResult {
+		blockOnce.Do(func() {
+			close(entered)
+			awaitServiceRelease(t, release, "callback release")
+		})
+		return BeginAttemptResult{Status: BeginStatusOK, Material: material, Token: token}
+	}}
+	keys := &serviceKeys{byIDFn: func(string) KeyResult {
+		return KeyResult{Status: KeyStatusOK, Key: oldKey}
+	}}
+	service, err := NewService(lifecycle, keys, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		releaseCallback()
+		service.beforeCallMuLockForTest = nil
+		_ = service.Close()
+	})
+	caseFixture := fixture.Cases[0]
+	binding := mustHex(t, caseFixture.BindingHex)
+	verify := func() error { _, err := service.Verify(*caseFixture.Submission, binding); return err }
+	assertServiceCallWaitsForCallback(t, service, entered, releaseCallback, verify, verify)
 }
 
 func TestCallbackAdaptersValidateBeginAndKeyResults(t *testing.T) {
@@ -461,19 +570,26 @@ func TestConcurrentServiceCallsAreSerialized(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer service.Close()
 	request, _ := NewV1IssueRequest([]byte("binding"))
 	var wait sync.WaitGroup
 	for range 8 {
 		wait.Add(1)
 		go func() {
 			defer wait.Done()
-			if _, err := service.Issue(request); err != nil && stableErrorCode(err) != "invalid_argument" {
+			if _, err := service.Issue(request); err != nil {
 				t.Errorf("Issue: %v", err)
 			}
 		}()
 	}
-	wait.Wait()
+	done := make(chan struct{})
+	go func() {
+		wait.Wait()
+		close(done)
+	}()
+	awaitServiceSignal(t, done, "concurrent service calls")
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- service.Close() }()
+	awaitServiceCall(t, closeDone, "service close")
 	if maximum != 1 {
 		t.Fatalf("maximum concurrent callbacks = %d", maximum)
 	}
