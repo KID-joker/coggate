@@ -3,12 +3,15 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import io
+import json
 import os
 import platform
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -45,7 +48,384 @@ def complete_capabilities():
             for key, version in versions.items()}
 
 
+def target_fixture():
+    return Target.for_host("Linux", "x86_64")
+
+
+def tool_versions_fixture():
+    return {key: ".".join(str(part) for part in capability.version)
+            for key, capability in complete_capabilities().items()}
+
+
+def build_fixture_artifact(parent: Path) -> Path:
+    root = parent / "artifact"
+    (root / "include").mkdir(parents=True)
+    (root / "include/agentgate.h").write_text("fixture header\n", encoding="utf-8")
+    manifest = build_manifest(root, target_fixture(), tool_versions_fixture())
+    write_manifest(root, manifest)
+    return root
+
+
 class RunnerSelfTests(unittest.TestCase):
+    def _rewrite_manifest(self, root, manifest):
+        write_manifest(root, manifest)
+        write_checksums(root)
+
+    def _source_fixture(self, parent, target):
+        root = parent / "repo"
+        paths = [
+            "packages/ffi/include/agentgate.h",
+            f"target/release/{target.shared_name}",
+            f"target/release/{target.static_name}",
+            "bindings/go/go.mod",
+            "bindings/go/agentgate/service.go",
+            "bindings/go/examples/complete/main.go",
+            "bindings/java/target/agentgate-java-0.1.0-SNAPSHOT.jar",
+            "bindings/java/examples/Complete.java",
+            "bindings/node/package.json",
+            "bindings/node/lib/index.js",
+            "bindings/node/examples/complete.js",
+            "bindings/node/build/Release/agentgate.node",
+            f"bindings/node/build/Release/{target.shared_name}",
+            "tests/qualification/abi_probe.c",
+            "tests/qualification/abi_probe.cpp",
+        ]
+        shim = {
+            "Linux": "target/phase5c/java/libagentgate_jni.so",
+            "Darwin": "target/phase5c/java/libagentgate_jni.dylib",
+            "Windows": "target/phase5c/java/Release/agentgate_jni.dll",
+        }[target.system]
+        paths.append(shim)
+        if target.import_name is not None:
+            paths.append(f"target/release/{target.import_name}")
+        for relative in paths:
+            path = root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(f"fixture {relative}\n", encoding="utf-8")
+        return root
+
+    def test_manifest_and_checksums_are_deterministic_sorted_and_relative(self):
+        snapshots = []
+        with tempfile.TemporaryDirectory() as directory:
+            for name in ("one", "two"):
+                root = Path(directory) / name / "artifact"
+                (root / "zeta").mkdir(parents=True)
+                (root / "alpha").mkdir()
+                (root / "zeta/item.bin").write_bytes(b"zeta")
+                (root / "alpha/item.bin").write_bytes(b"alpha")
+                manifest = build_manifest(
+                    root, target_fixture(), tool_versions_fixture()
+                )
+                write_manifest(root, manifest)
+                write_checksums(root)
+                snapshots.append(
+                    (
+                        (root / "manifest.json").read_bytes(),
+                        (root / "SHA256SUMS").read_bytes(),
+                    )
+                )
+                paths = [entry["path"] for entry in manifest["files"]]
+                self.assertEqual(paths, sorted(paths))
+                self.assertTrue(all(not path.startswith("/") for path in paths))
+                self.assertTrue(all("\\" not in path for path in paths))
+            self.assertEqual(snapshots[0], snapshots[1])
+            self.assertTrue(snapshots[0][0].endswith(b"\n"))
+            self.assertTrue(snapshots[0][1].endswith(b"\n"))
+
+    def test_verification_passes_then_rejects_payload_tamper(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = build_fixture_artifact(Path(directory))
+            write_checksums(root)
+            self.assertEqual(verify_artifact(root, target_fixture()), "PASS")
+            (root / "include/agentgate.h").write_text("tampered\n", encoding="utf-8")
+            with self.assertRaisesRegex(RunnerError, "size|sha256"):
+                verify_artifact(root, target_fixture())
+
+    def test_verification_rejects_extra_missing_symlink_and_nonregular_payloads(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+            for anomaly in ("extra", "missing", "symlink", "fifo"):
+                with self.subTest(anomaly=anomaly):
+                    case = parent / anomaly
+                    case.mkdir()
+                    root = build_fixture_artifact(case)
+                    write_checksums(root)
+                    payload = root / "include/agentgate.h"
+                    if anomaly == "extra":
+                        (root / "extra.txt").write_text("extra", encoding="utf-8")
+                    elif anomaly == "missing":
+                        payload.unlink()
+                    elif anomaly == "symlink":
+                        payload.unlink()
+                        payload.symlink_to(case / "outside")
+                    else:
+                        payload.unlink()
+                        os.mkfifo(payload)
+                    with self.assertRaises(RunnerError):
+                        verify_artifact(root, target_fixture())
+
+    def test_verification_rejects_symlink_root(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+            real = build_fixture_artifact(parent / "real")
+            write_checksums(real)
+            linked = parent / "linked-artifact"
+            linked.symlink_to(real, target_is_directory=True)
+            with self.assertRaisesRegex(RunnerError, "symlink"):
+                verify_artifact(linked, target_fixture())
+
+    def test_hashing_rejects_file_replaced_by_symlink_before_open(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+            payload = parent / "payload"
+            outside = parent / "outside"
+            payload.write_bytes(b"original")
+            outside.write_bytes(b"outside")
+            real_open = os.open
+
+            def swap_before_open(path, flags, *args, **kwargs):
+                if Path(path).name == payload.name and not payload.is_symlink():
+                    payload.unlink()
+                    payload.symlink_to(outside)
+                return real_open(path, flags, *args, **kwargs)
+
+            with mock.patch.object(
+                os, "open", side_effect=swap_before_open
+            ), self.assertRaises(RunnerError):
+                sha256_file(payload, trusted_root=parent)
+
+    def test_manifest_and_checksums_reject_replacement_before_open(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = build_fixture_artifact(Path(directory))
+            write_checksums(root)
+            outside = Path(directory) / "outside"
+            outside.write_text("outside", encoding="utf-8")
+            real_open = os.open
+            for name, operation in (
+                (MANIFEST_NAME, lambda: _load_manifest(root)),
+                (CHECKSUM_NAME, lambda: parse_checksums(root / CHECKSUM_NAME, root)),
+            ):
+                with self.subTest(name=name):
+                    path = root / name
+                    original = path.read_bytes()
+
+                    def swap_before_open(candidate, flags, *args, **kwargs):
+                        if Path(candidate).name == path.name and not path.is_symlink():
+                            path.unlink()
+                            path.symlink_to(outside)
+                        return real_open(candidate, flags, *args, **kwargs)
+
+                    with mock.patch.object(
+                        os, "open", side_effect=swap_before_open
+                    ), self.assertRaises(RunnerError):
+                        operation()
+                    path.unlink()
+                    path.write_bytes(original)
+
+    def test_hashing_rejects_parent_directory_replaced_before_open(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "artifact"
+            parent = root / "payload"
+            outside = Path(directory) / "outside"
+            parent.mkdir(parents=True)
+            outside.mkdir()
+            (parent / "file").write_bytes(b"inside")
+            (outside / "file").write_bytes(b"outside")
+            displaced = root / "payload-original"
+            real_open = os.open
+
+            def swap_parent(candidate, flags, *args, **kwargs):
+                if Path(candidate).name == "file" and not parent.is_symlink():
+                    parent.rename(displaced)
+                    parent.symlink_to(outside, target_is_directory=True)
+                return real_open(candidate, flags, *args, **kwargs)
+
+            with mock.patch.object(
+                os, "open", side_effect=swap_parent
+            ), self.assertRaises(RunnerError):
+                sha256_file(parent / "file", trusted_root=root)
+
+    def test_manifest_rejects_escaping_absolute_duplicate_and_reserved_paths(self):
+        invalid_paths = (
+            "../escape",
+            "/absolute",
+            "C:/absolute",
+            r"C:\absolute",
+            "manifest.json",
+            "SHA256SUMS",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+            for index, invalid in enumerate(invalid_paths):
+                with self.subTest(path=invalid):
+                    root = build_fixture_artifact(parent / str(index))
+                    manifest = json.loads((root / "manifest.json").read_text())
+                    manifest["files"][0]["path"] = invalid
+                    self._rewrite_manifest(root, manifest)
+                    with self.assertRaises(RunnerError):
+                        verify_artifact(root, target_fixture())
+            root = build_fixture_artifact(parent / "duplicate")
+            manifest = json.loads((root / "manifest.json").read_text())
+            manifest["files"].append(dict(manifest["files"][0]))
+            self._rewrite_manifest(root, manifest)
+            with self.assertRaisesRegex(RunnerError, "duplicate"):
+                verify_artifact(root, target_fixture())
+
+    def test_manifest_rejects_bad_hash_size_schema_json_and_target(self):
+        mutations = {
+            "malformed sha": lambda value: value["files"][0].update(sha256="A" * 64),
+            "wrong size": lambda value: value["files"][0].update(size=999),
+            "wrong hash": lambda value: value["files"][0].update(sha256="0" * 64),
+            "schema": lambda value: value.update(schema_version=2),
+            "target": lambda value: value["target"].update(triple="forged-target"),
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+            for name, mutate in mutations.items():
+                with self.subTest(name=name):
+                    root = build_fixture_artifact(parent / name)
+                    manifest = json.loads((root / "manifest.json").read_text())
+                    mutate(manifest)
+                    self._rewrite_manifest(root, manifest)
+                    with self.assertRaises(RunnerError):
+                        verify_artifact(root, target_fixture())
+            root = build_fixture_artifact(parent / "json")
+            (root / "manifest.json").write_text("{malformed", encoding="utf-8")
+            write_checksums(root)
+            with self.assertRaisesRegex(RunnerError, "JSON"):
+                verify_artifact(root, target_fixture())
+
+    def test_checksum_rejects_duplicate_mismatch_missing_and_extra_entries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+            for anomaly in ("duplicate", "mismatch", "missing", "extra"):
+                with self.subTest(anomaly=anomaly):
+                    root = build_fixture_artifact(parent / anomaly)
+                    write_checksums(root)
+                    checksum = root / "SHA256SUMS"
+                    lines = checksum.read_text(encoding="utf-8").splitlines()
+                    if anomaly == "duplicate":
+                        lines.append(lines[0])
+                    elif anomaly == "mismatch":
+                        lines[0] = "0" * 64 + lines[0][64:]
+                    elif anomaly == "missing":
+                        lines.pop()
+                    else:
+                        lines.append("0" * 64 + "  unlisted.txt")
+                    checksum.write_text("\n".join(lines) + "\n", encoding="utf-8")
+                    with self.assertRaises(RunnerError):
+                        verify_artifact(root, target_fixture())
+
+    def test_safe_copy_rejects_symlink_sources_destinations_and_escape(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+            artifact = parent / "artifact"
+            artifact.mkdir()
+            source = parent / "source"
+            source.write_text("payload", encoding="utf-8")
+            linked_source = parent / "linked-source"
+            linked_source.symlink_to(source)
+            with self.assertRaisesRegex(RunnerError, "symlink"):
+                safe_copy_file(linked_source, artifact, "file")
+            destination = artifact / "file"
+            destination.symlink_to(parent / "outside")
+            with self.assertRaisesRegex(RunnerError, "symlink"):
+                safe_copy_file(source, artifact, "file")
+            with self.assertRaises(RunnerError):
+                safe_copy_file(source, artifact, "../escape")
+
+    def test_collection_requires_all_outputs_windows_import_and_exact_main_jar(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+            linux_root = self._source_fixture(parent / "linux", target_fixture())
+            sources = collect_artifact_sources(linux_root, target_fixture())
+            self.assertIn("java/agentgate-java-0.1.0-SNAPSHOT.jar", sources)
+            (linux_root / "bindings/java/target/agentgate-java-0.1.0-SNAPSHOT.jar").unlink()
+            with self.assertRaisesRegex(RunnerError, "JAR"):
+                collect_artifact_sources(linux_root, target_fixture())
+
+            windows = Target.for_host("Windows", "AMD64")
+            windows_root = self._source_fixture(parent / "windows", windows)
+            (windows_root / f"target/release/{windows.import_name}").unlink()
+            with self.assertRaisesRegex(RunnerError, "native library"):
+                collect_artifact_sources(windows_root, windows)
+
+            java_target = parent / "jars"
+            java_target.mkdir()
+            for name in (
+                "agentgate-java-0.1.0-SNAPSHOT-sources.jar",
+                "agentgate-java-0.1.0-SNAPSHOT-javadoc.jar",
+                "original-agentgate-java-0.1.0-SNAPSHOT.jar",
+                "agentgate-java-0.1.0-SNAPSHOT.jar",
+            ):
+                (java_target / name).write_text(name, encoding="utf-8")
+            self.assertEqual(
+                select_maven_main_jar(java_target).name,
+                "agentgate-java-0.1.0-SNAPSHOT.jar",
+            )
+            (java_target / "agentgate-java-0.1.0.jar").write_text("other", encoding="utf-8")
+            with self.assertRaisesRegex(RunnerError, "JAR"):
+                select_maven_main_jar(java_target)
+
+    def test_collection_layout_and_jni_mapping_are_exact_on_every_platform(self):
+        expected_shims = {
+            "Linux": "libagentgate_jni.so",
+            "Darwin": "libagentgate_jni.dylib",
+            "Windows": "agentgate_jni.dll",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+            for system, arch in (("Linux", "x86_64"), ("Darwin", "x86_64"), ("Windows", "AMD64")):
+                with self.subTest(system=system):
+                    target = Target.for_host(system, arch)
+                    root = self._source_fixture(parent / system, target)
+                    paths = set(collect_artifact_sources(root, target))
+                    required = {
+                        "include/agentgate.h",
+                        f"native/{target.shared_name}",
+                        f"native/{target.static_name}",
+                        "go/go.mod",
+                        "go/agentgate/service.go",
+                        "go/examples/complete/main.go",
+                        "java/agentgate-java-0.1.0-SNAPSHOT.jar",
+                        f"java/{expected_shims[system]}",
+                        f"java/{target.shared_name}",
+                        "java/examples/Complete.java",
+                        "node/package.json",
+                        "node/lib/index.js",
+                        "node/examples/complete.js",
+                        "node/build/Release/agentgate.node",
+                        f"node/build/Release/{target.shared_name}",
+                        "smoke/abi_probe.c",
+                        "smoke/abi_probe.cpp",
+                    }
+                    if target.import_name:
+                        required.add(f"native/{target.import_name}")
+                    self.assertEqual(paths, required)
+
+    def test_assembled_manifest_contains_no_sensitive_or_host_material(self):
+        sentinels = (
+            "PRIVATE_MATERIAL_SENTINEL",
+            "ANSWER_SENTINEL",
+            "KEY_SENTINEL",
+            "CALLBACK_SENTINEL",
+            "ENVIRONMENT_SECRET_SENTINEL",
+        )
+        with tempfile.TemporaryDirectory() as directory, mock.patch.dict(
+            os.environ, {"AGENTGATE_SECRET": sentinels[-1]}, clear=False
+        ):
+            parent = Path(directory)
+            root = self._source_fixture(parent, target_fixture())
+            header = root / "packages/ffi/include/agentgate.h"
+            header.write_text("\n".join(sentinels[:-1]), encoding="utf-8")
+            artifact = assemble_artifact(
+                root, parent / "output", target_fixture(), tool_versions_fixture()
+            )
+            manifest_bytes = (artifact / "manifest.json").read_bytes()
+            self.assertNotIn(str(root).encode(), manifest_bytes)
+            for sentinel in sentinels:
+                self.assertNotIn(sentinel.encode(), manifest_bytes)
+            self.assertEqual(verify_artifact(artifact, target_fixture()), "PASS")
     def test_abi_probes_reference_every_frozen_export(self):
         for extension in ("c", "cpp"):
             source = (
@@ -350,20 +730,52 @@ Dump of file agentgate_ffi.dll
         )
         self.assertLess(looked_up.index("python3"), looked_up.index("python"))
 
-    def test_compiler_capabilities_require_presence_without_version_probe(self):
+    def test_compiler_capabilities_record_platform_specific_versions(self):
         version_output = mock.Mock(
-            side_effect=AssertionError("compiler version probe is not required")
+            return_value="Microsoft (R) C/C++ Optimizing Compiler Version 19.42.34435"
         )
         capabilities = detect_capabilities(
             "Windows",
             lambda name: "/tools/cl" if name == "cl" else None,
             version_output,
         )
-        self.assertEqual(capabilities["cc"], Capability("C compiler", "/tools/cl", None))
         self.assertEqual(
-            capabilities["cxx"], Capability("C++ compiler", "/tools/cl", None)
+            capabilities["cc"],
+            Capability("C compiler", "/tools/cl", (19, 42, 34435)),
         )
-        version_output.assert_not_called()
+        self.assertEqual(
+            capabilities["cxx"],
+            Capability("C++ compiler", "/tools/cl", (19, 42, 34435)),
+        )
+        self.assertEqual(
+            version_output.call_args_list,
+            [mock.call("/tools/cl", "/?"), mock.call("/tools/cl", "/?")],
+        )
+
+    def test_tool_metadata_requires_every_numeric_bounded_version(self):
+        versions = tool_versions_fixture()
+        self.assertEqual(set(versions), set(CAPABILITY_NAMES))
+        self.assertEqual(versions["cc"], "17.0.0")
+        self.assertEqual(versions["cxx"], "17.0.0")
+        capabilities = complete_capabilities()
+        capabilities["cc"] = Capability("C compiler", "/tools/cc", None)
+        with self.assertRaisesRegex(RunnerError, "C compiler version"):
+            tool_versions_from_capabilities(capabilities)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "artifact"
+            root.mkdir()
+            (root / "payload").write_text("payload", encoding="utf-8")
+            with self.assertRaisesRegex(RunnerError, "tool metadata"):
+                build_manifest(root, target_fixture(), {})
+
+    def test_verification_rejects_incomplete_tool_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = build_fixture_artifact(Path(directory))
+            manifest = json.loads((root / MANIFEST_NAME).read_text(encoding="utf-8"))
+            del manifest["tools"]["cxx"]
+            self._rewrite_manifest(root, manifest)
+            with self.assertRaisesRegex(RunnerError, "tools metadata"):
+                verify_artifact(root, target_fixture())
 
     def test_qualification_plan_is_complete_and_ordered(self):
         artifact_directory = Path(
@@ -399,6 +811,19 @@ Dump of file agentgate_ffi.dll
                 dict(command.env)["CARGO_TARGET_DIR"],
                 str(artifact_directory.parent),
             )
+        phase5c_index = next(
+            index for index, command in enumerate(commands)
+            if "test-phase5c.py" in " ".join(command)
+        )
+        maven_package_index = commands.index(
+            (
+                "/tools/maven",
+                "-f",
+                "/repo/bindings/java/pom.xml",
+                "package",
+            )
+        )
+        self.assertLess(phase5c_index, maven_package_index)
 
     def test_cargo_target_directory_overrides_conflicting_parent_environment(self):
         artifact_directory = Path("/controlled target/release")
@@ -563,7 +988,7 @@ Dump of file agentgate_ffi.dll
         self.assertEqual(len(temporary_roots), 1)
         self.assertFalse(temporary_roots[0].exists())
 
-    def test_dry_run_cleans_temporary_probe_plan_without_staging(self):
+    def test_dry_run_plans_without_temporary_directory_or_staging(self):
         temporary_roots = []
 
         def temporary_directory(**kwargs):
@@ -594,8 +1019,7 @@ Dump of file agentgate_ffi.dll
         runner.assert_not_called()
         copy_file.assert_not_called()
         path_is_file.assert_not_called()
-        self.assertEqual(len(temporary_roots), 1)
-        self.assertFalse(temporary_roots[0].exists())
+        self.assertEqual(temporary_roots, [])
 
     def test_artifact_gate_tracks_phase5b_boundary_without_magic_index(self):
         events = []
@@ -664,8 +1088,6 @@ Dump of file agentgate_ffi.dll
             "Linux", paths.get, lambda path, *args: outputs[(path, *args)]
         )
         expected = complete_capabilities()
-        expected["cc"] = Capability("C compiler", "/tools/cc", None)
-        expected["cxx"] = Capability("C++ compiler", "/tools/cxx", None)
         self.assertEqual(
             {key: capability.version for key, capability in capabilities.items()},
             {key: capability.version for key, capability in expected.items()},
@@ -682,6 +1104,15 @@ Dump of file agentgate_ffi.dll
                 'JAVA_TOOL_OPTIONS: -Dbuild.year=2022\nopenjdk version "17.0.12"',
             ),
             (17, 0, 12),
+        )
+        self.assertEqual(
+            parse_compiler_version(
+                "warning: build year 2022\nApple clang version 17.0.0"
+            ),
+            (17, 0, 0),
+        )
+        self.assertIsNone(
+            parse_compiler_version("warning: fallback compiler 99.0.0")
         )
         self.assertEqual(
             parse_tool_version(
@@ -872,11 +1303,97 @@ Dump of file agentgate_ffi.dll
             main(["--stage", "artifact"], system="Darwin", arch="arm64")
 
     def test_x86_64_unimplemented_stages_fail_closed(self):
-        for stage in ("all", "sanitizers", "artifact"):
+        for stage in ("all", "sanitizers"):
             with self.subTest(stage=stage), self.assertRaisesRegex(
                 RunnerError, f"Phase 5D stage is not implemented: {stage}"
             ):
                 main(["--stage", stage], system="Linux", arch="x86_64")
+
+    def test_artifact_stage_assembles_then_verifies_before_pass_output(self):
+        artifact = Path("/output/artifact")
+        assembler = mock.Mock(return_value=artifact)
+        verifier = mock.Mock(return_value="PASS")
+        stdout = io.StringIO()
+        with mock.patch.object(
+            sys.modules[__name__], "detect_capabilities",
+            return_value=complete_capabilities(),
+        ), mock.patch.object(
+            sys.modules[__name__], "assemble_artifact", assembler
+        ), mock.patch.object(
+            sys.modules[__name__], "verify_artifact", verifier
+        ), contextlib.redirect_stdout(stdout):
+            self.assertEqual(
+                main(
+                    ["--stage", "artifact", "--output", "/output"],
+                    system="Linux",
+                    arch="x86_64",
+                    root=Path("/repo"),
+                ),
+                0,
+            )
+        assembler.assert_called_once()
+        verifier.assert_called_once_with(artifact, target_fixture())
+        self.assertIn("qualification=NOT_RUN artifact=PASS", stdout.getvalue())
+
+    def test_artifact_dry_run_plans_without_filesystem_writes(self):
+        assembler = mock.Mock(side_effect=AssertionError("dry run assembled artifact"))
+        stdout = io.StringIO()
+        with mock.patch.object(
+            sys.modules[__name__], "detect_capabilities",
+            return_value=complete_capabilities(),
+        ), mock.patch.object(
+            sys.modules[__name__], "assemble_artifact", assembler
+        ), contextlib.redirect_stdout(stdout):
+            self.assertEqual(
+                main(
+                    ["--stage", "artifact", "--dry-run", "--output", "/output"],
+                    system="Linux",
+                    arch="x86_64",
+                    root=Path("/repo"),
+                ),
+                0,
+            )
+        assembler.assert_not_called()
+        self.assertIn("qualification=NOT_RUN artifact=PLANNED", stdout.getvalue())
+
+    def test_qualification_assembles_and_verifies_before_reporting_pass(self):
+        artifact = Path("/output/artifact")
+        events = []
+
+        def qualify(*args, **kwargs):
+            events.append("qualification")
+            return "PASS"
+
+        def assemble(*args, **kwargs):
+            events.append("assembly")
+            return artifact
+
+        def verify(*args, **kwargs):
+            events.append("verification")
+            return "PASS"
+
+        stdout = io.StringIO()
+        with mock.patch.object(
+            sys.modules[__name__], "detect_capabilities",
+            return_value=complete_capabilities(),
+        ), mock.patch.object(
+            sys.modules[__name__], "run_qualification", qualify
+        ), mock.patch.object(
+            sys.modules[__name__], "assemble_artifact", assemble
+        ), mock.patch.object(
+            sys.modules[__name__], "verify_artifact", verify
+        ), contextlib.redirect_stdout(stdout):
+            self.assertEqual(
+                main(
+                    ["--stage", "qualification", "--output", "/output"],
+                    system="Linux",
+                    arch="x86_64",
+                    root=Path("/repo"),
+                ),
+                0,
+            )
+        self.assertEqual(events, ["qualification", "assembly", "verification"])
+        self.assertIn("qualification=PASS artifact=PASS", stdout.getvalue())
 
     def test_all_fails_before_discovery_execution_or_success_output(self):
         tool_lookup = mock.Mock(side_effect=AssertionError("unexpected tool lookup"))
@@ -1005,6 +1522,31 @@ PLATFORM_TARGETS = MappingProxyType(
     }
 )
 
+AGENTGATE_VERSION = "0.1.0"
+ABI_VERSION = 1
+MANIFEST_NAME = "manifest.json"
+CHECKSUM_NAME = "SHA256SUMS"
+RESERVED_ARTIFACT_NAMES = frozenset({MANIFEST_NAME, CHECKSUM_NAME})
+SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+WINDOWS_ABSOLUTE_PATTERN = re.compile(r"^[A-Za-z]:[\\/]")
+JNI_SHIM_NAMES = MappingProxyType(
+    {
+        "Linux": "libagentgate_jni.so",
+        "Darwin": "libagentgate_jni.dylib",
+        "Windows": "agentgate_jni.dll",
+    }
+)
+MAX_REPORTED_PATHS = 5
+MAX_REPORTED_PATH_LENGTH = 96
+MAX_TOOL_VERSION_LENGTH = 64
+MAX_METADATA_BYTES = 8 * 1024 * 1024
+REQUIRED_TOOL_KEYS = frozenset(CAPABILITY_NAMES)
+SECURE_DIR_FD_SUPPORTED = (
+    os.open in os.supports_dir_fd
+    and os.stat in os.supports_dir_fd
+    and getattr(os, "O_DIRECTORY", 0) != 0
+)
+
 
 @dataclass(frozen=True)
 class Target:
@@ -1085,6 +1627,21 @@ TOOL_VERSION_PATTERNS = {
     "node_gyp": r"^v(\d+(?:\.\d+)*)",
 }
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+COMPILER_VERSION_PATTERNS = (
+    re.compile(
+        r"^(?:Apple\s+)?clang version\s+(\d+(?:\.\d+)*)",
+        flags=re.IGNORECASE | re.MULTILINE,
+    ),
+    re.compile(
+        r"^(?:gcc|g\+\+|cc|c\+\+)(?:\s+\([^\r\n]*\))?\s+(\d+(?:\.\d+)*)",
+        flags=re.IGNORECASE | re.MULTILINE,
+    ),
+    re.compile(
+        r"^Microsoft \(R\) C/C\+\+ Optimizing Compiler Version\s+"
+        r"(\d+(?:\.\d+)*)",
+        flags=re.IGNORECASE | re.MULTILINE,
+    ),
+)
 
 
 def parse_tool_version(tool: str, output: str) -> tuple[int, ...] | None:
@@ -1098,6 +1655,17 @@ def parse_tool_version(tool: str, output: str) -> tuple[int, ...] | None:
     if match is None:
         return None
     return parse_version(match.group(1))
+
+
+def parse_compiler_version(output: str) -> tuple[int, ...] | None:
+    normalized_output = "\n".join(
+        line.lstrip() for line in ANSI_ESCAPE.sub("", output).splitlines()
+    )
+    for pattern in COMPILER_VERSION_PATTERNS:
+        match = pattern.search(normalized_output)
+        if match is not None:
+            return tuple(int(part) for part in match.group(1).split("."))
+    return None
 
 
 def _bounded_diagnostic(output: str, limit: int = 512) -> str:
@@ -1167,6 +1735,8 @@ def detect_capabilities(
         "maven": ("--version",),
         "node": ("--version",),
         "node_gyp": ("--version",),
+        "cc": ("/?",) if normalized_system == "Windows" else ("--version",),
+        "cxx": ("/?",) if normalized_system == "Windows" else ("--version",),
     }
     paths = {key: tool_lookup(executable) for key, executable in executables.items()}
     if paths["python"] is None:
@@ -1176,11 +1746,12 @@ def detect_capabilities(
         path = paths[key]
         if path is None:
             return Capability(CAPABILITY_NAMES[key], None, None)
-        if key in {"cc", "cxx"}:
-            return Capability(CAPABILITY_NAMES[key], path, None)
         try:
-            version = parse_tool_version(
-                key, version_output(path, *version_arguments[key])
+            output = version_output(path, *version_arguments[key])
+            version = (
+                parse_compiler_version(output)
+                if key in {"cc", "cxx"}
+                else parse_tool_version(key, output)
             )
         except (OSError, subprocess.SubprocessError):
             version = None
@@ -1493,6 +2064,15 @@ def qualification_plan(
             root,
             compiler_environment,
         ),
+        PlannedCommand(
+            (
+                capabilities["maven"].path or "mvn",
+                "-f",
+                str(root / "bindings" / "java" / "pom.xml"),
+                "package",
+            ),
+            root,
+        ),
     ]
     return cargo_commands + native_qualification_commands + wrapper_commands
 
@@ -1510,6 +2090,793 @@ def validate_artifacts(
         path = Path(artifact_directory) / name
         if not path_is_file(path):
             raise RunnerError(f"native library not found: {path}")
+
+
+def _format_paths(paths) -> str:
+    values = sorted(str(path) for path in paths)
+    shown = []
+    for value in values[:MAX_REPORTED_PATHS]:
+        if len(value) > MAX_REPORTED_PATH_LENGTH:
+            value = value[: MAX_REPORTED_PATH_LENGTH - 3] + "..."
+        shown.append(value)
+    suffix = ", ..." if len(values) > MAX_REPORTED_PATHS else ""
+    return f"{', '.join(shown)}{suffix} ({len(values)} total)"
+
+
+def normalize_artifact_path(value: str) -> str:
+    if not isinstance(value, str) or not value or "\x00" in value:
+        raise RunnerError("artifact path must be a non-empty string")
+    if (
+        value.startswith(("/", "\\"))
+        or WINDOWS_ABSOLUTE_PATTERN.match(value)
+        or "\\" in value
+    ):
+        raise RunnerError(f"artifact path must be relative POSIX: {_bounded_diagnostic(value)}")
+    parts = value.split("/")
+    if any(part in {"", ".", ".."} for part in parts):
+        raise RunnerError(f"artifact path is not normalized: {_bounded_diagnostic(value)}")
+    if any(part in RESERVED_ARTIFACT_NAMES for part in parts):
+        raise RunnerError(f"manifest cannot name reserved artifact file: {value}")
+    normalized = Path(*parts).as_posix()
+    if normalized != value:
+        raise RunnerError(f"artifact path is not normalized: {_bounded_diagnostic(value)}")
+    return normalized
+
+
+def _path_mode(path: Path) -> int:
+    try:
+        return path.lstat().st_mode
+    except OSError as error:
+        raise RunnerError(f"artifact path is missing or inaccessible: {path}") from error
+
+
+def _require_directory(path: Path, label: str) -> None:
+    mode = _path_mode(path)
+    if stat.S_ISLNK(mode):
+        raise RunnerError(f"{label} is a symlink: {path}")
+    if not stat.S_ISDIR(mode):
+        raise RunnerError(f"{label} is not a directory: {path}")
+
+
+def _require_regular_file(path: Path, label: str = "artifact file") -> None:
+    mode = _path_mode(path)
+    if stat.S_ISLNK(mode):
+        raise RunnerError(f"{label} is a symlink: {path}")
+    if not stat.S_ISREG(mode):
+        raise RunnerError(f"{label} is not a regular file: {path}")
+
+
+@contextlib.contextmanager
+def _open_regular_file(
+    path: Path,
+    label: str = "artifact file",
+    *,
+    trusted_root: Path | None = None,
+    max_bytes: int | None = None,
+):
+    path = Path(path)
+    root = path.parent if trusted_root is None else Path(trusted_root)
+    absolute_path = path.absolute()
+    absolute_root = root.absolute()
+    try:
+        relative = absolute_path.relative_to(absolute_root)
+    except ValueError as error:
+        raise RunnerError(f"{label} escapes its trusted root: {path}") from error
+    if not relative.parts or any(part in {"", ".", ".."} for part in relative.parts):
+        raise RunnerError(f"{label} path is not normalized: {path}")
+
+    read_flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_CLOEXEC", 0)
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    directory_flag = getattr(os, "O_DIRECTORY", 0)
+    supports_descriptor_walk = SECURE_DIR_FD_SUPPORTED
+    descriptors = []
+    source = None
+
+    def directory_identity(value):
+        return (value.st_dev, value.st_ino, stat.S_IFMT(value.st_mode))
+
+    def file_identity(value):
+        return (
+            value.st_dev,
+            value.st_ino,
+            stat.S_IFMT(value.st_mode),
+            value.st_size,
+            value.st_mtime_ns,
+        )
+
+    try:
+        if supports_descriptor_walk:
+            root_before = absolute_root.lstat()
+            if stat.S_ISLNK(root_before.st_mode) or not stat.S_ISDIR(root_before.st_mode):
+                raise RunnerError(f"trusted root is not a real directory: {root}")
+            root_descriptor = os.open(
+                absolute_root,
+                read_flags | directory_flag | nofollow,
+            )
+            descriptors.append(root_descriptor)
+            if directory_identity(os.fstat(root_descriptor)) != directory_identity(root_before):
+                raise RunnerError(f"trusted root changed during validation: {root}")
+            directory_links = []
+            parent_descriptor = root_descriptor
+            for component in relative.parts[:-1]:
+                before = os.stat(
+                    component, dir_fd=parent_descriptor, follow_symlinks=False
+                )
+                if stat.S_ISLNK(before.st_mode) or not stat.S_ISDIR(before.st_mode):
+                    raise RunnerError(f"{label} parent is not a real directory: {path}")
+                child_descriptor = os.open(
+                    component,
+                    read_flags | directory_flag | nofollow,
+                    dir_fd=parent_descriptor,
+                )
+                descriptors.append(child_descriptor)
+                if directory_identity(os.fstat(child_descriptor)) != directory_identity(before):
+                    raise RunnerError(f"{label} parent changed during validation: {path}")
+                directory_links.append((parent_descriptor, component, before))
+                parent_descriptor = child_descriptor
+            filename = relative.parts[-1]
+            before = os.stat(filename, dir_fd=parent_descriptor, follow_symlinks=False)
+            if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+                raise RunnerError(f"{label} is not a regular file: {path}")
+            file_descriptor = os.open(
+                filename,
+                read_flags | nofollow,
+                dir_fd=parent_descriptor,
+            )
+            descriptors.append(file_descriptor)
+            opened = os.fstat(file_descriptor)
+            if not stat.S_ISREG(opened.st_mode) or file_identity(opened) != file_identity(before):
+                raise RunnerError(f"{label} changed during validation: {path}")
+            if max_bytes is not None and opened.st_size > max_bytes:
+                raise RunnerError(f"{label} exceeds the size limit")
+            source = os.fdopen(file_descriptor, "rb", closefd=False)
+            yield source
+            after_open = os.fstat(file_descriptor)
+            after_path = os.stat(
+                filename, dir_fd=parent_descriptor, follow_symlinks=False
+            )
+            if (
+                file_identity(after_open) != file_identity(opened)
+                or file_identity(after_path) != file_identity(before)
+            ):
+                raise RunnerError(f"{label} changed while being read: {path}")
+            for parent_fd, component, expected in directory_links:
+                current = os.stat(
+                    component, dir_fd=parent_fd, follow_symlinks=False
+                )
+                if directory_identity(current) != directory_identity(expected):
+                    raise RunnerError(f"{label} parent changed while being read: {path}")
+            root_after = absolute_root.lstat()
+            if directory_identity(root_after) != directory_identity(root_before):
+                raise RunnerError(f"trusted root changed while reading {label}: {root}")
+        else:
+            parents = []
+            current = absolute_root
+            root_before = current.lstat()
+            if stat.S_ISLNK(root_before.st_mode) or not stat.S_ISDIR(root_before.st_mode):
+                raise RunnerError(f"trusted root is not a real directory: {root}")
+            parents.append((current, root_before))
+            for component in relative.parts[:-1]:
+                current = current / component
+                before_parent = current.lstat()
+                if stat.S_ISLNK(before_parent.st_mode) or not stat.S_ISDIR(before_parent.st_mode):
+                    raise RunnerError(f"{label} parent is not a real directory: {path}")
+                parents.append((current, before_parent))
+            before = absolute_path.lstat()
+            if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+                raise RunnerError(f"{label} is not a regular file: {path}")
+            file_descriptor = os.open(absolute_path, read_flags | nofollow)
+            descriptors.append(file_descriptor)
+            opened = os.fstat(file_descriptor)
+            current_file = absolute_path.lstat()
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or file_identity(opened) != file_identity(before)
+                or file_identity(current_file) != file_identity(before)
+            ):
+                raise RunnerError(f"{label} changed during validation: {path}")
+            for parent_path, expected in parents:
+                if directory_identity(parent_path.lstat()) != directory_identity(expected):
+                    raise RunnerError(f"{label} parent changed during validation: {path}")
+            if max_bytes is not None and opened.st_size > max_bytes:
+                raise RunnerError(f"{label} exceeds the size limit")
+            source = os.fdopen(file_descriptor, "rb", closefd=False)
+            yield source
+            if (
+                file_identity(os.fstat(file_descriptor)) != file_identity(opened)
+                or file_identity(absolute_path.lstat()) != file_identity(before)
+            ):
+                raise RunnerError(f"{label} changed while being read: {path}")
+            for parent_path, expected in parents:
+                if directory_identity(parent_path.lstat()) != directory_identity(expected):
+                    raise RunnerError(f"{label} parent changed while being read: {path}")
+    except RunnerError:
+        raise
+    except OSError as error:
+        raise RunnerError(
+            f"unable to open {label} without following symlinks: {path}"
+        ) from error
+    finally:
+        if source is not None:
+            source.close()
+        for descriptor in reversed(descriptors):
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+
+
+def _read_regular_bytes(path: Path, label: str, trusted_root: Path) -> bytes:
+    try:
+        with _open_regular_file(
+            path, label, trusted_root=trusted_root, max_bytes=MAX_METADATA_BYTES
+        ) as source:
+            data = source.read(MAX_METADATA_BYTES + 1)
+            if len(data) > MAX_METADATA_BYTES:
+                raise RunnerError(f"{label} exceeds the size limit")
+            return data
+    except OSError as error:
+        raise RunnerError(f"unable to read {label}: {path}") from error
+
+
+def _walk_regular_files(root: Path, *, exclude_metadata: bool) -> list[tuple[str, Path]]:
+    root = Path(root)
+    _require_directory(root, "artifact root")
+    files = []
+    pending = [(root, "")]
+    while pending:
+        directory, prefix = pending.pop()
+        try:
+            children = sorted(directory.iterdir(), key=lambda child: child.name)
+        except OSError as error:
+            raise RunnerError(f"unable to inspect artifact directory: {directory}") from error
+        for child in children:
+            relative = f"{prefix}/{child.name}" if prefix else child.name
+            mode = _path_mode(child)
+            if stat.S_ISLNK(mode):
+                raise RunnerError(f"artifact contains symlink: {relative}")
+            if stat.S_ISDIR(mode):
+                pending.append((child, relative))
+            elif stat.S_ISREG(mode):
+                if exclude_metadata and relative in RESERVED_ARTIFACT_NAMES:
+                    continue
+                normalized = (
+                    relative
+                    if relative in RESERVED_ARTIFACT_NAMES
+                    else normalize_artifact_path(relative)
+                )
+                files.append((normalized, child))
+            else:
+                raise RunnerError(f"artifact contains non-regular file: {relative}")
+    return sorted(files, key=lambda item: item[0])
+
+
+def sha256_file(path: Path, *, trusted_root: Path | None = None) -> str:
+    digest = hashlib.sha256()
+    try:
+        with _open_regular_file(
+            Path(path), trusted_root=trusted_root
+        ) as source:
+            while True:
+                chunk = source.read(1024 * 1024)
+                if not chunk:
+                    break
+                digest.update(chunk)
+    except OSError as error:
+        raise RunnerError(f"unable to hash artifact file: {path}") from error
+    return digest.hexdigest()
+
+
+def _artifact_kind(path: str) -> str:
+    if path == "include/agentgate.h":
+        return "header"
+    if path.startswith("native/"):
+        return "native-library"
+    if path.endswith(".jar"):
+        return "java-archive"
+    if path.endswith((".so", ".dylib", ".dll", ".node", ".lib", ".a")):
+        return "runtime-binary"
+    if path.endswith((".c", ".cpp")) and path.startswith("smoke/"):
+        return "smoke-source"
+    if path.endswith((".go", ".java", ".js")):
+        return "source"
+    return "metadata"
+
+
+def _validate_tool_versions(tool_versions: dict[str, str]) -> dict[str, str]:
+    if not isinstance(tool_versions, dict) or set(tool_versions) != REQUIRED_TOOL_KEYS:
+        raise RunnerError("artifact tool metadata must contain every required tool")
+    normalized = {}
+    for key in sorted(REQUIRED_TOOL_KEYS):
+        version = tool_versions[key]
+        if (
+            not isinstance(version, str)
+            or not version
+            or len(version) > MAX_TOOL_VERSION_LENGTH
+            or re.fullmatch(r"\d+(?:\.\d+)*", version) is None
+        ):
+            raise RunnerError(f"artifact tool metadata is malformed: {key}")
+        normalized[key] = version
+    return normalized
+
+
+def build_manifest(
+    artifact_root: Path,
+    target: Target,
+    tool_versions: dict[str, str],
+) -> dict:
+    artifact_root = Path(artifact_root)
+    tools = _validate_tool_versions(tool_versions)
+    files = []
+    for relative, path in _walk_regular_files(
+        artifact_root, exclude_metadata=True
+    ):
+        files.append(
+            {
+                "path": relative,
+                "kind": _artifact_kind(relative),
+                "size": path.lstat().st_size,
+                "sha256": sha256_file(path, trusted_root=artifact_root),
+            }
+        )
+    return {
+        "schema_version": 1,
+        "agentgate_version": AGENTGATE_VERSION,
+        "abi_version": ABI_VERSION,
+        "target": {
+            "os": target.system,
+            "arch": target.arch,
+            "triple": target.triple,
+        },
+        "tools": tools,
+        "files": files,
+    }
+
+
+def _canonical_json(value) -> bytes:
+    return (json.dumps(value, sort_keys=True, indent=2, ensure_ascii=False) + "\n").encode(
+        "utf-8"
+    )
+
+
+def write_manifest(artifact_root: Path, manifest: dict) -> Path:
+    root = Path(artifact_root)
+    _require_directory(root, "artifact root")
+    destination = root / MANIFEST_NAME
+    if destination.exists() or destination.is_symlink():
+        if destination.is_symlink():
+            raise RunnerError(f"manifest destination is a symlink: {destination}")
+        _require_regular_file(destination, "manifest destination")
+    try:
+        destination.write_bytes(_canonical_json(manifest))
+    except (OSError, TypeError, ValueError) as error:
+        raise RunnerError(f"unable to write manifest: {destination}") from error
+    return destination
+
+
+def write_checksums(artifact_root: Path) -> Path:
+    root = Path(artifact_root)
+    files = _walk_regular_files(root, exclude_metadata=False)
+    entries = []
+    for relative, path in files:
+        if relative == CHECKSUM_NAME:
+            continue
+        entries.append(f"{sha256_file(path, trusted_root=root)}  {relative}\n")
+    destination = root / CHECKSUM_NAME
+    if destination.is_symlink():
+        raise RunnerError(f"checksum destination is a symlink: {destination}")
+    if destination.exists():
+        _require_regular_file(destination, "checksum destination")
+    try:
+        destination.write_bytes("".join(entries).encode("utf-8"))
+    except OSError as error:
+        raise RunnerError(f"unable to write checksums: {destination}") from error
+    return destination
+
+
+def _unique_json_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise RunnerError(f"duplicate JSON key: {_bounded_diagnostic(str(key))}")
+        result[key] = value
+    return result
+
+
+def _load_manifest(root: Path) -> tuple[dict, bytes]:
+    path = root / MANIFEST_NAME
+    data = _read_regular_bytes(path, "manifest", root)
+    try:
+        value = json.loads(data.decode("utf-8"), object_pairs_hook=_unique_json_object)
+    except RunnerError:
+        raise
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise RunnerError("manifest JSON is malformed") from error
+    if not isinstance(value, dict):
+        raise RunnerError("manifest JSON must be an object")
+    if data != _canonical_json(value):
+        raise RunnerError("manifest JSON is not canonical")
+    return value, data
+
+
+def _validate_manifest_schema(manifest: dict, expected_target: Target | None) -> list[dict]:
+    expected_keys = {
+        "schema_version", "agentgate_version", "abi_version", "target", "tools", "files"
+    }
+    if set(manifest) != expected_keys:
+        raise RunnerError("manifest schema has missing or unknown fields")
+    if type(manifest["schema_version"]) is not int or manifest["schema_version"] != 1:
+        raise RunnerError("unsupported manifest schema_version")
+    if manifest["agentgate_version"] != AGENTGATE_VERSION:
+        raise RunnerError("unexpected manifest agentgate_version")
+    if type(manifest["abi_version"]) is not int or manifest["abi_version"] != ABI_VERSION:
+        raise RunnerError("unexpected manifest abi_version")
+    target_value = manifest["target"]
+    if not isinstance(target_value, dict) or set(target_value) != {"os", "arch", "triple"}:
+        raise RunnerError("manifest target metadata is malformed")
+    if not all(isinstance(target_value[key], str) for key in target_value):
+        raise RunnerError("manifest target metadata is malformed")
+    try:
+        recorded_target = Target.for_host(target_value["os"], target_value["arch"])
+    except RunnerError as error:
+        raise RunnerError("manifest target metadata is unsupported") from error
+    if target_value != {
+        "os": recorded_target.system,
+        "arch": recorded_target.arch,
+        "triple": recorded_target.triple,
+    }:
+        raise RunnerError("manifest target metadata is inconsistent")
+    if expected_target is not None and recorded_target != expected_target:
+        raise RunnerError("manifest target does not match expected target")
+    tools = manifest["tools"]
+    try:
+        _validate_tool_versions(tools)
+    except RunnerError as error:
+        raise RunnerError("manifest tools metadata is malformed") from error
+    files = manifest["files"]
+    if not isinstance(files, list):
+        raise RunnerError("manifest files must be an array")
+    seen = set()
+    previous = None
+    for entry in files:
+        if not isinstance(entry, dict) or set(entry) != {"path", "kind", "size", "sha256"}:
+            raise RunnerError("manifest file entry is malformed")
+        relative = normalize_artifact_path(entry["path"])
+        if relative in seen:
+            raise RunnerError(f"duplicate manifest path: {relative}")
+        if previous is not None and relative <= previous:
+            raise RunnerError("manifest file paths are not sorted")
+        seen.add(relative)
+        previous = relative
+        if not isinstance(entry["kind"], str) or not entry["kind"]:
+            raise RunnerError(f"manifest kind is malformed: {relative}")
+        if type(entry["size"]) is not int or entry["size"] < 0:
+            raise RunnerError(f"manifest size is malformed: {relative}")
+        if not isinstance(entry["sha256"], str) or not SHA256_PATTERN.fullmatch(entry["sha256"]):
+            raise RunnerError(f"manifest sha256 is malformed: {relative}")
+    return files
+
+
+def parse_checksums(
+    path: Path, trusted_root: Path | None = None
+) -> dict[str, str]:
+    try:
+        data = _read_regular_bytes(
+            Path(path),
+            "checksum file",
+            Path(path).parent if trusted_root is None else Path(trusted_root),
+        )
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise RunnerError("unable to read SHA256SUMS as UTF-8") from error
+    if not text or not text.endswith("\n"):
+        raise RunnerError("SHA256SUMS must end with a newline")
+    entries = {}
+    previous = None
+    for line in text.splitlines():
+        match = re.fullmatch(r"([0-9a-f]{64})  (.+)", line)
+        if match is None:
+            raise RunnerError("SHA256SUMS line is malformed")
+        digest, raw_path = match.groups()
+        if raw_path == CHECKSUM_NAME:
+            raise RunnerError("SHA256SUMS cannot hash itself")
+        relative = (
+            MANIFEST_NAME
+            if raw_path == MANIFEST_NAME
+            else normalize_artifact_path(raw_path)
+        )
+        if relative in entries:
+            raise RunnerError(f"duplicate SHA256SUMS path: {relative}")
+        if previous is not None and relative <= previous:
+            raise RunnerError("SHA256SUMS entries are not sorted")
+        entries[relative] = digest
+        previous = relative
+    return entries
+
+
+def verify_artifact(artifact_root: Path, expected_target: Target | None = None) -> str:
+    root = Path(artifact_root)
+    _require_directory(root, "artifact root")
+    manifest, _ = _load_manifest(root)
+    entries = _validate_manifest_schema(manifest, expected_target)
+    actual_payload = dict(_walk_regular_files(root, exclude_metadata=True))
+    expected_payload = {entry["path"]: entry for entry in entries}
+    missing = set(expected_payload) - set(actual_payload)
+    extra = set(actual_payload) - set(expected_payload)
+    if missing or extra:
+        parts = []
+        if missing:
+            parts.append(f"missing payload files: {_format_paths(missing)}")
+        if extra:
+            parts.append(f"extra payload files: {_format_paths(extra)}")
+        raise RunnerError("; ".join(parts))
+    for relative, entry in expected_payload.items():
+        path = actual_payload[relative]
+        size = path.lstat().st_size
+        if size != entry["size"]:
+            raise RunnerError(f"payload size mismatch: {relative}")
+        if sha256_file(path, trusted_root=root) != entry["sha256"]:
+            raise RunnerError(f"payload sha256 mismatch: {relative}")
+    checksums = parse_checksums(root / CHECKSUM_NAME, root)
+    checksum_paths = set(actual_payload) | {MANIFEST_NAME}
+    missing_checksums = checksum_paths - set(checksums)
+    extra_checksums = set(checksums) - checksum_paths
+    if missing_checksums or extra_checksums:
+        parts = []
+        if missing_checksums:
+            parts.append(f"missing checksum entries: {_format_paths(missing_checksums)}")
+        if extra_checksums:
+            parts.append(f"extra checksum entries: {_format_paths(extra_checksums)}")
+        raise RunnerError("; ".join(parts))
+    for relative in sorted(checksum_paths):
+        if sha256_file(
+            root / Path(*relative.split("/")), trusted_root=root
+        ) != checksums[relative]:
+            raise RunnerError(f"SHA256SUMS mismatch: {relative}")
+    return "PASS"
+
+
+def _ensure_source_tree(root: Path, source: Path) -> None:
+    try:
+        relative = source.relative_to(root)
+    except ValueError as error:
+        raise RunnerError(f"artifact source escapes repository root: {source}") from error
+    current = root
+    for part in relative.parts[:-1]:
+        current = current / part
+        _require_directory(current, "artifact source directory")
+
+
+def _source_file(root: Path, relative: str, label: str = "artifact source") -> Path:
+    source = root / Path(*relative.split("/"))
+    _ensure_source_tree(root, source)
+    try:
+        _require_regular_file(source, label)
+    except RunnerError as error:
+        if label == "native library":
+            raise RunnerError(f"native library not found: {source}") from error
+        raise
+    return source
+
+
+def select_maven_main_jar(java_target: Path) -> Path:
+    java_target = Path(java_target)
+    _require_directory(java_target, "Maven target directory")
+    candidates = []
+    observed = []
+    for path in sorted(java_target.iterdir(), key=lambda item: item.name):
+        if not path.name.endswith(".jar"):
+            continue
+        _require_regular_file(path, "Maven JAR")
+        observed.append(path.name)
+        if (
+            path.name.startswith("agentgate-java-")
+            and not path.name.endswith(("-sources.jar", "-javadoc.jar"))
+            and not path.name.startswith("original-")
+        ):
+            candidates.append(path)
+    expected = "agentgate-java-0.1.0-SNAPSHOT.jar"
+    if len(candidates) != 1 or candidates[0].name != expected:
+        raise RunnerError(
+            "expected exactly one Maven main JAR named "
+            f"{expected}; found {_format_paths(observed)}"
+        )
+    return candidates[0]
+
+
+def _collect_tree(
+    sources: dict[str, Path], root: Path, source_directory: str, destination: str
+) -> None:
+    directory = root / Path(*source_directory.split("/"))
+    _require_directory(directory, "artifact source directory")
+    pending = [(directory, destination)]
+    found = False
+    while pending:
+        current, prefix = pending.pop()
+        for child in sorted(current.iterdir(), key=lambda item: item.name):
+            mode = _path_mode(child)
+            relative = f"{prefix}/{child.name}"
+            if stat.S_ISLNK(mode):
+                raise RunnerError(f"artifact source is a symlink: {child}")
+            if stat.S_ISDIR(mode):
+                pending.append((child, relative))
+            elif stat.S_ISREG(mode):
+                normalized = normalize_artifact_path(relative)
+                sources[normalized] = child
+                found = True
+            else:
+                raise RunnerError(f"artifact source is not regular: {child}")
+    if not found:
+        raise RunnerError(f"artifact source directory is empty: {directory}")
+
+
+def collect_artifact_sources(root: Path, target: Target) -> dict[str, Path]:
+    root = Path(root)
+    _require_directory(root, "repository root")
+    sources = {
+        "include/agentgate.h": _source_file(
+            root, "packages/ffi/include/agentgate.h"
+        ),
+        f"native/{target.shared_name}": _source_file(
+            root, f"target/release/{target.shared_name}", "native library"
+        ),
+        f"native/{target.static_name}": _source_file(
+            root, f"target/release/{target.static_name}", "native library"
+        ),
+        "go/go.mod": _source_file(root, "bindings/go/go.mod"),
+        "java/agentgate-java-0.1.0-SNAPSHOT.jar": select_maven_main_jar(
+            root / "bindings/java/target"
+        ),
+        f"java/{target.shared_name}": _source_file(
+            root, f"target/release/{target.shared_name}", "native library"
+        ),
+        "java/examples/Complete.java": _source_file(
+            root, "bindings/java/examples/Complete.java"
+        ),
+        "node/package.json": _source_file(root, "bindings/node/package.json"),
+        "node/examples/complete.js": _source_file(
+            root, "bindings/node/examples/complete.js"
+        ),
+        "node/build/Release/agentgate.node": _source_file(
+            root, "bindings/node/build/Release/agentgate.node"
+        ),
+        f"node/build/Release/{target.shared_name}": _source_file(
+            root,
+            f"bindings/node/build/Release/{target.shared_name}",
+            "native library",
+        ),
+        "smoke/abi_probe.c": _source_file(root, "tests/qualification/abi_probe.c"),
+        "smoke/abi_probe.cpp": _source_file(root, "tests/qualification/abi_probe.cpp"),
+    }
+    if target.import_name is not None:
+        sources[f"native/{target.import_name}"] = _source_file(
+            root, f"target/release/{target.import_name}", "native library"
+        )
+    jni_source = (
+        f"target/phase5c/java/Release/{JNI_SHIM_NAMES[target.system]}"
+        if target.system == "Windows"
+        else f"target/phase5c/java/{JNI_SHIM_NAMES[target.system]}"
+    )
+    sources[f"java/{JNI_SHIM_NAMES[target.system]}"] = _source_file(
+        root, jni_source, "JNI shim"
+    )
+    _collect_tree(sources, root, "bindings/go/agentgate", "go/agentgate")
+    _collect_tree(
+        sources, root, "bindings/go/examples/complete", "go/examples/complete"
+    )
+    _collect_tree(sources, root, "bindings/node/lib", "node/lib")
+    return dict(sorted(sources.items()))
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    return path == root or root in path.parents
+
+
+def safe_copy_file(
+    source: Path,
+    artifact_root: Path,
+    relative: str,
+    *,
+    source_root: Path | None = None,
+) -> Path:
+    source = Path(source)
+    root = Path(artifact_root)
+    _require_regular_file(source, "artifact source")
+    _require_directory(root, "artifact root")
+    normalized = normalize_artifact_path(relative)
+    root_resolved = root.resolve(strict=True)
+    destination = root / Path(*normalized.split("/"))
+    current = root
+    for part in Path(*normalized.split("/")).parts[:-1]:
+        current = current / part
+        if current.exists() or current.is_symlink():
+            _require_directory(current, "artifact destination directory")
+        else:
+            try:
+                current.mkdir()
+            except OSError as error:
+                raise RunnerError(f"unable to create artifact directory: {current}") from error
+        if not _is_within(current.resolve(strict=True), root_resolved):
+            raise RunnerError(f"artifact destination escapes root: {relative}")
+    if destination.exists() or destination.is_symlink():
+        if destination.is_symlink():
+            raise RunnerError(f"artifact destination is a symlink: {destination}")
+        _require_regular_file(destination, "artifact destination")
+        raise RunnerError(f"artifact destination already exists: {destination}")
+    if not _is_within(destination.parent.resolve(strict=True), root_resolved):
+        raise RunnerError(f"artifact destination escapes root: {relative}")
+    try:
+        with _open_regular_file(
+            source,
+            "artifact source",
+            trusted_root=source.parent if source_root is None else source_root,
+        ) as source_file:
+            with destination.open("xb") as destination_file:
+                shutil.copyfileobj(source_file, destination_file)
+    except (OSError, RunnerError) as error:
+        if destination.exists() or destination.is_symlink():
+            destination.unlink()
+        if isinstance(error, RunnerError):
+            raise
+        raise RunnerError(f"unable to copy artifact source: {source}") from error
+    _require_regular_file(destination, "artifact destination")
+    return destination
+
+
+def tool_versions_from_capabilities(
+    capabilities: dict[str, Capability],
+) -> dict[str, str]:
+    versions = {}
+    for key in sorted(REQUIRED_TOOL_KEYS):
+        capability = capabilities.get(
+            key, Capability(CAPABILITY_NAMES[key], None, None)
+        )
+        if capability.version is None:
+            raise RunnerError(
+                f"{capability.name} version is required for artifact metadata"
+            )
+        versions[key] = ".".join(str(part) for part in capability.version)
+    return _validate_tool_versions(versions)
+
+
+def assemble_artifact(
+    root: Path,
+    output: Path,
+    target: Target,
+    tool_versions: dict[str, str],
+) -> Path:
+    root = Path(root)
+    output = Path(output)
+    sources = collect_artifact_sources(root, target)
+    if output.exists() or output.is_symlink():
+        _require_directory(output, "artifact output directory")
+    else:
+        try:
+            output.mkdir(parents=True)
+        except OSError as error:
+            raise RunnerError(f"unable to create artifact output directory: {output}") from error
+    artifact = output / "artifact"
+    staging = output / ".artifact.tmp"
+    for destination in (artifact, staging):
+        if destination.exists() or destination.is_symlink():
+            if destination.is_symlink():
+                raise RunnerError(f"artifact destination is a symlink: {destination}")
+            raise RunnerError(f"artifact destination already exists: {destination}")
+    try:
+        staging.mkdir()
+        for relative, source in sources.items():
+            safe_copy_file(source, staging, relative, source_root=root)
+        manifest = build_manifest(staging, target, tool_versions)
+        write_manifest(staging, manifest)
+        write_checksums(staging)
+        verify_artifact(staging, target)
+        staging.rename(artifact)
+        verify_artifact(artifact, target)
+    except Exception:
+        if staging.exists() and not staging.is_symlink():
+            shutil.rmtree(staging)
+        raise
+    return artifact
 
 
 def run_command(
@@ -1594,7 +2961,12 @@ def run_qualification(
     copy_file=shutil.copy2,
 ) -> str:
     require_ci_capabilities(capabilities)
-    with temporary_directory(prefix="agentgate-phase5d-abi-") as directory:
+    directory_context = (
+        contextlib.nullcontext(Path(root) / "target" / "phase5d" / ".abi-plan")
+        if dry_run
+        else temporary_directory(prefix="agentgate-phase5d-abi-")
+    )
+    with directory_context as directory:
         probe_build_directory = Path(directory)
         plan = qualification_plan(
             target,
@@ -1684,17 +3056,35 @@ def main(
     validation = validate_target(host_system, host_arch, arguments.ci)
     if not validation.qualified and arguments.stage is not None:
         raise RunnerError("Phase 5D qualification requires x86_64")
-    if arguments.stage in {"all", "sanitizers", "artifact"}:
+    if arguments.stage in {"all", "sanitizers"}:
         raise RunnerError(f"Phase 5D stage is not implemented: {arguments.stage}")
     if arguments.ci:
         if arguments.stage is None:
             raise RunnerError("Phase 5D CI requires an explicit stage")
 
-    if arguments.stage == "qualification":
+    if arguments.stage in {"qualification", "artifact"}:
         target = Target.for_host(host_system, host_arch)
         capabilities = detect_capabilities(
             target.system, tool_lookup=tool_lookup, version_output=version_output
         )
+        require_ci_capabilities(capabilities)
+
+    if arguments.stage == "artifact":
+        if arguments.dry_run:
+            print(f"+ assemble verified artifact {arguments.output / 'artifact'}")
+            print("phase5d: qualification=NOT_RUN artifact=PLANNED")
+            return 0
+        artifact = assemble_artifact(
+            Path(root),
+            arguments.output,
+            target,
+            tool_versions_from_capabilities(capabilities),
+        )
+        verify_artifact(artifact, target)
+        print("phase5d: qualification=NOT_RUN artifact=PASS")
+        return 0
+
+    if arguments.stage == "qualification":
         status = run_qualification(
             target,
             Path(root),
@@ -1704,7 +3094,18 @@ def main(
             dry_run=arguments.dry_run,
             path_is_file=path_is_file,
         )
-        print(f"phase5d: qualification={status}")
+        if arguments.dry_run:
+            print(f"+ assemble verified artifact {arguments.output / 'artifact'}")
+            print(f"phase5d: qualification={status} artifact=PLANNED")
+            return 0
+        artifact = assemble_artifact(
+            Path(root),
+            arguments.output,
+            target,
+            tool_versions_from_capabilities(capabilities),
+        )
+        verify_artifact(artifact, target)
+        print(f"phase5d: qualification={status} artifact=PASS")
         return 0
 
     reason = validation.reason or "no qualification stage has run"
@@ -1721,5 +3122,5 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except RunnerError as error:
-        print(f"phase5d: qualification=FAIL reason={error}", file=sys.stderr)
+        print(f"phase5d: status=FAIL reason={error}", file=sys.stderr)
         raise SystemExit(1)
