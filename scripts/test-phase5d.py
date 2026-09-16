@@ -2018,6 +2018,93 @@ Dump of file agentgate_ffi.dll
         self.assertFalse(commands[0][1]["shell"])
         self.assertFalse(commands[1][1]["shell"])
 
+    def test_sanitizer_build_and_consumer_share_controlled_target_directory(self):
+        commands = []
+
+        def runner(argv, **kwargs):
+            commands.append((tuple(argv), kwargs))
+            return mock.Mock(returncode=0)
+
+        root = Path("/repo with current sources")
+        with mock.patch.dict(
+            os.environ, {"CARGO_TARGET_DIR": "/stale/external/target"}, clear=False
+        ):
+            self.assertEqual(
+                run_sanitizers(
+                    Target.for_host("Linux", "x86_64"), root,
+                    complete_sanitizer_capabilities(), command_runner=runner,
+                ),
+                "PASS",
+            )
+
+        controlled_target = root / "target"
+        self.assertEqual(
+            commands[0][1]["env"]["CARGO_TARGET_DIR"], str(controlled_target)
+        )
+        self.assertNotEqual(
+            commands[0][1]["env"]["CARGO_TARGET_DIR"], "/stale/external/target"
+        )
+        library_index = commands[1][0].index("--library") + 1
+        self.assertEqual(
+            commands[1][0][library_index],
+            str(controlled_target / "release" / "libagentgate_ffi.so"),
+        )
+
+    def test_sanitizer_discovery_probes_exact_clang_identity_and_version(self):
+        lookup = mock.Mock(
+            side_effect={"clang": "/opt/llvm/bin/clang", "clang++": "/opt/llvm/bin/clang++"}.get
+        )
+        outputs = {
+            "/opt/llvm/bin/clang": "Ubuntu clang version 18.1.7\nTarget: x86_64-linux-gnu\n",
+            "/opt/llvm/bin/clang++": "clang version 18.1.7\nTarget: x86_64-linux-gnu\n",
+        }
+        version_output = mock.Mock(
+            side_effect=lambda path, *arguments: outputs[path]
+        )
+
+        capabilities = detect_sanitizer_capabilities(lookup, version_output)
+
+        self.assertEqual(lookup.call_args_list, [mock.call("clang"), mock.call("clang++")])
+        self.assertEqual(
+            version_output.call_args_list,
+            [
+                mock.call("/opt/llvm/bin/clang", "--version"),
+                mock.call("/opt/llvm/bin/clang++", "--version"),
+            ],
+        )
+        self.assertEqual(capabilities["clang"].version, (18, 1, 7))
+        self.assertEqual(capabilities["clang++"].version, (18, 1, 7))
+        self.assertEqual(capabilities["clang"].path, "/opt/llvm/bin/clang")
+        self.assertEqual(capabilities["clang++"].path, "/opt/llvm/bin/clang++")
+
+    def test_sanitizer_cli_rejects_fake_or_failed_clang_before_cargo(self):
+        lookup = lambda executable: f"/tools/{executable}"
+        failures = (
+            ("gcc (GCC) 14.2.0", None),
+            ("warning 123: no compiler identity", None),
+            (None, RunnerError("version probe failed with exit code 2")),
+        )
+        for output, raised in failures:
+            with self.subTest(output=output, raised=raised):
+                command_runner = mock.Mock()
+                version_output = mock.Mock(
+                    side_effect=raised if raised is not None else None,
+                    return_value=output,
+                )
+                with mock.patch.object(
+                    sys.modules[__name__], "detect_capabilities",
+                    return_value=complete_capabilities(),
+                ), self.assertRaisesRegex(
+                    RunnerError, "Clang C compiler.*version"
+                ):
+                    main(
+                        ["--ci", "--stage", "sanitizers"],
+                        system="Linux", arch="x86_64", root=Path("/repo"),
+                        tool_lookup=lookup, version_output=version_output,
+                        command_runner=command_runner,
+                    )
+                command_runner.assert_not_called()
+
     def test_sanitizer_preflight_rejects_missing_clang_before_any_command(self):
         capabilities = complete_sanitizer_capabilities()
         del capabilities["clang"]
@@ -2546,6 +2633,8 @@ Dump of file agentgate_ffi.dll
                 main(
                     ["--ci", "--stage", "sanitizers"],
                     system="Linux", arch="x86_64", root=Path("/repo"),
+                    tool_lookup=lambda executable: f"/tools/{executable}",
+                    version_output=lambda path, *arguments: "clang version 17.0.0",
                 ),
                 0,
             )
@@ -3403,10 +3492,26 @@ SANITIZER_COMPILERS = (
     ("clang", "Clang C compiler"),
     ("clang++", "Clang C++ compiler"),
 )
+CLANG_VERSION_PATTERN = re.compile(
+    r"^(?:(?:Apple|Ubuntu|Debian)\s+)?clang version\s+"
+    r"(\d+(?:\.\d+)*)\b",
+    flags=re.IGNORECASE | re.MULTILINE,
+)
+
+
+def parse_clang_version(output: str) -> tuple[int, ...] | None:
+    normalized_output = "\n".join(
+        line.lstrip() for line in ANSI_ESCAPE.sub("", output).splitlines()
+    )
+    match = CLANG_VERSION_PATTERN.search(normalized_output)
+    if match is None:
+        return None
+    return tuple(int(part) for part in match.group(1).split("."))
 
 
 def detect_sanitizer_capabilities(
     tool_lookup=shutil.which,
+    version_output=_version_output,
 ) -> dict[str, Capability]:
     """Discover the exact Clang executables required by the Linux sanitizer gate."""
     capabilities = {}
@@ -3414,8 +3519,21 @@ def detect_sanitizer_capabilities(
         path = tool_lookup(executable)
         if path is None:
             raise RunnerError(f"required sanitizer capability: {label} ({executable})")
+        path = Path(path)
+        if not path.is_absolute():
+            raise RunnerError(f"sanitizer compiler path must be absolute: {label}")
+        try:
+            version = parse_clang_version(version_output(str(path), "--version"))
+        except (OSError, subprocess.SubprocessError, RunnerError) as error:
+            raise RunnerError(
+                f"required sanitizer capability: {label} numeric Clang version"
+            ) from error
+        if version is None:
+            raise RunnerError(
+                f"required sanitizer capability: {label} numeric Clang version"
+            )
         capabilities[executable] = Capability(
-            label, str(Path(path).absolute()), None
+            label, str(path), version
         )
     return capabilities
 
@@ -3428,11 +3546,19 @@ def _sanitizer_compiler_paths(
         capability = capabilities.get(executable)
         if capability is None or capability.path is None:
             raise RunnerError(f"required sanitizer capability: {label} ({executable})")
+        if capability.version is None:
+            raise RunnerError(
+                f"required sanitizer capability: {label} numeric Clang version"
+            )
         path = Path(capability.path)
         if not path.is_absolute():
             raise RunnerError(f"sanitizer compiler path must be absolute: {label}")
         paths.append(str(path))
     return tuple(paths)
+
+
+def _sanitizer_target_directory(root: Path) -> Path:
+    return Path(root) / "target"
 
 
 def _sanitizer_environment(
@@ -3478,6 +3604,7 @@ def _sanitizer_consumer_command(
     if python is None:
         raise RunnerError("required capability: Python 3.11+")
     root = Path(root)
+    target_directory = _sanitizer_target_directory(root)
     return PlannedCommand(
         (
             python,
@@ -3485,7 +3612,7 @@ def _sanitizer_consumer_command(
             "--native-only",
             "--direct-native",
             "--library",
-            str(root / "target" / "release" / target.shared_name),
+            str(target_directory / "release" / target.shared_name),
         ),
         root,
         _sanitizer_environment(capabilities),
@@ -5297,9 +5424,11 @@ def run_sanitizers(
     root = Path(root)
     plan = sanitizer_plan(target, root, capabilities)
     _assert_sanitizer_plan(plan, target, root, capabilities)
+    target_directory = _sanitizer_target_directory(root)
     stable_ffi_build = PlannedCommand(
         ("cargo", "build", "-p", "agentgate-ffi", "--release"),
         root,
+        (("CARGO_TARGET_DIR", str(target_directory)),),
         purpose="sanitizer-stable-ffi-build",
     )
     run_command(stable_ffi_build, command_runner, dry_run=dry_run)
@@ -5590,7 +5719,7 @@ def main(
         if arguments.stage == "sanitizers" and target.system != "Linux":
             raise RunnerError("sanitizer stage requires Linux x86_64")
         sanitizer_capabilities = (
-            detect_sanitizer_capabilities(tool_lookup)
+            detect_sanitizer_capabilities(tool_lookup, version_output)
             if arguments.stage == "sanitizers" else {}
         )
         capabilities = detect_capabilities(
