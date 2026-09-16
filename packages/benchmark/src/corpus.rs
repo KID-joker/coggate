@@ -4,6 +4,7 @@ use agentgate_core::generation::{
     BenchmarkCase, BenchmarkError, RenderMetadata, generate_benchmark_case,
 };
 use sha2::{Digest, Sha256};
+use zeroize::Zeroizing;
 
 use crate::manifest::{ProfileName, SuiteManifest};
 
@@ -35,6 +36,10 @@ impl CorpusCase {
 
     pub fn oracle_matches(&self, candidate: &str) -> bool {
         self.benchmark.oracle().matches(candidate)
+    }
+
+    pub(crate) fn calibration_answer(&self) -> Zeroizing<String> {
+        self.benchmark.calibration_answer()
     }
 }
 
