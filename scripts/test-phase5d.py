@@ -46,6 +46,218 @@ def complete_capabilities():
 
 
 class RunnerSelfTests(unittest.TestCase):
+    def test_abi_probes_reference_every_frozen_export(self):
+        for extension in ("c", "cpp"):
+            source = (
+                ROOT / "tests" / "qualification" / f"abi_probe.{extension}"
+            ).read_text(encoding="utf-8")
+            for export in EXPECTED_EXPORTS:
+                with self.subTest(extension=extension, export=export):
+                    self.assertRegex(source, rf"\b{export}\b")
+
+    def test_symbol_parsers_accept_only_the_frozen_exports(self):
+        darwin = "000 T _ag_abi_version\n000 T _ag_buffer_free\n"
+        windows = (
+            "  1    0 00001000 ag_abi_version\n"
+            "  2    1 00001010 ag_buffer_free\n"
+        )
+        self.assertEqual(
+            parse_nm_exports(darwin, darwin=True),
+            {"ag_abi_version", "ag_buffer_free"},
+        )
+        self.assertEqual(
+            parse_dumpbin_exports(windows), {"ag_abi_version", "ag_buffer_free"}
+        )
+
+    def test_nm_parser_handles_linux_format_and_rejects_noise(self):
+        output = """\
+0000000000001100 T ag_abi_version
+0000000000001110 W ag_buffer_free
+                 U ag_service_issue
+0000000000001120 T unrelated_export
+0000000000001130 T ag_service_verify@@AGENTGATE_1
+0000000000001140 T ag-core-version
+nm: archive member noise
+"""
+        self.assertEqual(
+            parse_nm_exports(output), {"ag_abi_version", "ag_buffer_free"}
+        )
+
+    def test_nm_parser_strips_exactly_one_leading_underscore(self):
+        output = """\
+0000000000001100 T _ag_abi_version
+0000000000001110 T __ag_buffer_free
+"""
+        self.assertEqual(
+            parse_nm_exports(output, darwin=True), {"ag_abi_version"}
+        )
+
+    def test_nm_parser_only_normalizes_darwin_symbol_prefixes(self):
+        output = "0000000000001100 T _ag_abi_version\n"
+        self.assertEqual(parse_nm_exports(output), set())
+        self.assertEqual(parse_nm_exports(output, darwin=True), {"ag_abi_version"})
+
+    def test_dumpbin_parser_ignores_headers_ordinals_and_decorations(self):
+        output = """\
+Microsoft (R) COFF/PE Dumper Version 14.40
+
+Dump of file agentgate_ffi.dll
+
+  Section contains the following exports for agentgate_ffi.dll
+
+    ordinal hint RVA      name
+
+          1    0 00001000 ag_abi_version
+          2    1 00001010 ag_buffer_free
+          3    2 00001020 _ag_service_issue@8
+          4    3 00001030 ag_service_verify.extra
+
+  Summary
+        1000 .data
+"""
+        self.assertEqual(
+            parse_dumpbin_exports(output), {"ag_abi_version", "ag_buffer_free"}
+        )
+
+    def test_export_difference_is_fail_closed(self):
+        with self.assertRaisesRegex(RunnerError, "unexpected exports"):
+            validate_exports(EXPECTED_EXPORTS | {"ag_secret_debug"})
+        with self.assertRaisesRegex(RunnerError, "missing exports"):
+            validate_exports(EXPECTED_EXPORTS - {"ag_service_verify"})
+
+    def test_export_difference_reports_sorted_missing_and_unexpected_names(self):
+        actual = (
+            EXPECTED_EXPORTS
+            - {"ag_service_verify", "ag_buffer_free"}
+            | {"ag_zeta_debug", "ag_alpha_debug"}
+        )
+        with self.assertRaises(RunnerError) as raised:
+            validate_exports(actual)
+        self.assertEqual(
+            str(raised.exception),
+            "missing exports: ag_buffer_free, ag_service_verify; "
+            "unexpected exports: ag_alpha_debug, ag_zeta_debug",
+        )
+
+    def test_symbol_command_selection_is_platform_specific(self):
+        shared = Path("/qualified artifacts/libagentgate_ffi.so")
+        self.assertEqual(
+            symbol_inspection_command(
+                Target.for_host("Linux", "x86_64"), shared
+            ).argv,
+            ("nm", "-D", "--defined-only", str(shared)),
+        )
+        darwin_shared = Path("/qualified artifacts/libagentgate_ffi.dylib")
+        self.assertEqual(
+            symbol_inspection_command(
+                Target.for_host("Darwin", "x86_64"), darwin_shared
+            ).argv,
+            ("nm", "-gU", str(darwin_shared)),
+        )
+        windows_shared = Path("C:/qualified artifacts/agentgate_ffi.dll")
+        self.assertEqual(
+            symbol_inspection_command(
+                Target.for_host("Windows", "AMD64"), windows_shared
+            ).argv,
+            ("dumpbin", "/exports", str(windows_shared)),
+        )
+
+    def test_symbol_inspection_captures_output_and_validates_exact_exports(self):
+        command = symbol_inspection_command(
+            Target.for_host("Linux", "x86_64"),
+            Path("/qualified artifacts/libagentgate_ffi.so"),
+        )
+        output = "\n".join(
+            f"0000000000001000 T {name}" for name in sorted(EXPECTED_EXPORTS)
+        )
+        runner = mock.Mock(return_value=mock.Mock(returncode=0, stdout=output))
+        self.assertEqual(
+            run_symbol_inspection(command, "Linux", runner, windows=False), "PASS"
+        )
+        _, kwargs = runner.call_args
+        self.assertEqual(kwargs["stdout"], subprocess.PIPE)
+        self.assertEqual(kwargs["stderr"], subprocess.STDOUT)
+        self.assertTrue(kwargs["text"])
+        self.assertFalse(kwargs["check"])
+        self.assertFalse(kwargs["shell"])
+
+    def test_symbol_inspection_rejects_nonzero_exit_before_parsing(self):
+        command = symbol_inspection_command(
+            Target.for_host("Windows", "AMD64"),
+            Path("C:/qualified/agentgate_ffi.dll"),
+        )
+        runner = mock.Mock(return_value=mock.Mock(returncode=3, stdout="noise"))
+        with self.assertRaisesRegex(RunnerError, r"dumpbin.*exit code 3"):
+            run_symbol_inspection(command, "Windows", runner, windows=True)
+
+    def test_linux_probe_plan_covers_strict_c_and_cpp_shared_and_static(self):
+        root = Path("/repo with spaces")
+        artifacts = Path("/qualified artifacts")
+        plan = abi_probe_plan(
+            Target.for_host("Linux", "x86_64"),
+            root,
+            artifacts,
+            complete_capabilities(),
+        )
+        self.assertEqual(len(plan), 8)
+        compile_commands = plan[::2]
+        run_commands = plan[1::2]
+        self.assertEqual(
+            [command.argv[0] for command in compile_commands],
+            ["/tools/cc", "/tools/cxx", "/tools/cc", "/tools/cxx"],
+        )
+        self.assertIn("-std=c11", compile_commands[0].argv)
+        self.assertIn("-std=c++17", compile_commands[1].argv)
+        for command in compile_commands:
+            for flag in ("-Wall", "-Wextra", "-Wpedantic", "-Werror"):
+                self.assertIn(flag, command.argv)
+            self.assertIn(str(root / "packages" / "ffi" / "include"), command.argv)
+        self.assertIn(str(artifacts / "libagentgate_ffi.so"), compile_commands[0].argv)
+        self.assertIn(str(artifacts / "libagentgate_ffi.a"), compile_commands[2].argv)
+        self.assertIn("-DAGENTGATE_STATIC", compile_commands[2].argv)
+        self.assertEqual(
+            dict(run_commands[0].env)["LD_LIBRARY_PATH"], str(artifacts)
+        )
+        self.assertNotIn("LD_LIBRARY_PATH", dict(run_commands[2].env))
+        self.assertTrue(all(command.cwd == artifacts for command in run_commands))
+
+    def test_darwin_shared_probe_uses_qualified_runtime_directory(self):
+        artifacts = Path("/qualified artifacts")
+        plan = abi_probe_plan(
+            Target.for_host("Darwin", "x86_64"),
+            Path("/repo"),
+            artifacts,
+            complete_capabilities(),
+        )
+        self.assertEqual(
+            dict(plan[1].env)["DYLD_LIBRARY_PATH"], str(artifacts)
+        )
+
+    def test_windows_probe_plan_distinguishes_import_dll_and_static_library(self):
+        root = Path("C:/repo with spaces")
+        artifacts = Path("C:/qualified artifacts")
+        plan = abi_probe_plan(
+            Target.for_host("Windows", "AMD64"),
+            root,
+            artifacts,
+            complete_capabilities(),
+        )
+        self.assertEqual(len(plan), 8)
+        c_shared, run_c_shared, cpp_shared, _, c_static, run_c_static, cpp_static, _ = plan
+        self.assertIn("/std:c11", c_shared.argv)
+        self.assertIn("/std:c++17", cpp_shared.argv)
+        self.assertIn("/EHsc", cpp_shared.argv)
+        for command in (c_shared, cpp_shared, c_static, cpp_static):
+            self.assertIn("/W4", command.argv)
+            self.assertIn("/WX", command.argv)
+        self.assertIn(str(artifacts / "agentgate_ffi.dll.lib"), c_shared.argv)
+        self.assertNotIn("/DAGENTGATE_STATIC", c_shared.argv)
+        self.assertIn(str(artifacts / "agentgate_ffi.lib"), c_static.argv)
+        self.assertIn("/DAGENTGATE_STATIC", c_static.argv)
+        self.assertEqual(run_c_shared.cwd, artifacts)
+        self.assertEqual(run_c_static.cwd, artifacts)
+        self.assertEqual(Path(run_c_shared.argv[0]).parent, artifacts)
+
     def test_ci_requires_every_tool_and_minimum_version(self):
         capabilities = complete_capabilities()
         capabilities["go"] = Capability("Go", "/tools/go", (1, 23, 9))
@@ -147,7 +359,13 @@ class RunnerSelfTests(unittest.TestCase):
 
         def runner(argv, **kwargs):
             events.append(("command", tuple(argv)))
-            return mock.Mock(returncode=0)
+            output = ""
+            if argv[0] == "nm":
+                output = "\n".join(
+                    f"0000000000001000 T {name}"
+                    for name in sorted(EXPECTED_EXPORTS)
+                )
+            return mock.Mock(returncode=0, stdout=output)
 
         def path_is_file(path):
             events.append(("artifact", path.name))
@@ -170,12 +388,22 @@ class RunnerSelfTests(unittest.TestCase):
         first_artifact_index = next(
             index for index, event in enumerate(events) if event[0] == "artifact"
         )
+        symbol_index = next(
+            index for index, event in enumerate(events)
+            if event[0] == "command" and event[1][:3] == ("nm", "-D", "--defined-only")
+        )
+        first_probe_index = next(
+            index for index, event in enumerate(events)
+            if event[0] == "command" and "abi_probe.c" in " ".join(event[1])
+        )
         phase5b_index = next(
             index for index, event in enumerate(events)
             if event[0] == "command" and "test-phase5b.py" in " ".join(event[1])
         )
         self.assertLess(build_index, first_artifact_index)
-        self.assertLess(first_artifact_index, phase5b_index)
+        self.assertLess(first_artifact_index, symbol_index)
+        self.assertLess(symbol_index, first_probe_index)
+        self.assertLess(first_probe_index, phase5b_index)
 
     def test_artifact_gate_tracks_phase5b_boundary_without_magic_index(self):
         events = []
@@ -311,8 +539,15 @@ class RunnerSelfTests(unittest.TestCase):
             Target.for_host("Windows", "AMD64"), root, artifacts,
             complete_capabilities(),
         )
-        phase5b_dynamic = plan[4]
-        phase5c = plan[6]
+        phase5b_dynamic = next(
+            command for command in plan
+            if "test-phase5b.py" in " ".join(command.argv)
+            and "--static" not in command.argv
+        )
+        phase5c = next(
+            command for command in plan
+            if "test-phase5c.py" in " ".join(command.argv)
+        )
         self.assertEqual(
             phase5b_dynamic.argv[-1], str(artifacts / "agentgate_ffi.dll.lib")
         )
@@ -496,6 +731,7 @@ class PlannedCommand:
     argv: tuple[str, ...]
     cwd: Path
     env: tuple[tuple[str, str], ...] = ()
+    purpose: str = "command"
 
 
 MINIMUMS = {
@@ -529,6 +765,26 @@ CAPABILITY_NAMES = {
     "cc": "C compiler",
     "cxx": "C++ compiler",
 }
+
+EXPECTED_EXPORTS = frozenset(
+    {
+        "ag_abi_version",
+        "ag_buffer_free",
+        "ag_core_version",
+        "ag_service_create",
+        "ag_service_destroy",
+        "ag_service_issue",
+        "ag_service_verify",
+    }
+)
+
+EXPORT_NAME = re.compile(r"ag_[A-Za-z0-9_]+")
+NM_EXPORT_LINE = re.compile(
+    r"^\s*[0-9A-Fa-f]+\s+([A-Za-z])\s+(\S+)\s*$"
+)
+DUMPBIN_EXPORT_LINE = re.compile(
+    r"^\s*\d+\s+[0-9A-Fa-f]+\s+[0-9A-Fa-f]+\s+(\S+)\s*$"
+)
 
 
 PLATFORM_TARGETS = MappingProxyType(
@@ -776,6 +1032,167 @@ def require_ci_capabilities(capabilities: dict[str, Capability]) -> None:
             raise RunnerError(f"required capability: {capability.name}")
 
 
+def parse_nm_exports(output: str, *, darwin: bool = False) -> set[str]:
+    exports = set()
+    for line in output.splitlines():
+        match = NM_EXPORT_LINE.fullmatch(line)
+        if match is None or match.group(1).casefold() == "u":
+            continue
+        name = match.group(2)
+        if darwin and name.startswith("_"):
+            name = name[1:]
+        if EXPORT_NAME.fullmatch(name):
+            exports.add(name)
+    return exports
+
+
+def parse_dumpbin_exports(output: str) -> set[str]:
+    exports = set()
+    for line in output.splitlines():
+        match = DUMPBIN_EXPORT_LINE.fullmatch(line)
+        if match is None:
+            continue
+        name = match.group(1)
+        if EXPORT_NAME.fullmatch(name):
+            exports.add(name)
+    return exports
+
+
+def validate_exports(actual: set[str] | frozenset[str]) -> None:
+    missing = sorted(EXPECTED_EXPORTS - set(actual))
+    unexpected = sorted(set(actual) - EXPECTED_EXPORTS)
+    differences = []
+    if missing:
+        differences.append("missing exports: " + ", ".join(missing))
+    if unexpected:
+        differences.append("unexpected exports: " + ", ".join(unexpected))
+    if differences:
+        raise RunnerError("; ".join(differences))
+
+
+def symbol_inspection_command(
+    target: Target, shared_library: Path
+) -> PlannedCommand:
+    shared_library = Path(shared_library)
+    if target.system == "Darwin":
+        argv = ("nm", "-gU", str(shared_library))
+    elif target.system == "Linux":
+        argv = ("nm", "-D", "--defined-only", str(shared_library))
+    elif target.system == "Windows":
+        argv = ("dumpbin", "/exports", str(shared_library))
+    else:
+        raise RunnerError(f"unsupported platform: {target.system}")
+    return PlannedCommand(argv, shared_library.parent, purpose="symbol-inspection")
+
+
+def _probe_output_path(
+    target: Target, artifact_directory: Path, language: str, linkage: str
+) -> Path:
+    suffix = ".exe" if target.system == "Windows" else ""
+    return artifact_directory / f"agentgate_abi_{language}_{linkage}{suffix}"
+
+
+def _probe_compile_command(
+    target: Target,
+    root: Path,
+    artifact_directory: Path,
+    capabilities: dict[str, Capability],
+    language: str,
+    linkage: str,
+) -> PlannedCommand:
+    is_cpp = language == "cpp"
+    compiler_key = "cxx" if is_cpp else "cc"
+    compiler = capabilities[compiler_key].path
+    if compiler is None:
+        label = "C++" if is_cpp else "C"
+        raise RunnerError(f"required capability: {label} compiler")
+    source = root / "tests" / "qualification" / f"abi_probe.{language}"
+    output = _probe_output_path(target, artifact_directory, language, linkage)
+    library_name = target.shared_name if linkage == "shared" else target.static_name
+    library = artifact_directory / library_name
+    include_directory = root / "packages" / "ffi" / "include"
+
+    if target.system == "Windows":
+        link_library = (
+            artifact_directory / target.import_name
+            if linkage == "shared" and target.import_name is not None
+            else library
+        )
+        arguments = [
+            compiler,
+            "/nologo",
+            "/std:c++17" if is_cpp else "/std:c11",
+        ]
+        if is_cpp:
+            arguments.append("/EHsc")
+        arguments.extend(["/W4", "/WX", f"/I{include_directory}"])
+        if linkage == "static":
+            arguments.append("/DAGENTGATE_STATIC")
+        arguments.extend([str(source), f"/Fe:{output}", str(link_library)])
+    else:
+        arguments = [
+            compiler,
+            "-std=c++17" if is_cpp else "-std=c11",
+            "-Wall",
+            "-Wextra",
+            "-Wpedantic",
+            "-Werror",
+            "-I",
+            str(include_directory),
+        ]
+        if linkage == "static":
+            arguments.append("-DAGENTGATE_STATIC")
+        arguments.extend([str(source), "-o", str(output), str(library)])
+        if linkage == "shared":
+            arguments.append("-Wl,-rpath," + str(artifact_directory))
+        if target.system == "Linux":
+            arguments.extend(["-ldl", "-lpthread", "-lm"])
+    return PlannedCommand(
+        tuple(arguments), root, purpose=f"abi-probe-compile-{language}-{linkage}"
+    )
+
+
+def abi_probe_plan(
+    target: Target,
+    root: Path,
+    artifact_directory: Path,
+    capabilities: dict[str, Capability],
+) -> list[PlannedCommand]:
+    root = Path(root)
+    artifact_directory = Path(artifact_directory)
+    commands = []
+    for linkage in ("shared", "static"):
+        for language in ("c", "cpp"):
+            compile_command = _probe_compile_command(
+                target,
+                root,
+                artifact_directory,
+                capabilities,
+                language,
+                linkage,
+            )
+            output = _probe_output_path(
+                target, artifact_directory, language, linkage
+            )
+            runtime_environment = ()
+            if linkage == "shared" and target.system == "Linux":
+                runtime_environment = (("LD_LIBRARY_PATH", str(artifact_directory)),)
+            elif linkage == "shared" and target.system == "Darwin":
+                runtime_environment = (("DYLD_LIBRARY_PATH", str(artifact_directory)),)
+            commands.extend(
+                [
+                    compile_command,
+                    PlannedCommand(
+                        (str(output),),
+                        artifact_directory,
+                        runtime_environment,
+                        purpose=f"abi-probe-run-{language}-{linkage}",
+                    ),
+                ]
+            )
+    return commands
+
+
 def qualification_plan(
     target: Target,
     root: Path,
@@ -799,7 +1216,7 @@ def qualification_plan(
         ("CXX", capabilities["cxx"].path or ""),
     )
     cargo_environment = (("CARGO_TARGET_DIR", str(artifact_directory.parent)),)
-    return [
+    cargo_commands = [
         PlannedCommand(("cargo", "fmt", "--check"), root, cargo_environment),
         PlannedCommand(
             ("cargo", "clippy", "--workspace", "--all-targets", "--", "-D", "warnings"),
@@ -814,6 +1231,12 @@ def qualification_plan(
             root,
             cargo_environment,
         ),
+    ]
+    native_qualification_commands = [
+        symbol_inspection_command(target, shared_library),
+        *abi_probe_plan(target, root, artifact_directory, capabilities),
+    ]
+    wrapper_commands = [
         PlannedCommand(
             (
                 python,
@@ -849,6 +1272,7 @@ def qualification_plan(
             compiler_environment,
         ),
     ]
+    return cargo_commands + native_qualification_commands + wrapper_commands
 
 
 def validate_artifacts(
@@ -896,6 +1320,45 @@ def run_command(
     return "PASS"
 
 
+def run_symbol_inspection(
+    command: PlannedCommand,
+    system: str,
+    command_runner=subprocess.run,
+    dry_run: bool = False,
+    windows: bool | None = None,
+) -> str:
+    if windows is None:
+        windows = platform.system() == "Windows"
+    formatted = _format_command(command.argv, windows)
+    print("+ " + formatted)
+    if dry_run:
+        return "PLANNED"
+    try:
+        completed = command_runner(
+            list(command.argv),
+            cwd=command.cwd,
+            env=os.environ.copy(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            check=False,
+            shell=False,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise RunnerError(f"unable to run {command.argv[0]}: {error}") from error
+    if completed.returncode != 0:
+        raise RunnerError(
+            f"command failed: {formatted} (exit code {completed.returncode}): "
+            f"{_bounded_diagnostic(completed.stdout)}"
+        )
+    if system == "Windows":
+        exports = parse_dumpbin_exports(completed.stdout)
+    else:
+        exports = parse_nm_exports(completed.stdout, darwin=system == "Darwin")
+    validate_exports(exports)
+    return "PASS"
+
+
 def run_qualification(
     target: Target,
     root: Path,
@@ -914,15 +1377,29 @@ def run_qualification(
             argument.replace("\\", "/").endswith("/test-phase5b.py")
             for argument in command.argv
         )
-        if starts_phase5b and not artifacts_validated and not dry_run:
+        starts_native_qualification = command.purpose == "symbol-inspection"
+        if (
+            (starts_native_qualification or starts_phase5b)
+            and not artifacts_validated
+            and not dry_run
+        ):
             validate_artifacts(target, artifact_directory, path_is_file)
             artifacts_validated = True
-        run_command(
-            command,
-            command_runner,
-            dry_run=dry_run,
-            windows=target.system == "Windows",
-        )
+        if starts_native_qualification:
+            run_symbol_inspection(
+                command,
+                target.system,
+                command_runner,
+                dry_run=dry_run,
+                windows=target.system == "Windows",
+            )
+        else:
+            run_command(
+                command,
+                command_runner,
+                dry_run=dry_run,
+                windows=target.system == "Windows",
+            )
     return "PLANNED" if dry_run else "PASS"
 
 
