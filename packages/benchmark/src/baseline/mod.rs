@@ -4,6 +4,7 @@ use zeroize::Zeroizing;
 
 use crate::corpus::CorpusCase;
 
+pub mod direct;
 pub mod fingerprint;
 pub mod regex_extract;
 pub mod simple_parser;
