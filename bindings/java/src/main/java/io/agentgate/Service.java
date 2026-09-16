@@ -4,7 +4,9 @@ import java.lang.ref.Cleaner;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.IntConsumer;
@@ -12,7 +14,7 @@ import java.util.function.IntConsumer;
 /** Thread-safe native AgentGate service with deterministic close semantics. */
 public final class Service implements AutoCloseable {
   private static final Cleaner CLEANER = Cleaner.create();
-  private static final ThreadLocal<Integer> CALLBACK_DEPTH = ThreadLocal.withInitial(() -> 0);
+  private static final ThreadLocal<List<Long>> ACTIVE_CALLBACKS = new ThreadLocal<>();
   private static final Object LOAD_LOCK = new Object();
   private static volatile boolean loaded;
   private static volatile IntConsumer testReleaseListener;
@@ -144,17 +146,36 @@ public final class Service implements AutoCloseable {
     }
   }
 
-  private static boolean inCallback() { return CALLBACK_DEPTH.get() != 0; }
+  private boolean inCallback() {
+    long handle = state.handle.get();
+    List<Long> callbacks = ACTIVE_CALLBACKS.get();
+    return handle != 0 && callbacks != null && callbacks.contains(handle);
+  }
   private static void runTestBeforeNativeHook() {
     Runnable hook = testBeforeNativeHook;
     if (hook != null) hook.run();
   }
 
   // Called only by the JNI callback boundary.
-  private static void enterCallback() { CALLBACK_DEPTH.set(CALLBACK_DEPTH.get() + 1); }
-  private static void exitCallback() {
-    int depth = CALLBACK_DEPTH.get() - 1;
-    if (depth == 0) CALLBACK_DEPTH.remove(); else CALLBACK_DEPTH.set(depth);
+  private static void enterCallback(long handle) {
+    List<Long> callbacks = ACTIVE_CALLBACKS.get();
+    if (callbacks == null) {
+      callbacks = new ArrayList<>();
+      ACTIVE_CALLBACKS.set(callbacks);
+    }
+    callbacks.add(handle);
+  }
+  private static void exitCallback(long handle) {
+    List<Long> callbacks = ACTIVE_CALLBACKS.get();
+    if (callbacks == null) throw new IllegalStateException("callback handle is not active");
+    for (int index = callbacks.size() - 1; index >= 0; index--) {
+      if (callbacks.get(index) == handle) {
+        callbacks.remove(index);
+        if (callbacks.isEmpty()) ACTIVE_CALLBACKS.remove();
+        return;
+      }
+    }
+    throw new IllegalStateException("callback handle is not active");
   }
   private static void released(int tag) {
     IntConsumer listener = testReleaseListener;

@@ -101,19 +101,20 @@ class EnvScope {
 
 class CallbackScope {
  public:
-  explicit CallbackScope(JNIEnv* env) noexcept : env_(env) {
+  CallbackScope(JNIEnv* env, NativeState* state) noexcept
+      : env_(env), handle_(reinterpret_cast<jlong>(state)) {
     if (env_->ExceptionCheck()) {
       env_->ExceptionClear();
       return;
     }
-    env_->CallStaticVoidMethod(g_service_class, g_enter_callback);
+    env_->CallStaticVoidMethod(g_service_class, g_enter_callback, handle_);
     entered_ = !clear_exception(env_);
   }
 
   ~CallbackScope() {
     if (env_->ExceptionCheck()) env_->ExceptionClear();
     if (entered_) {
-      env_->CallStaticVoidMethod(g_service_class, g_exit_callback);
+      env_->CallStaticVoidMethod(g_service_class, g_exit_callback, handle_);
       (void)clear_exception(env_);
     }
   }
@@ -127,6 +128,7 @@ class CallbackScope {
 
  private:
   JNIEnv* env_;
+  jlong handle_;
   bool entered_ = false;
 };
 
@@ -327,10 +329,10 @@ ag_lifecycle_status AG_CALL store_issued(void* user_data, ag_byte_slice private_
     EnvScope scope;
     JNIEnv* env = scope.get();
     if (env == nullptr) return AG_LIFECYCLE_STATUS_INTERNAL;
-    CallbackScope callback(env);
+    auto* state = static_cast<NativeState*>(user_data);
+    CallbackScope callback(env, state);
     if (!callback.entered()) return AG_LIFECYCLE_STATUS_INTERNAL;
     if (!push_local_frame(env, 8)) return AG_LIFECYCLE_STATUS_INTERNAL;
-    auto* state = static_cast<NativeState*>(user_data);
     jobject lifecycle = promote_weak(env, state->lifecycle);
     jbyteArray private_value = byte_array(env, private_json);
     jbyteArray binding_value = byte_array(env, binding);
@@ -362,9 +364,9 @@ ag_begin_status AG_CALL begin_attempt(void* user_data, ag_byte_slice identity,
     EnvScope scope;
     JNIEnv* env = scope.get();
     if (env == nullptr) return AG_BEGIN_STATUS_INTERNAL;
-    CallbackScope callback(env);
-    if (!callback.entered() || !push_local_frame(env, 12)) return AG_BEGIN_STATUS_INTERNAL;
     auto* state = static_cast<NativeState*>(user_data);
+    CallbackScope callback(env, state);
+    if (!callback.entered() || !push_local_frame(env, 12)) return AG_BEGIN_STATUS_INTERNAL;
     jobject lifecycle = promote_weak(env, state->lifecycle);
     jbyteArray identity_value = byte_array(env, identity);
     jbyteArray binding_value = byte_array(env, binding);
@@ -424,9 +426,9 @@ ag_lifecycle_status AG_CALL finish_attempt(void* user_data, ag_byte_slice token,
     EnvScope scope;
     JNIEnv* env = scope.get();
     if (env == nullptr) return AG_LIFECYCLE_STATUS_INTERNAL;
-    CallbackScope callback(env);
-    if (!callback.entered() || !push_local_frame(env, 6)) return AG_LIFECYCLE_STATUS_INTERNAL;
     auto* state = static_cast<NativeState*>(user_data);
+    CallbackScope callback(env, state);
+    if (!callback.entered() || !push_local_frame(env, 6)) return AG_LIFECYCLE_STATUS_INTERNAL;
     jobject lifecycle = promote_weak(env, state->lifecycle);
     jbyteArray token_value = byte_array(env, token);
     jobject outcome_value = outcome == AG_ATTEMPT_OUTCOME_ACCEPTED ? g_outcome_accepted
@@ -454,9 +456,9 @@ ag_key_status AG_CALL active_key(void* user_data, ag_host_buffer* key_id_out,
     EnvScope scope;
     JNIEnv* env = scope.get();
     if (env == nullptr) return AG_KEY_STATUS_UNAVAILABLE;
-    CallbackScope callback(env);
-    if (!callback.entered() || !push_local_frame(env, 10)) return AG_KEY_STATUS_UNAVAILABLE;
     auto* state = static_cast<NativeState*>(user_data);
+    CallbackScope callback(env, state);
+    if (!callback.entered() || !push_local_frame(env, 10)) return AG_KEY_STATUS_UNAVAILABLE;
     jobject keys = promote_weak(env, state->keys);
     jobject result = keys == nullptr ? nullptr : env->CallObjectMethod(keys, g_active_key);
     if (CallbackScope::clear_exception(env) || result == nullptr) {
@@ -502,9 +504,9 @@ ag_key_status AG_CALL key_by_id(void* user_data, ag_byte_slice key_id, ag_host_b
     EnvScope scope;
     JNIEnv* env = scope.get();
     if (env == nullptr) return AG_KEY_STATUS_UNAVAILABLE;
-    CallbackScope callback(env);
-    if (!callback.entered() || !push_local_frame(env, 8)) return AG_KEY_STATUS_UNAVAILABLE;
     auto* state = static_cast<NativeState*>(user_data);
+    CallbackScope callback(env, state);
+    if (!callback.entered() || !push_local_frame(env, 8)) return AG_KEY_STATUS_UNAVAILABLE;
     jobject keys = promote_weak(env, state->keys);
     jbyteArray id = byte_array(env, key_id);
     jobject result = keys == nullptr || id == nullptr ? nullptr
@@ -542,9 +544,9 @@ void AG_CALL observe(void* user_data, ag_byte_slice event_json) {
     EnvScope scope;
     JNIEnv* env = scope.get();
     if (env == nullptr) return;
-    CallbackScope callback(env);
-    if (!callback.entered() || !push_local_frame(env, 4)) return;
     auto* state = static_cast<NativeState*>(user_data);
+    CallbackScope callback(env, state);
+    if (!callback.entered() || !push_local_frame(env, 4)) return;
     jobject observer = promote_weak(env, state->observer);
     jbyteArray event = byte_array(env, event_json);
     if (observer != nullptr && event != nullptr) env->CallVoidMethod(observer, g_observe, event);
@@ -628,8 +630,8 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void*) {
     if (vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_8) != JNI_OK) return JNI_ERR;
     if (!cache_class(env, "io/agentgate/Service", &g_service_class)
         || !cache_class(env, "io/agentgate/AgentGateException", &g_error_class)) return JNI_ERR;
-    g_enter_callback = method_id(env, g_service_class, "enterCallback", "()V", true);
-    g_exit_callback = method_id(env, g_service_class, "exitCallback", "()V", true);
+    g_enter_callback = method_id(env, g_service_class, "enterCallback", "(J)V", true);
+    g_exit_callback = method_id(env, g_service_class, "exitCallback", "(J)V", true);
     g_released = method_id(env, g_service_class, "released", "(I)V", true);
     g_error_from_status = method_id(env, g_error_class, "fromStatus",
         "(I)Lio/agentgate/AgentGateException;", true);
@@ -882,7 +884,7 @@ JNIEXPORT jboolean JNICALL Java_io_agentgate_Service_nativeTestPendingExceptionC
     JNIEnv* env, jclass) {
   try {
     {
-      CallbackScope callback(env);
+      CallbackScope callback(env, nullptr);
       if (!callback.entered()) return JNI_FALSE;
       (void)env->FindClass("io/agentgate/DeliberatelyMissingForPendingExceptionTest");
       if (!env->ExceptionCheck()) return JNI_FALSE;

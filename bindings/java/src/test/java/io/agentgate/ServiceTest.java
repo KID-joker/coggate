@@ -240,6 +240,30 @@ final class ServiceTest {
   }
 
   @Test
+  void callbackAllowsCrossServiceNestingButRejectsSameServiceReentry() {
+    AtomicReference<Service> serviceA = new AtomicReference<>();
+    List<String> events = new ArrayList<>();
+    Lifecycle lifecycleB = lifecycle((privateJson, binding, limit) -> {
+      events.add("b");
+      return Lifecycle.Status.OK;
+    }, null, null);
+    try (Service serviceB = new Service(lifecycleB, keys(), null)) {
+      Lifecycle lifecycleA = lifecycle((privateJson, binding, limit) -> {
+        events.add(assertThrows(AgentGateException.class,
+            () -> serviceA.get().issue(IssueRequest.newV1IssueRequest(BINDING))).code());
+        serviceB.issue(IssueRequest.newV1IssueRequest(BINDING));
+        events.add("nested");
+        return Lifecycle.Status.OK;
+      }, null, null);
+      try (Service service = new Service(lifecycleA, keys(), null)) {
+        serviceA.set(service);
+        service.issue(IssueRequest.newV1IssueRequest(BINDING));
+      }
+    }
+    assertEquals(List.of("invalid_argument", "b", "nested"), events);
+  }
+
+  @Test
   void callbackOutputsAreCopiedAndReleasedExactlyOnce() {
     byte[] material = MATERIAL.clone();
     byte[] token = hex("aabbccdd");
