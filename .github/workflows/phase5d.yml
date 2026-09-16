@@ -1,0 +1,237 @@
+name: Phase 5D cross-platform qualification
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phase5d-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  qualification:
+    name: Qualify ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.11'
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version: '1.24.0'
+          cache: true
+          cache-dependency-path: bindings/go/go.mod
+
+      - name: Set up Java
+        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+          cache-dependency-path: bindings/java/pom.xml
+
+      - name: Set up Node.js
+        uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903
+        with:
+          node-version: '22.18.0'
+
+      - name: Cache Cargo registry and Git index
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Install pinned toolchains
+        run: |
+          rustup toolchain install 1.85.0 --profile minimal
+          rustup override set 1.85.0
+          npm install --global node-gyp@12.1.0
+
+      - name: Install Linux native dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes clang cmake ninja-build nlohmann-json3-dev
+          echo "CC=$(command -v clang)" >> "$GITHUB_ENV"
+          echo "CXX=$(command -v clang++)" >> "$GITHUB_ENV"
+
+      - name: Install macOS native dependencies
+        if: runner.os == 'macOS'
+        run: |
+          brew install llvm cmake ninja nlohmann-json
+          LLVM_PREFIX="$(brew --prefix llvm)"
+          echo "$LLVM_PREFIX/bin" >> "$GITHUB_PATH"
+          echo "CC=$LLVM_PREFIX/bin/clang" >> "$GITHUB_ENV"
+          echo "CXX=$LLVM_PREFIX/bin/clang++" >> "$GITHUB_ENV"
+          echo "CMAKE_PREFIX_PATH=$(brew --prefix nlohmann-json)" >> "$GITHUB_ENV"
+
+      - name: Install Windows native dependencies
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          vcpkg install nlohmann-json:x64-windows
+          "VCPKG_TARGET_TRIPLET=x64-windows" >> $env:GITHUB_ENV
+          "CMAKE_TOOLCHAIN_FILE=$env:VCPKG_INSTALLATION_ROOT\scripts\buildsystems\vcpkg.cmake" >> $env:GITHUB_ENV
+
+      - name: Confirm tool versions
+        if: runner.os != 'Windows'
+        run: |
+          python --version
+          go version
+          java -version
+          javac -version
+          mvn --version
+          node --version
+          npm --version
+          node-gyp --version
+          rustc --version
+          cargo --version
+          clang --version
+          clang++ --version
+          cmake --version
+          ctest --version
+          ninja --version
+
+      - name: Confirm Windows tool versions
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          call "%ProgramFiles%\Microsoft Visual Studio\2022\Enterprise\Common7\Tools\VsDevCmd.bat" -arch=amd64
+          python --version
+          go version
+          java -version
+          javac -version
+          mvn --version
+          node --version
+          npm --version
+          node-gyp --version
+          rustc --version
+          cargo --version
+          cl /?
+          cmake --version
+          ctest --version
+          ninja --version
+
+      - name: Run qualification
+        if: runner.os != 'Windows'
+        run: python scripts/test-phase5d.py --ci --stage qualification --output target/phase5d/${{ matrix.target }}
+
+      - name: Run Windows qualification
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          call "%ProgramFiles%\Microsoft Visual Studio\2022\Enterprise\Common7\Tools\VsDevCmd.bat" -arch=amd64
+          python scripts/test-phase5d.py --ci --stage qualification --output target/phase5d/${{ matrix.target }}
+
+      - name: Upload verified artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: agentgate-${{ matrix.target }}
+          path: target/phase5d/${{ matrix.target }}/artifact
+          if-no-files-found: error
+          retention-days: 14
+
+  sanitizers:
+    name: Linux ASan and UBSan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.11'
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version: '1.24.0'
+          cache: true
+          cache-dependency-path: bindings/go/go.mod
+
+      - name: Set up Java
+        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+          cache-dependency-path: bindings/java/pom.xml
+
+      - name: Set up Node.js
+        uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903
+        with:
+          node-version: '22.18.0'
+
+      - name: Cache Cargo registry and Git index
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: linux-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: linux-cargo-
+
+      - name: Install pinned toolchains
+        run: |
+          rustup toolchain install 1.85.0 --profile minimal
+          rustup override set 1.85.0
+          npm install --global node-gyp@12.1.0
+
+      - name: Install Linux native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes clang cmake ninja-build nlohmann-json3-dev
+          echo "CC=$(command -v clang)" >> "$GITHUB_ENV"
+          echo "CXX=$(command -v clang++)" >> "$GITHUB_ENV"
+
+      - name: Confirm tool versions
+        run: |
+          python --version
+          go version
+          java -version
+          javac -version
+          mvn --version
+          node --version
+          npm --version
+          node-gyp --version
+          rustc --version
+          cargo --version
+          clang --version
+          clang++ --version
+          cmake --version
+          ctest --version
+          ninja --version
+
+      - name: Run sanitizers
+        run: python scripts/test-phase5d.py --ci --stage sanitizers

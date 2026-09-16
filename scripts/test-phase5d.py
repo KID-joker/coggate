@@ -26,6 +26,60 @@ from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
+PHASE5D_WORKFLOW = ROOT / ".github" / "workflows" / "phase5d.yml"
+
+
+def read_phase5d_workflow() -> str:
+    try:
+        return PHASE5D_WORKFLOW.read_text(encoding="utf-8")
+    except FileNotFoundError as error:
+        raise AssertionError("missing Phase 5D qualification workflow") from error
+
+
+def workflow_block(source: str, key: str, indentation: int = 0) -> str:
+    """Return one YAML mapping block without confusing sibling job content."""
+    lines = source.splitlines()
+    marker = " " * indentation + key + ":"
+    try:
+        start = next(
+            index for index, line in enumerate(lines)
+            if line.rstrip() == marker
+        )
+    except StopIteration as error:
+        raise AssertionError(f"missing workflow mapping: {key}") from error
+    end = len(lines)
+    for index in range(start + 1, len(lines)):
+        line = lines[index]
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        current_indentation = len(line) - len(line.lstrip())
+        if current_indentation <= indentation:
+            end = index
+            break
+    block = lines[start:end]
+    while block and not block[-1].strip():
+        block.pop()
+    return "\n".join(block) + "\n"
+
+
+def workflow_step(job: str, name: str) -> str:
+    """Return one named step from a job block."""
+    lines = job.splitlines()
+    marker = f"      - name: {name}"
+    try:
+        start = lines.index(marker)
+    except ValueError as error:
+        raise AssertionError(f"missing workflow step: {name}") from error
+    end = len(lines)
+    for index in range(start + 1, len(lines)):
+        if lines[index].startswith("      - "):
+            end = index
+            break
+    return "\n".join(lines[start:end]) + "\n"
+
+
+def workflow_action_references(source: str) -> list[str]:
+    return re.findall(r"^\s*uses:\s*([^\s#]+)", source, flags=re.MULTILINE)
 
 
 class RunnerError(Exception):
@@ -2766,6 +2820,125 @@ Dump of file agentgate_ffi.dll
             RunnerError, "Phase 5D CI requires an explicit stage"
         ):
             main(["--ci"], system="Linux", arch="x86_64")
+
+    def test_workflow_has_exact_triggers_permissions_concurrency_and_jobs(self):
+        source = read_phase5d_workflow()
+        trigger = workflow_block(source, "on")
+        self.assertRegex(trigger, r"(?m)^  pull_request:\s*$")
+        self.assertRegex(trigger, r"(?m)^  workflow_dispatch:\s*$")
+        push = workflow_block(trigger, "push", 2)
+        self.assertRegex(push, r"(?m)^    branches:\s*\[main\]\s*$")
+        permissions = workflow_block(source, "permissions")
+        self.assertEqual(permissions, "permissions:\n  contents: read\n")
+        concurrency = workflow_block(source, "concurrency")
+        self.assertRegex(concurrency, r"(?m)^  group: .+\$\{\{ github\.ref \}\}")
+        self.assertRegex(concurrency, r"(?m)^  cancel-in-progress: true$")
+        jobs = workflow_block(source, "jobs")
+        self.assertEqual(
+            set(re.findall(r"(?m)^  ([a-z][a-z0-9-]*):\s*$", jobs)),
+            {"qualification", "sanitizers"},
+        )
+
+    def test_workflow_qualification_matrix_and_artifact_contract_are_exact(self):
+        source = read_phase5d_workflow()
+        qualification = workflow_block(workflow_block(source, "jobs"), "qualification", 2)
+        self.assertRegex(qualification, r"(?m)^    timeout-minutes: 60$")
+        self.assertRegex(qualification, r"(?m)^      fail-fast: false$")
+        self.assertRegex(qualification, r"(?m)^    runs-on: \$\{\{ matrix\.os \}\}$")
+        pairs = re.findall(
+            r"(?m)^          - os: ([^\s]+)\n            target: ([^\s]+)$",
+            qualification,
+        )
+        self.assertEqual(
+            pairs,
+            [
+                ("ubuntu-24.04", "x86_64-unknown-linux-gnu"),
+                ("macos-15-intel", "x86_64-apple-darwin"),
+                ("windows-2022", "x86_64-pc-windows-msvc"),
+            ],
+        )
+        run = workflow_step(qualification, "Run qualification")
+        self.assertRegex(
+            run,
+            re.escape(
+                "python scripts/test-phase5d.py --ci --stage qualification "
+                "--output target/phase5d/${{ matrix.target }}"
+            ),
+        )
+        upload = workflow_step(qualification, "Upload verified artifact")
+        self.assertIn(
+            "path: target/phase5d/${{ matrix.target }}/artifact", upload
+        )
+        self.assertIn("if-no-files-found: error", upload)
+        self.assertIn("retention-days: 14", upload)
+
+    def test_workflow_pins_actions_and_configures_language_caches_safely(self):
+        source = read_phase5d_workflow()
+        expected = {
+            "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+            "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+            "actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e",
+            "actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c",
+            "actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903",
+            "actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
+            "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+        }
+        references = workflow_action_references(source)
+        self.assertEqual(set(references), expected)
+        self.assertTrue(
+            all(re.fullmatch(r"[^@]+@[0-9a-f]{40}", item) for item in references)
+        )
+        qualification = workflow_block(workflow_block(source, "jobs"), "qualification", 2)
+        checkout = workflow_step(qualification, "Check out source")
+        self.assertIn("persist-credentials: false", checkout)
+        go = workflow_step(qualification, "Set up Go")
+        self.assertIn("cache: true", go)
+        self.assertIn("cache-dependency-path: bindings/go/go.mod", go)
+        java = workflow_step(qualification, "Set up Java")
+        self.assertIn("cache: maven", java)
+        node = workflow_step(qualification, "Set up Node.js")
+        self.assertNotRegex(node, r"(?m)^\s+cache:")
+        cargo = workflow_step(qualification, "Cache Cargo registry and Git index")
+        self.assertIn("~/.cargo/registry", cargo)
+        self.assertIn("~/.cargo/git", cargo)
+        self.assertNotRegex(cargo, r"(?m)^\s+target\s*$")
+        install = workflow_step(qualification, "Install pinned toolchains")
+        self.assertIn("rustup toolchain install 1.85.0", install)
+        self.assertIn("npm install --global node-gyp@12.1.0", install)
+        sanitizers = workflow_block(workflow_block(source, "jobs"), "sanitizers", 2)
+        sanitizer_checkout = workflow_step(sanitizers, "Check out source")
+        self.assertIn("persist-credentials: false", sanitizer_checkout)
+
+    def test_workflow_platform_setup_versions_and_sanitizers_are_scoped(self):
+        source = read_phase5d_workflow()
+        jobs = workflow_block(source, "jobs")
+        qualification = workflow_block(jobs, "qualification", 2)
+        linux = workflow_step(qualification, "Install Linux native dependencies")
+        for package in ("clang", "cmake", "ninja-build", "nlohmann-json3-dev"):
+            self.assertIn(package, linux)
+        macos = workflow_step(qualification, "Install macOS native dependencies")
+        for package in ("llvm", "cmake", "ninja", "nlohmann-json"):
+            self.assertIn(package, macos)
+        windows = workflow_step(qualification, "Install Windows native dependencies")
+        self.assertIn("vcpkg install nlohmann-json:x64-windows", windows)
+        self.assertIn("CMAKE_TOOLCHAIN_FILE=", windows)
+        versions = workflow_step(qualification, "Confirm tool versions")
+        for command in (
+            "python --version", "go version", "java -version", "javac -version",
+            "mvn --version", "node --version", "npm --version", "node-gyp --version",
+            "rustc --version", "cargo --version", "cmake --version", "ninja --version",
+        ):
+            self.assertIn(command, versions)
+        self.assertRegex(versions, r"(?m)^\s+(clang --version|cl /\?)$")
+        sanitizers = workflow_block(jobs, "sanitizers", 2)
+        self.assertRegex(sanitizers, r"(?m)^    runs-on: ubuntu-24\.04$")
+        self.assertRegex(sanitizers, r"(?m)^    timeout-minutes: 30$")
+        sanitizer_run = workflow_step(sanitizers, "Run sanitizers")
+        self.assertIn(
+            "python scripts/test-phase5d.py --ci --stage sanitizers", sanitizer_run
+        )
+        self.assertNotIn("actions/upload-artifact@", sanitizers)
+        self.assertNotRegex(source, r"(?i)\b(publish|release)\b")
 
 
 @dataclass(frozen=True)
