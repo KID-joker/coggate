@@ -1919,6 +1919,53 @@ Dump of file agentgate_ffi.dll
         )
         self.assertLess(phase5c_index, maven_package_index)
 
+    def test_sanitizer_plan_is_linux_clang_only(self):
+        target = Target.for_host("Linux", "x86_64")
+        command = sanitizer_plan(target, Path("/repo"), complete_capabilities())[0]
+        environment = dict(command.env)
+        self.assertEqual(environment["CC"], "clang")
+        self.assertEqual(environment["CXX"], "clang++")
+        self.assertIn("-fsanitize=address,undefined", environment["CFLAGS"])
+        self.assertEqual(environment["ASAN_OPTIONS"], "detect_leaks=1:halt_on_error=1")
+        self.assertEqual(environment["UBSAN_OPTIONS"], "halt_on_error=1:print_stacktrace=1")
+        with self.assertRaisesRegex(RunnerError, "Linux x86_64"):
+            sanitizer_plan(Target.for_host("Darwin", "x86_64"), Path("/repo"), complete_capabilities())
+
+    def test_sanitizer_plan_rejects_missing_compile_or_link_flags(self):
+        command = sanitizer_plan(
+            Target.for_host("Linux", "x86_64"), Path("/repo"), complete_capabilities()
+        )[0]
+        environment = tuple(
+            pair for pair in command.env if pair[0] != "LDFLAGS"
+        )
+        with self.assertRaisesRegex(RunnerError, "compile or link flags"):
+            _assert_sanitizer_plan([
+                PlannedCommand(command.argv, command.cwd, environment, command.purpose)
+            ])
+
+    def test_sanitizer_run_builds_stable_ffi_before_direct_consumers(self):
+        commands = []
+
+        def runner(argv, **kwargs):
+            commands.append((tuple(argv), kwargs))
+            return mock.Mock(returncode=0)
+
+        self.assertEqual(
+            run_sanitizers(
+                Target.for_host("Linux", "x86_64"), Path("/repo"),
+                complete_capabilities(), command_runner=runner,
+            ),
+            "PASS",
+        )
+        self.assertEqual(
+            commands[0][0], ("cargo", "build", "-p", "agentgate-ffi", "--release")
+        )
+        self.assertIn("--direct-native", commands[1][0])
+        self.assertEqual(commands[1][1]["env"]["CC"], "clang")
+        self.assertIn("-fsanitize=address,undefined", commands[1][1]["env"]["LDFLAGS"])
+        self.assertFalse(commands[0][1]["shell"])
+        self.assertFalse(commands[1][1]["shell"])
+
     def test_cargo_target_directory_overrides_conflicting_parent_environment(self):
         artifact_directory = Path("/controlled target/release")
         command = qualification_plan(
@@ -2405,12 +2452,31 @@ Dump of file agentgate_ffi.dll
         ):
             main(["--stage", "artifact"], system="Darwin", arch="arm64")
 
-    def test_x86_64_unimplemented_stages_fail_closed(self):
-        for stage in ("all", "sanitizers"):
-            with self.subTest(stage=stage), self.assertRaisesRegex(
-                RunnerError, f"Phase 5D stage is not implemented: {stage}"
-            ):
-                main(["--stage", stage], system="Linux", arch="x86_64")
+    def test_x86_64_all_stage_fails_closed(self):
+        with self.assertRaisesRegex(RunnerError, "Phase 5D stage is not implemented: all"):
+            main(["--stage", "all"], system="Linux", arch="x86_64")
+
+    def test_sanitizer_stage_requires_linux_x86_64(self):
+        with self.assertRaisesRegex(RunnerError, "Linux x86_64"):
+            main(["--stage", "sanitizers"], system="Darwin", arch="x86_64")
+
+    def test_ci_sanitizer_stage_reports_pass_only_after_runner_success(self):
+        stdout = io.StringIO()
+        with mock.patch.object(
+            sys.modules[__name__], "detect_capabilities",
+            return_value=complete_capabilities(),
+        ), mock.patch.object(
+            sys.modules[__name__], "run_sanitizers", return_value="PASS"
+        ) as runner, contextlib.redirect_stdout(stdout):
+            self.assertEqual(
+                main(
+                    ["--ci", "--stage", "sanitizers"],
+                    system="Linux", arch="x86_64", root=Path("/repo"),
+                ),
+                0,
+            )
+        runner.assert_called_once()
+        self.assertIn("sanitizers=PASS", stdout.getvalue())
 
     def test_artifact_stage_assembles_then_verifies_before_pass_output(self):
         artifact = Path("/output/artifact")
@@ -3252,6 +3318,62 @@ def smoke_plan(
         )
     )
     return commands
+
+
+SANITIZER_FLAG = "-fsanitize=address,undefined"
+SANITIZER_ENVIRONMENT = (
+    ("CC", "clang"),
+    ("CXX", "clang++"),
+    ("CFLAGS", "-O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined"),
+    ("CXXFLAGS", "-O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined"),
+    ("LDFLAGS", "-fsanitize=address,undefined"),
+    ("ASAN_OPTIONS", "detect_leaks=1:halt_on_error=1"),
+    ("UBSAN_OPTIONS", "halt_on_error=1:print_stacktrace=1"),
+)
+
+
+def _assert_sanitizer_plan(plan: list[PlannedCommand]) -> None:
+    """Fail closed unless direct consumer builds carry compile and link sanitizers."""
+    for command in plan:
+        environment = dict(command.env)
+        if "--direct-native" not in command.argv:
+            raise RunnerError("sanitizer direct compile plan requires --direct-native")
+        if (
+            SANITIZER_FLAG not in environment.get("CFLAGS", "")
+            or SANITIZER_FLAG not in environment.get("CXXFLAGS", "")
+            or SANITIZER_FLAG not in environment.get("LDFLAGS", "")
+        ):
+            raise RunnerError(
+                "sanitizer direct compile plan is missing sanitizer compile or link flags"
+            )
+
+
+def sanitizer_plan(
+    target: Target, root: Path, capabilities: dict[str, Capability]
+) -> list[PlannedCommand]:
+    if target.system != "Linux" or target.arch != "x86_64":
+        raise RunnerError("sanitizer stage requires Linux x86_64")
+    python = capabilities["python"].path
+    if python is None:
+        raise RunnerError("required capability: Python 3.11+")
+    root = Path(root)
+    plan = [
+        PlannedCommand(
+            (
+                python,
+                str(root / "scripts" / "test-phase5b.py"),
+                "--native-only",
+                "--direct-native",
+                "--library",
+                str(root / "target" / "release" / target.shared_name),
+            ),
+            root,
+            SANITIZER_ENVIRONMENT,
+            purpose="sanitizer-direct-native",
+        )
+    ]
+    _assert_sanitizer_plan(plan)
+    return plan
 
 
 def qualification_plan(
@@ -4979,6 +5101,58 @@ def run_command(
     return "PASS"
 
 
+def run_sanitizer_command(
+    command: PlannedCommand,
+    command_runner=subprocess.run,
+    *,
+    dry_run: bool = False,
+) -> str:
+    """Run a sanitizer plan command while rendering its required flags."""
+    formatted = shlex.join(
+        [f"{key}={value}" for key, value in command.env] + list(command.argv)
+    )
+    print("+ " + formatted)
+    if dry_run:
+        return "PLANNED"
+    environment = os.environ.copy()
+    environment.update(dict(command.env))
+    try:
+        completed = command_runner(
+            list(command.argv), cwd=command.cwd, env=environment, shell=False,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise RunnerError(f"unable to run {command.argv[0]}: {error}") from error
+    if completed.returncode != 0:
+        raise RunnerError(
+            f"command failed: {formatted} (exit code {completed.returncode})"
+        )
+    return "PASS"
+
+
+def run_sanitizers(
+    target: Target,
+    root: Path,
+    capabilities: dict[str, Capability],
+    *,
+    command_runner=subprocess.run,
+    dry_run: bool = False,
+) -> str:
+    """Exercise sanitized C/C++ consumers against the stable Rust FFI release."""
+    require_ci_capabilities(capabilities)
+    root = Path(root)
+    plan = sanitizer_plan(target, root, capabilities)
+    _assert_sanitizer_plan(plan)
+    stable_ffi_build = PlannedCommand(
+        ("cargo", "build", "-p", "agentgate-ffi", "--release"),
+        root,
+        purpose="sanitizer-stable-ffi-build",
+    )
+    run_command(stable_ffi_build, command_runner, dry_run=dry_run)
+    for command in plan:
+        run_sanitizer_command(command, command_runner, dry_run=dry_run)
+    return "PLANNED" if dry_run else "PASS"
+
+
 def _copy_verified_artifact(
     source: Path,
     destination: Path,
@@ -5250,18 +5424,31 @@ def main(
     validation = validate_target(host_system, host_arch, arguments.ci)
     if not validation.qualified and arguments.stage is not None:
         raise RunnerError("Phase 5D qualification requires x86_64")
-    if arguments.stage in {"all", "sanitizers"}:
+    if arguments.stage == "all":
         raise RunnerError(f"Phase 5D stage is not implemented: {arguments.stage}")
     if arguments.ci:
         if arguments.stage is None:
             raise RunnerError("Phase 5D CI requires an explicit stage")
 
-    if arguments.stage in {"qualification", "artifact"}:
+    if arguments.stage in {"qualification", "artifact", "sanitizers"}:
         target = Target.for_host(host_system, host_arch)
+        if arguments.stage == "sanitizers" and target.system != "Linux":
+            raise RunnerError("sanitizer stage requires Linux x86_64")
         capabilities = detect_capabilities(
             target.system, tool_lookup=tool_lookup, version_output=version_output
         )
         require_ci_capabilities(capabilities)
+
+    if arguments.stage == "sanitizers":
+        status = run_sanitizers(
+            target,
+            Path(root),
+            capabilities,
+            command_runner=command_runner,
+            dry_run=arguments.dry_run,
+        )
+        print(f"phase5d: qualification=NOT_RUN sanitizers={status}")
+        return 0
 
     if arguments.stage == "artifact":
         if arguments.dry_run:

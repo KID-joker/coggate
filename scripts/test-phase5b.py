@@ -114,7 +114,9 @@ def _run(command, dry_run=False, cwd=None, env=None):
     print("+ " + shlex.join([str(part) for part in command]))
     if dry_run:
         return
-    completed = subprocess.run([str(part) for part in command], cwd=cwd, env=env)
+    completed = subprocess.run(
+        [str(part) for part in command], cwd=cwd, env=env, shell=False
+    )
     if completed.returncode != 0:
         raise RunnerError("command failed with exit code %d" % completed.returncode)
 
@@ -216,8 +218,21 @@ def _direct_flags(
     return flags
 
 
+def _environment_flags(name):
+    value = os.environ.get(name, "")
+    try:
+        return shlex.split(value)
+    except ValueError as error:
+        raise RunnerError(f"invalid {name}: {error}") from error
+
+
 def _direct_build(library, tools, system, static, dry_run):
     groups = {language: _sources(language) for language in ("c", "cpp")}
+    language_flags = {
+        "c": _environment_flags("CFLAGS"),
+        "cpp": _environment_flags("CXXFLAGS"),
+    }
+    link_flags = _environment_flags("LDFLAGS")
     cpp_tests, cpp_examples, _, _ = groups["cpp"]
     nlohmann_include = (
         _nlohmann_include_dir() if cpp_tests or cpp_examples else None
@@ -233,6 +248,7 @@ def _direct_build(library, tools, system, static, dry_run):
             for source in sources:
                 output = build / (language + "-" + source.stem)
                 command = [tools[compiler_key], source]
+                command.extend(language_flags[language])
                 command.extend(test_support if source in tests else example_support)
                 command.extend(["-o", output])
                 command.extend(
@@ -244,6 +260,7 @@ def _direct_build(library, tools, system, static, dry_run):
                         nlohmann_include,
                     )
                 )
+                command.extend(link_flags)
                 _run(command, dry_run)
                 if source in tests or source in examples:
                     _run([output], dry_run)
@@ -251,6 +268,9 @@ def _direct_build(library, tools, system, static, dry_run):
 
 def run_phase5b(args):
     system = args.system or platform.system()
+    direct_native = getattr(args, "direct_native", False)
+    if direct_native and system == "Windows":
+        raise RunnerError("--direct-native is not supported on Windows")
     tools = detect_tools(system)
     for message in capability_messages(tools, sys.version_info[:2]):
         _warning(message)
@@ -266,6 +286,8 @@ def run_phase5b(args):
             raise RunnerError("Windows native tests require CMake and MSVC")
         library, runtime_library = windows_library_artifacts(library, static)
         _cmake_build(library, runtime_library, static, args.dry_run, system)
+    elif direct_native:
+        _direct_build(library, tools, system, static, args.dry_run)
     elif tools["cmake"]:
         _cmake_build(library, None, static, args.dry_run, system)
     else:
@@ -316,6 +338,7 @@ def parse_args(argv):
     parser.add_argument("--library", type=Path)
     parser.add_argument("--static", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--direct-native", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--system", choices=["Linux", "Darwin", "Windows"], help=argparse.SUPPRESS)
     return parser.parse_args(argv)
@@ -556,6 +579,107 @@ class RunnerSelfTests(unittest.TestCase):
 
         executed = [command[0] for command in commands if len(command) == 1]
         self.assertEqual(len(executed), 4)
+
+    def test_direct_native_bypasses_cmake_even_when_available_on_linux(self):
+        library = Path("/native/libagentgate_ffi.so")
+        args = argparse.Namespace(
+            system="Linux", library=library, static=False, dry_run=True,
+            native_only=True, direct_native=True,
+        )
+        with mock.patch.object(
+            sys.modules[__name__], "detect_tools",
+            return_value={"cmake": "cmake", "cc": "cc", "cxx": "c++"},
+        ), mock.patch.object(
+            sys.modules[__name__], "discover_library", return_value=library
+        ), mock.patch.object(sys.modules[__name__], "_cmake_build") as cmake_build, mock.patch.object(
+            sys.modules[__name__], "_direct_build"
+        ) as direct_build:
+            run_phase5b(args)
+
+        cmake_build.assert_not_called()
+        direct_build.assert_called_once_with(
+            library, {"cmake": "cmake", "cc": "cc", "cxx": "c++"},
+            "Linux", False, True,
+        )
+
+    def test_direct_native_is_rejected_on_windows(self):
+        args = argparse.Namespace(
+            system="Windows", library=Path("C:/native/agentgate_ffi.dll.lib"),
+            static=False, dry_run=True, native_only=True, direct_native=True,
+        )
+        with self.assertRaisesRegex(RunnerError, "--direct-native.*Windows"), mock.patch.object(
+            sys.modules[__name__], "detect_tools"
+        ) as detect_tools:
+            run_phase5b(args)
+        detect_tools.assert_not_called()
+
+    def test_default_native_path_remains_cmake_first(self):
+        library = Path("/native/libagentgate_ffi.so")
+        args = argparse.Namespace(
+            system="Linux", library=library, static=False, dry_run=True,
+            native_only=True, direct_native=False,
+        )
+        with mock.patch.object(
+            sys.modules[__name__], "detect_tools",
+            return_value={"cmake": "cmake", "cc": "cc", "cxx": "c++"},
+        ), mock.patch.object(
+            sys.modules[__name__], "discover_library", return_value=library
+        ), mock.patch.object(sys.modules[__name__], "_cmake_build") as cmake_build, mock.patch.object(
+            sys.modules[__name__], "_direct_build"
+        ) as direct_build:
+            run_phase5b(args)
+
+        cmake_build.assert_called_once_with(library, None, False, True, "Linux")
+        direct_build.assert_not_called()
+
+    def test_direct_build_tokenizes_language_and_linker_flags_without_shell(self):
+        c_source = Path("c/tests/contract.c")
+        cpp_source = Path("cpp/tests/contract.cpp")
+        commands = []
+        environment = {
+            "CFLAGS": '-DC_ONLY="two words" -fsanitize=address,undefined',
+            "CXXFLAGS": '-DCXX_ONLY="two words" -fsanitize=address,undefined',
+            "LDFLAGS": "-Wl,--as-needed -fsanitize=address,undefined",
+        }
+        groups = {"c": ([c_source], [], [], []), "cpp": ([cpp_source], [], [], [])}
+        with mock.patch.dict(os.environ, environment, clear=False), mock.patch.object(
+            sys.modules[__name__], "_sources", side_effect=lambda language: groups[language]
+        ), mock.patch.object(
+            sys.modules[__name__], "_nlohmann_include_dir", return_value=Path("json")
+        ), mock.patch.object(
+            sys.modules[__name__], "_run", side_effect=lambda command, *args, **kwargs: commands.append(command)
+        ):
+            _direct_build(
+                Path("library"), {"cc": "cc", "cxx": "c++"}, "Linux", False, True
+            )
+
+        compile_commands = [command for command in commands if command[0] in {"cc", "c++"}]
+        self.assertEqual(len(compile_commands), 2)
+        c_command = next(command for command in compile_commands if command[0] == "cc")
+        cpp_command = next(command for command in compile_commands if command[0] == "c++")
+        self.assertIn("-DC_ONLY=two words", c_command)
+        self.assertNotIn("-DCXX_ONLY=two words", c_command)
+        self.assertIn("-DCXX_ONLY=two words", cpp_command)
+        self.assertNotIn("-DC_ONLY=two words", cpp_command)
+        for command in compile_commands:
+            self.assertIn("-Wl,--as-needed", command)
+            self.assertIn("-fsanitize=address,undefined", command)
+
+    def test_direct_build_rejects_malformed_flag_quoting_without_execution(self):
+        with mock.patch.dict(os.environ, {"CFLAGS": "'unterminated"}, clear=False), mock.patch.object(
+            sys.modules[__name__], "_sources", return_value=([Path("c/tests/contract.c")], [], [], [])
+        ), mock.patch.object(sys.modules[__name__], "_run") as run:
+            with self.assertRaisesRegex(RunnerError, "invalid CFLAGS"):
+                _direct_build(
+                    Path("library"), {"cc": "cc", "cxx": "c++"}, "Linux", False, True
+                )
+        run.assert_not_called()
+
+    def test_run_never_uses_a_shell(self):
+        completed = mock.Mock(returncode=0)
+        with mock.patch.object(subprocess, "run", return_value=completed) as runner:
+            _run(["compiler", "input.c"])
+        self.assertFalse(runner.call_args.kwargs["shell"])
 
     def test_cmake_requires_and_links_nlohmann_json_package(self):
         root_cmake = (BINDINGS_DIR / "CMakeLists.txt").read_text(encoding="utf-8")
