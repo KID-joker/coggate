@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 pub mod baseline;
+pub mod cli;
 pub mod corpus;
 pub mod llm;
 pub mod manifest;

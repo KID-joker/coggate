@@ -257,6 +257,10 @@ impl QualificationReport {
         &self.summary.failed_thresholds
     }
 
+    pub fn subject_id(&self) -> &str {
+        self.binding.subject_id()
+    }
+
     pub fn payload_digest(&self) -> &str {
         &self.payload_digest
     }
