@@ -86,8 +86,12 @@ def _yaml_mapping_key(line: str, indentation: int) -> str | None:
     if len(line) - len(line.lstrip(" ")) != indentation:
         return None
     content = line[indentation:]
-    if not content:
+    if not content.strip() or content.lstrip().startswith("#"):
         return None
+    if content.startswith("?"):
+        return "?"
+    if content.startswith(":"):
+        return ":"
     if content.startswith("'"):
         index = 1
         decoded = []
@@ -3113,6 +3117,7 @@ Dump of file agentgate_ffi.dll
             '    "permis\\u0073ions": {}\n'
             "    'permis''sions': {}\n"
             "    <<: {unexpected: true}\n"
+            "    # rationale: text\n"
             "    steps:\n"
             "      - name: First\n"
             "        run: |\n"
@@ -3596,6 +3601,33 @@ Dump of file agentgate_ffi.dll
                 ("single-quoted permissions", "    'permissions':\n      contents: write\n"),
                 ("quoted unknown key", '    "unexpected": true\n'),
                 ("merge key", "    <<: {permissions: read-all}\n"),
+            )
+            for label, entry in entries:
+                mutations.append(
+                    (
+                        f"{job_name} {label}",
+                        source.replace(marker, marker + entry, 1),
+                    )
+                )
+        for label, mutant in mutations:
+            with self.subTest(label=label):
+                self._assert_workflow_mutant_rejected(mutant, label)
+
+    def test_workflow_contract_rejects_explicit_job_mapping_keys(self):
+        source = read_phase5d_workflow()
+        mutations = []
+        for job_name in ("qualification", "sanitizers"):
+            marker = f"  {job_name}:\n"
+            entries = (
+                ("bare explicit key", "    ? permissions\n    : write-all\n"),
+                (
+                    "quoted explicit key",
+                    '    ? "permissions"\n    : write-all\n',
+                ),
+                (
+                    "multi-line explicit key",
+                    "    ?\n      permissions\n    : write-all\n",
+                ),
             )
             for label, entry in entries:
                 mutations.append(
