@@ -5,6 +5,8 @@ use zeroize::Zeroizing;
 use crate::corpus::CorpusCase;
 
 pub mod fingerprint;
+pub mod regex_extract;
+pub mod simple_parser;
 
 pub enum Prediction {
     Guess(Zeroizing<String>),
