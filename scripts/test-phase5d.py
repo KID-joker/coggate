@@ -51,9 +51,12 @@ class RunnerSelfTests(unittest.TestCase):
             source = (
                 ROOT / "tests" / "qualification" / f"abi_probe.{extension}"
             ).read_text(encoding="utf-8")
-            for export in EXPECTED_EXPORTS:
-                with self.subTest(extension=extension, export=export):
-                    self.assertRegex(source, rf"\b{export}\b")
+            source = re.sub(r"/\*.*?\*/", "", source, flags=re.DOTALL)
+            source = re.sub(r"//.*$", "", source, flags=re.MULTILINE)
+            references = set(
+                re.findall(r"=\s*&?(ag_[A-Za-z0-9_]+)\s*;", source)
+            )
+            self.assertEqual(references, EXPECTED_EXPORTS)
 
     def test_symbol_parsers_accept_only_the_frozen_exports(self):
         darwin = "000 T _ag_abi_version\n000 T _ag_buffer_free\n"
@@ -75,7 +78,7 @@ class RunnerSelfTests(unittest.TestCase):
 0000000000001110 W ag_buffer_free
                  U ag_service_issue
 0000000000001120 T unrelated_export
-0000000000001130 T ag_service_verify@@AGENTGATE_1
+0000000000001130 T runtime_helper
 0000000000001140 T ag-core-version
 nm: archive member noise
 """
@@ -111,12 +114,35 @@ Dump of file agentgate_ffi.dll
           2    1 00001010 ag_buffer_free
           3    2 00001020 _ag_service_issue@8
           4    3 00001030 ag_service_verify.extra
+          5    4 00001040 ag_service_issue@8 = FORWARDER.issue
 
   Summary
         1000 .data
 """
         self.assertEqual(
-            parse_dumpbin_exports(output), {"ag_abi_version", "ag_buffer_free"}
+            parse_dumpbin_exports(output),
+            {
+                "ag_abi_version",
+                "ag_buffer_free",
+                "ag_service_issue@8",
+                "ag_service_verify.extra",
+            },
+        )
+
+    def test_decorated_public_export_is_unexpected_and_cannot_satisfy_exact_name(self):
+        decorated = "ag_abi_version@@AGENTGATE_1"
+        self.assertEqual(
+            parse_nm_exports(f"0000000000001100 T {decorated}\n"),
+            {decorated},
+        )
+        actual = (EXPECTED_EXPORTS - {"ag_abi_version"}) | {decorated}
+        with self.assertRaises(RunnerError) as raised:
+            validate_exports(actual)
+        self.assertIn(
+            "missing exports (1 total): ag_abi_version", str(raised.exception)
+        )
+        self.assertIn(
+            f"unexpected exports (1 total): {decorated}", str(raised.exception)
         )
 
     def test_export_difference_is_fail_closed(self):
@@ -135,9 +161,21 @@ Dump of file agentgate_ffi.dll
             validate_exports(actual)
         self.assertEqual(
             str(raised.exception),
-            "missing exports: ag_buffer_free, ag_service_verify; "
-            "unexpected exports: ag_alpha_debug, ag_zeta_debug",
+            "missing exports (2 total): ag_buffer_free, ag_service_verify; "
+            "unexpected exports (2 total): ag_alpha_debug, ag_zeta_debug",
         )
+
+    def test_export_difference_bounds_large_sorted_diagnostics(self):
+        actual = {f"ag_extra_{index:04d}" for index in range(1000)}
+        with self.assertRaises(RunnerError) as raised:
+            validate_exports(actual)
+        diagnostic = str(raised.exception)
+        self.assertIn("missing exports (7 total)", diagnostic)
+        self.assertIn("unexpected exports (1000 total)", diagnostic)
+        self.assertIn("ag_extra_0000", diagnostic)
+        self.assertIn("ag_extra_0004", diagnostic)
+        self.assertNotIn("ag_extra_0005", diagnostic)
+        self.assertLess(len(diagnostic), 700)
 
     def test_symbol_command_selection_is_platform_specific(self):
         shared = Path("/qualified artifacts/libagentgate_ffi.so")
@@ -193,11 +231,13 @@ Dump of file agentgate_ffi.dll
     def test_linux_probe_plan_covers_strict_c_and_cpp_shared_and_static(self):
         root = Path("/repo with spaces")
         artifacts = Path("/qualified artifacts")
+        build_root = Path("/temporary probe builds/unique")
         plan = abi_probe_plan(
             Target.for_host("Linux", "x86_64"),
             root,
             artifacts,
             complete_capabilities(),
+            build_root,
         )
         self.assertEqual(len(plan), 8)
         compile_commands = plan[::2]
@@ -215,19 +255,36 @@ Dump of file agentgate_ffi.dll
         self.assertIn(str(artifacts / "libagentgate_ffi.so"), compile_commands[0].argv)
         self.assertIn(str(artifacts / "libagentgate_ffi.a"), compile_commands[2].argv)
         self.assertIn("-DAGENTGATE_STATIC", compile_commands[2].argv)
+        self.assertTrue(
+            all(Path(command.argv[0]).parent == build_root for command in run_commands)
+        )
+        self.assertTrue(
+            all(
+                any(str(build_root) in argument for argument in command.argv)
+                for command in compile_commands
+            )
+        )
+        self.assertTrue(
+            all(
+                str(artifacts / "agentgate_abi_c_shared") not in command.argv
+                for command in compile_commands
+            )
+        )
         self.assertEqual(
             dict(run_commands[0].env)["LD_LIBRARY_PATH"], str(artifacts)
         )
         self.assertNotIn("LD_LIBRARY_PATH", dict(run_commands[2].env))
-        self.assertTrue(all(command.cwd == artifacts for command in run_commands))
+        self.assertTrue(all(command.cwd == build_root for command in run_commands))
 
     def test_darwin_shared_probe_uses_qualified_runtime_directory(self):
         artifacts = Path("/qualified artifacts")
+        build_root = Path("/temporary probe builds/unique")
         plan = abi_probe_plan(
             Target.for_host("Darwin", "x86_64"),
             Path("/repo"),
             artifacts,
             complete_capabilities(),
+            build_root,
         )
         self.assertEqual(
             dict(plan[1].env)["DYLD_LIBRARY_PATH"], str(artifacts)
@@ -236,11 +293,13 @@ Dump of file agentgate_ffi.dll
     def test_windows_probe_plan_distinguishes_import_dll_and_static_library(self):
         root = Path("C:/repo with spaces")
         artifacts = Path("C:/qualified artifacts")
+        build_root = Path("C:/temporary probe builds/unique")
         plan = abi_probe_plan(
             Target.for_host("Windows", "AMD64"),
             root,
             artifacts,
             complete_capabilities(),
+            build_root,
         )
         self.assertEqual(len(plan), 8)
         c_shared, run_c_shared, cpp_shared, _, c_static, run_c_static, cpp_static, _ = plan
@@ -254,9 +313,13 @@ Dump of file agentgate_ffi.dll
         self.assertNotIn("/DAGENTGATE_STATIC", c_shared.argv)
         self.assertIn(str(artifacts / "agentgate_ffi.lib"), c_static.argv)
         self.assertIn("/DAGENTGATE_STATIC", c_static.argv)
-        self.assertEqual(run_c_shared.cwd, artifacts)
-        self.assertEqual(run_c_static.cwd, artifacts)
-        self.assertEqual(Path(run_c_shared.argv[0]).parent, artifacts)
+        for command in (c_shared, cpp_shared, c_static, cpp_static):
+            self.assertTrue(any(arg.startswith("/Fo") for arg in command.argv))
+            self.assertTrue(any(arg.startswith("/Fe") for arg in command.argv))
+            self.assertTrue(any(str(build_root) in arg for arg in command.argv))
+        self.assertEqual(run_c_shared.cwd, build_root)
+        self.assertEqual(run_c_static.cwd, build_root)
+        self.assertEqual(Path(run_c_shared.argv[0]).parent, build_root)
 
     def test_ci_requires_every_tool_and_minimum_version(self):
         capabilities = complete_capabilities()
@@ -311,6 +374,7 @@ Dump of file agentgate_ffi.dll
             Path("/repo"),
             artifact_directory,
             complete_capabilities(),
+            Path("/temporary probe builds/unique"),
         )
         commands = [item.argv for item in plan]
         self.assertIn(("cargo", "fmt", "--check"), commands)
@@ -343,6 +407,7 @@ Dump of file agentgate_ffi.dll
             Path("/repo"),
             artifact_directory,
             complete_capabilities(),
+            Path("/temporary probe builds/unique"),
         )[3]
         runner = mock.Mock(return_value=mock.Mock(returncode=0))
         with mock.patch.dict(
@@ -404,6 +469,133 @@ Dump of file agentgate_ffi.dll
         self.assertLess(first_artifact_index, symbol_index)
         self.assertLess(symbol_index, first_probe_index)
         self.assertLess(first_probe_index, phase5b_index)
+
+    def test_windows_qualification_stages_dll_beside_temporary_probes(self):
+        artifact_directory = Path("C:/qualified artifacts")
+        temporary_roots = []
+        staged = []
+        calls = []
+
+        def temporary_directory(**kwargs):
+            context = tempfile.TemporaryDirectory(**kwargs)
+            temporary_roots.append(Path(context.name))
+            return context
+
+        def runner(argv, **kwargs):
+            calls.append((tuple(argv), kwargs))
+            output = ""
+            if argv[0] == "dumpbin":
+                output = "\n".join(
+                    f"{index} {index:X} 00001000 {name}"
+                    for index, name in enumerate(sorted(EXPECTED_EXPORTS), 1)
+                )
+            return mock.Mock(returncode=0, stdout=output)
+
+        with mock.patch.dict(os.environ, {"BASE": "yes"}, clear=True):
+            self.assertEqual(
+                run_qualification(
+                    Target.for_host("Windows", "AMD64"),
+                    Path("C:/repo with spaces"),
+                    artifact_directory,
+                    complete_capabilities(),
+                    command_runner=runner,
+                    path_is_file=lambda path: True,
+                    temporary_directory=temporary_directory,
+                    copy_file=lambda source, destination: staged.append(
+                        (Path(source), Path(destination))
+                    ),
+                ),
+                "PASS",
+            )
+
+        self.assertEqual(len(temporary_roots), 1)
+        probe_root = temporary_roots[0]
+        self.assertEqual(
+            staged,
+            [
+                (
+                    artifact_directory / "agentgate_ffi.dll",
+                    probe_root / "agentgate_ffi.dll",
+                )
+            ],
+        )
+        shared_runs = [
+            kwargs
+            for argv, kwargs in calls
+            if Path(argv[0]).name in {
+                "agentgate_abi_c_shared.exe",
+                "agentgate_abi_cpp_shared.exe",
+            }
+        ]
+        self.assertEqual(len(shared_runs), 2)
+        self.assertTrue(all(kwargs["cwd"] == probe_root for kwargs in shared_runs))
+        self.assertTrue(all("PATH" not in kwargs["env"] for kwargs in shared_runs))
+        self.assertFalse(probe_root.exists())
+
+    def test_probe_build_directory_is_cleaned_after_command_failure(self):
+        temporary_roots = []
+
+        def temporary_directory(**kwargs):
+            context = tempfile.TemporaryDirectory(**kwargs)
+            temporary_roots.append(Path(context.name))
+            return context
+
+        def runner(argv, **kwargs):
+            output = ""
+            if argv[0] == "nm":
+                output = "\n".join(
+                    f"0000000000001000 T {name}"
+                    for name in sorted(EXPECTED_EXPORTS)
+                )
+            returncode = 9 if any("abi_probe.c" in arg for arg in argv) else 0
+            return mock.Mock(returncode=returncode, stdout=output)
+
+        with self.assertRaisesRegex(RunnerError, "exit code 9"):
+            run_qualification(
+                Target.for_host("Linux", "x86_64"),
+                Path("/repo"),
+                Path("/qualified artifacts"),
+                complete_capabilities(),
+                command_runner=runner,
+                path_is_file=lambda path: True,
+                temporary_directory=temporary_directory,
+            )
+        self.assertEqual(len(temporary_roots), 1)
+        self.assertFalse(temporary_roots[0].exists())
+
+    def test_dry_run_cleans_temporary_probe_plan_without_staging(self):
+        temporary_roots = []
+
+        def temporary_directory(**kwargs):
+            context = tempfile.TemporaryDirectory(**kwargs)
+            temporary_roots.append(Path(context.name))
+            return context
+
+        runner = mock.Mock(side_effect=AssertionError("dry run executed a command"))
+        copy_file = mock.Mock(side_effect=AssertionError("dry run staged a DLL"))
+        path_is_file = mock.Mock(
+            side_effect=AssertionError("dry run validated artifacts")
+        )
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(
+                run_qualification(
+                    Target.for_host("Windows", "AMD64"),
+                    Path("C:/repo"),
+                    Path("C:/qualified artifacts"),
+                    complete_capabilities(),
+                    command_runner=runner,
+                    dry_run=True,
+                    path_is_file=path_is_file,
+                    temporary_directory=temporary_directory,
+                    copy_file=copy_file,
+                ),
+                "PLANNED",
+            )
+        runner.assert_not_called()
+        copy_file.assert_not_called()
+        path_is_file.assert_not_called()
+        self.assertEqual(len(temporary_roots), 1)
+        self.assertFalse(temporary_roots[0].exists())
 
     def test_artifact_gate_tracks_phase5b_boundary_without_magic_index(self):
         events = []
@@ -538,6 +730,7 @@ Dump of file agentgate_ffi.dll
         plan = qualification_plan(
             Target.for_host("Windows", "AMD64"), root, artifacts,
             complete_capabilities(),
+            Path("C:/temporary probe builds/unique"),
         )
         phase5b_dynamic = next(
             command for command in plan
@@ -778,12 +971,14 @@ EXPECTED_EXPORTS = frozenset(
     }
 )
 
-EXPORT_NAME = re.compile(r"ag_[A-Za-z0-9_]+")
+PUBLIC_EXPORT_PREFIX = "ag_"
+MAX_REPORTED_EXPORTS = 5
+MAX_REPORTED_EXPORT_NAME_LENGTH = 48
 NM_EXPORT_LINE = re.compile(
     r"^\s*[0-9A-Fa-f]+\s+([A-Za-z])\s+(\S+)\s*$"
 )
 DUMPBIN_EXPORT_LINE = re.compile(
-    r"^\s*\d+\s+[0-9A-Fa-f]+\s+[0-9A-Fa-f]+\s+(\S+)\s*$"
+    r"^\s*\d+\s+[0-9A-Fa-f]+\s+[0-9A-Fa-f]+\s+(\S+)(?:\s+.*)?$"
 )
 
 
@@ -1041,7 +1236,7 @@ def parse_nm_exports(output: str, *, darwin: bool = False) -> set[str]:
         name = match.group(2)
         if darwin and name.startswith("_"):
             name = name[1:]
-        if EXPORT_NAME.fullmatch(name):
+        if name.startswith(PUBLIC_EXPORT_PREFIX):
             exports.add(name)
     return exports
 
@@ -1053,9 +1248,19 @@ def parse_dumpbin_exports(output: str) -> set[str]:
         if match is None:
             continue
         name = match.group(1)
-        if EXPORT_NAME.fullmatch(name):
+        if name.startswith(PUBLIC_EXPORT_PREFIX):
             exports.add(name)
     return exports
+
+
+def _format_export_difference(label: str, names: list[str]) -> str:
+    displayed = []
+    for name in names[:MAX_REPORTED_EXPORTS]:
+        if len(name) > MAX_REPORTED_EXPORT_NAME_LENGTH:
+            name = name[: MAX_REPORTED_EXPORT_NAME_LENGTH - 3] + "..."
+        displayed.append(name)
+    suffix = ", ..." if len(names) > MAX_REPORTED_EXPORTS else ""
+    return f"{label} ({len(names)} total): {', '.join(displayed)}{suffix}"
 
 
 def validate_exports(actual: set[str] | frozenset[str]) -> None:
@@ -1063,9 +1268,9 @@ def validate_exports(actual: set[str] | frozenset[str]) -> None:
     unexpected = sorted(set(actual) - EXPECTED_EXPORTS)
     differences = []
     if missing:
-        differences.append("missing exports: " + ", ".join(missing))
+        differences.append(_format_export_difference("missing exports", missing))
     if unexpected:
-        differences.append("unexpected exports: " + ", ".join(unexpected))
+        differences.append(_format_export_difference("unexpected exports", unexpected))
     if differences:
         raise RunnerError("; ".join(differences))
 
@@ -1086,10 +1291,10 @@ def symbol_inspection_command(
 
 
 def _probe_output_path(
-    target: Target, artifact_directory: Path, language: str, linkage: str
+    target: Target, build_directory: Path, language: str, linkage: str
 ) -> Path:
     suffix = ".exe" if target.system == "Windows" else ""
-    return artifact_directory / f"agentgate_abi_{language}_{linkage}{suffix}"
+    return build_directory / f"agentgate_abi_{language}_{linkage}{suffix}"
 
 
 def _probe_compile_command(
@@ -1097,6 +1302,7 @@ def _probe_compile_command(
     root: Path,
     artifact_directory: Path,
     capabilities: dict[str, Capability],
+    build_directory: Path,
     language: str,
     linkage: str,
 ) -> PlannedCommand:
@@ -1107,7 +1313,7 @@ def _probe_compile_command(
         label = "C++" if is_cpp else "C"
         raise RunnerError(f"required capability: {label} compiler")
     source = root / "tests" / "qualification" / f"abi_probe.{language}"
-    output = _probe_output_path(target, artifact_directory, language, linkage)
+    output = _probe_output_path(target, build_directory, language, linkage)
     library_name = target.shared_name if linkage == "shared" else target.static_name
     library = artifact_directory / library_name
     include_directory = root / "packages" / "ffi" / "include"
@@ -1128,7 +1334,10 @@ def _probe_compile_command(
         arguments.extend(["/W4", "/WX", f"/I{include_directory}"])
         if linkage == "static":
             arguments.append("/DAGENTGATE_STATIC")
-        arguments.extend([str(source), f"/Fe:{output}", str(link_library)])
+        object_path = build_directory / f"agentgate_abi_{language}_{linkage}.obj"
+        arguments.extend(
+            [str(source), f"/Fo{object_path}", f"/Fe{output}", str(link_library)]
+        )
     else:
         arguments = [
             compiler,
@@ -1148,7 +1357,9 @@ def _probe_compile_command(
         if target.system == "Linux":
             arguments.extend(["-ldl", "-lpthread", "-lm"])
     return PlannedCommand(
-        tuple(arguments), root, purpose=f"abi-probe-compile-{language}-{linkage}"
+        tuple(arguments),
+        build_directory,
+        purpose=f"abi-probe-compile-{language}-{linkage}",
     )
 
 
@@ -1157,9 +1368,11 @@ def abi_probe_plan(
     root: Path,
     artifact_directory: Path,
     capabilities: dict[str, Capability],
+    build_directory: Path,
 ) -> list[PlannedCommand]:
     root = Path(root)
     artifact_directory = Path(artifact_directory)
+    build_directory = Path(build_directory)
     commands = []
     for linkage in ("shared", "static"):
         for language in ("c", "cpp"):
@@ -1168,11 +1381,12 @@ def abi_probe_plan(
                 root,
                 artifact_directory,
                 capabilities,
+                build_directory,
                 language,
                 linkage,
             )
             output = _probe_output_path(
-                target, artifact_directory, language, linkage
+                target, build_directory, language, linkage
             )
             runtime_environment = ()
             if linkage == "shared" and target.system == "Linux":
@@ -1184,7 +1398,7 @@ def abi_probe_plan(
                     compile_command,
                     PlannedCommand(
                         (str(output),),
-                        artifact_directory,
+                        build_directory,
                         runtime_environment,
                         purpose=f"abi-probe-run-{language}-{linkage}",
                     ),
@@ -1198,9 +1412,11 @@ def qualification_plan(
     root: Path,
     artifact_directory: Path,
     capabilities: dict[str, Capability],
+    probe_build_directory: Path,
 ) -> list[PlannedCommand]:
     root = Path(root)
     artifact_directory = Path(artifact_directory)
+    probe_build_directory = Path(probe_build_directory)
     python = capabilities["python"].path
     if python is None:
         raise RunnerError("required capability: Python 3.11+")
@@ -1234,7 +1450,13 @@ def qualification_plan(
     ]
     native_qualification_commands = [
         symbol_inspection_command(target, shared_library),
-        *abi_probe_plan(target, root, artifact_directory, capabilities),
+        *abi_probe_plan(
+            target,
+            root,
+            artifact_directory,
+            capabilities,
+            probe_build_directory,
+        ),
     ]
     wrapper_commands = [
         PlannedCommand(
@@ -1368,38 +1590,65 @@ def run_qualification(
     command_runner=subprocess.run,
     dry_run: bool = False,
     path_is_file=None,
+    temporary_directory=tempfile.TemporaryDirectory,
+    copy_file=shutil.copy2,
 ) -> str:
     require_ci_capabilities(capabilities)
-    plan = qualification_plan(target, root, artifact_directory, capabilities)
-    artifacts_validated = False
-    for command in plan:
-        starts_phase5b = any(
-            argument.replace("\\", "/").endswith("/test-phase5b.py")
-            for argument in command.argv
+    with temporary_directory(prefix="agentgate-phase5d-abi-") as directory:
+        probe_build_directory = Path(directory)
+        plan = qualification_plan(
+            target,
+            root,
+            artifact_directory,
+            capabilities,
+            probe_build_directory,
         )
-        starts_native_qualification = command.purpose == "symbol-inspection"
-        if (
-            (starts_native_qualification or starts_phase5b)
-            and not artifacts_validated
-            and not dry_run
-        ):
-            validate_artifacts(target, artifact_directory, path_is_file)
-            artifacts_validated = True
-        if starts_native_qualification:
-            run_symbol_inspection(
-                command,
-                target.system,
-                command_runner,
-                dry_run=dry_run,
-                windows=target.system == "Windows",
+        artifacts_validated = False
+        runtime_staged = False
+        for command in plan:
+            starts_phase5b = any(
+                argument.replace("\\", "/").endswith("/test-phase5b.py")
+                for argument in command.argv
             )
-        else:
-            run_command(
-                command,
-                command_runner,
-                dry_run=dry_run,
-                windows=target.system == "Windows",
-            )
+            starts_native_qualification = command.purpose == "symbol-inspection"
+            starts_abi_probe = command.purpose.startswith("abi-probe-")
+            if (
+                (starts_native_qualification or starts_phase5b)
+                and not artifacts_validated
+                and not dry_run
+            ):
+                validate_artifacts(target, artifact_directory, path_is_file)
+                artifacts_validated = True
+            if (
+                target.system == "Windows"
+                and starts_abi_probe
+                and not runtime_staged
+                and not dry_run
+            ):
+                source = Path(artifact_directory) / target.shared_name
+                destination = probe_build_directory / target.shared_name
+                try:
+                    copy_file(source, destination)
+                except OSError as error:
+                    raise RunnerError(
+                        f"unable to stage qualified DLL {source}: {error}"
+                    ) from error
+                runtime_staged = True
+            if starts_native_qualification:
+                run_symbol_inspection(
+                    command,
+                    target.system,
+                    command_runner,
+                    dry_run=dry_run,
+                    windows=target.system == "Windows",
+                )
+            else:
+                run_command(
+                    command,
+                    command_runner,
+                    dry_run=dry_run,
+                    windows=target.system == "Windows",
+                )
     return "PLANNED" if dry_run else "PASS"
 
 
