@@ -11,6 +11,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 from dataclasses import dataclass
 from pathlib import Path
@@ -74,11 +75,29 @@ class RunnerSelfTests(unittest.TestCase):
         )
         self.assertLess(looked_up.index("python3"), looked_up.index("python"))
 
+    def test_compiler_capabilities_require_presence_without_version_probe(self):
+        version_output = mock.Mock(
+            side_effect=AssertionError("compiler version probe is not required")
+        )
+        capabilities = detect_capabilities(
+            "Windows",
+            lambda name: "/tools/cl" if name == "cl" else None,
+            version_output,
+        )
+        self.assertEqual(capabilities["cc"], Capability("C compiler", "/tools/cl", None))
+        self.assertEqual(
+            capabilities["cxx"], Capability("C++ compiler", "/tools/cl", None)
+        )
+        version_output.assert_not_called()
+
     def test_qualification_plan_is_complete_and_ordered(self):
+        artifact_directory = Path(
+            "/repo/target with spaces/phase5d/x86_64-unknown-linux-gnu/release"
+        )
         plan = qualification_plan(
             Target.for_host("Linux", "x86_64"),
             Path("/repo"),
-            Path("/repo/target/phase5d/x86_64-unknown-linux-gnu"),
+            artifact_directory,
             complete_capabilities(),
         )
         commands = [item.argv for item in plan]
@@ -99,6 +118,101 @@ class RunnerSelfTests(unittest.TestCase):
             next(i for i, command in enumerate(commands)
                  if "test-phase5c.py" in " ".join(command)),
         )
+        for command in plan[:4]:
+            self.assertEqual(
+                dict(command.env)["CARGO_TARGET_DIR"],
+                str(artifact_directory.parent),
+            )
+
+    def test_cargo_target_directory_overrides_conflicting_parent_environment(self):
+        artifact_directory = Path("/controlled target/release")
+        command = qualification_plan(
+            Target.for_host("Linux", "x86_64"),
+            Path("/repo"),
+            artifact_directory,
+            complete_capabilities(),
+        )[3]
+        runner = mock.Mock(return_value=mock.Mock(returncode=0))
+        with mock.patch.dict(
+            os.environ, {"CARGO_TARGET_DIR": "/redirected elsewhere"}, clear=True
+        ):
+            run_command(command, runner, windows=False)
+        self.assertEqual(
+            runner.call_args.kwargs["env"]["CARGO_TARGET_DIR"],
+            "/controlled target",
+        )
+
+    def test_run_qualification_validates_artifacts_between_build_and_wrappers(self):
+        events = []
+
+        def runner(argv, **kwargs):
+            events.append(("command", tuple(argv)))
+            return mock.Mock(returncode=0)
+
+        def path_is_file(path):
+            events.append(("artifact", path.name))
+            return True
+
+        self.assertEqual(
+            run_qualification(
+                Target.for_host("Linux", "x86_64"),
+                Path("/repo with spaces"),
+                Path("/controlled target/release"),
+                complete_capabilities(),
+                command_runner=runner,
+                path_is_file=path_is_file,
+            ),
+            "PASS",
+        )
+        build_index = events.index(
+            ("command", ("cargo", "build", "-p", "agentgate-ffi", "--release"))
+        )
+        first_artifact_index = next(
+            index for index, event in enumerate(events) if event[0] == "artifact"
+        )
+        phase5b_index = next(
+            index for index, event in enumerate(events)
+            if event[0] == "command" and "test-phase5b.py" in " ".join(event[1])
+        )
+        self.assertLess(build_index, first_artifact_index)
+        self.assertLess(first_artifact_index, phase5b_index)
+
+    def test_artifact_gate_tracks_phase5b_boundary_without_magic_index(self):
+        events = []
+        plan = [
+            PlannedCommand(("cargo", "build"), Path("/repo")),
+            PlannedCommand(("tool", "extra-check"), Path("/repo")),
+            PlannedCommand(
+                ("/tools/python", "/repo/scripts/test-phase5b.py", "--library", "lib"),
+                Path("/repo"),
+            ),
+        ]
+
+        def runner(argv, **kwargs):
+            events.append(("command", tuple(argv)))
+            return mock.Mock(returncode=0)
+
+        def path_is_file(path):
+            events.append(("artifact", path.name))
+            return True
+
+        with mock.patch.object(
+            sys.modules[__name__], "qualification_plan", return_value=plan
+        ):
+            run_qualification(
+                Target.for_host("Linux", "x86_64"),
+                Path("/repo"),
+                Path("/target/release"),
+                complete_capabilities(),
+                command_runner=runner,
+                path_is_file=path_is_file,
+            )
+        phase5b_index = events.index(("command", plan[-1].argv))
+        artifact_indexes = [
+            index for index, event in enumerate(events) if event[0] == "artifact"
+        ]
+        self.assertTrue(artifact_indexes)
+        self.assertLess(max(artifact_indexes), phase5b_index)
 
     def test_detect_capabilities_parses_numeric_versions(self):
         paths = {
@@ -130,6 +244,8 @@ class RunnerSelfTests(unittest.TestCase):
             "Linux", paths.get, lambda path, *args: outputs[(path, *args)]
         )
         expected = complete_capabilities()
+        expected["cc"] = Capability("C compiler", "/tools/cc", None)
+        expected["cxx"] = Capability("C++ compiler", "/tools/cxx", None)
         self.assertEqual(
             {key: capability.version for key, capability in capabilities.items()},
             {key: capability.version for key, capability in expected.items()},
@@ -137,6 +253,55 @@ class RunnerSelfTests(unittest.TestCase):
         self.assertEqual(
             {key: capability.name for key, capability in capabilities.items()},
             {key: capability.name for key, capability in expected.items()},
+        )
+
+    def test_tool_version_parser_ignores_warning_prefix_numbers(self):
+        self.assertEqual(
+            parse_tool_version(
+                "java",
+                'JAVA_TOOL_OPTIONS: -Dbuild.year=2022\nopenjdk version "17.0.12"',
+            ),
+            (17, 0, 12),
+        )
+        self.assertEqual(
+            parse_tool_version(
+                "maven",
+                "launcher warning: Java 8 selected\n  \x1b[1mApache Maven 3.9.9\x1b[0m",
+            ),
+            (3, 9, 9),
+        )
+        self.assertEqual(
+            parse_tool_version(
+                "java",
+                'warning: launcher 8\n  \x1b[32mopenjdk version "17.0.12"\x1b[0m',
+            ),
+            (17, 0, 12),
+        )
+
+    def test_nonzero_version_probe_rejects_parseable_banner(self):
+        with tempfile.TemporaryDirectory() as directory:
+            probe = Path(directory) / "version probe.py"
+            probe.write_text(
+                "import sys\nprint('tool 99.0.0')\nprint('diagnostic ' + 'x' * 1000)\nsys.exit(7)\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                RunnerError, r"version probe.*exit code 7.*tool 99\.0\.0"
+            ) as raised:
+                _version_output(sys.executable, str(probe))
+        self.assertLess(len(str(raised.exception)), 800)
+
+    def test_windows_version_probe_error_uses_native_command_rendering(self):
+        completed = mock.Mock(returncode=7, stdout="tool 99.0.0")
+        with mock.patch.object(
+            subprocess, "run", return_value=completed
+        ), mock.patch.object(
+            platform, "system", return_value="Windows"
+        ), self.assertRaises(RunnerError) as raised:
+            _version_output("C:\\Program Files\\tool.exe", "--version")
+        self.assertIn(
+            subprocess.list2cmdline(["C:\\Program Files\\tool.exe", "--version"]),
+            str(raised.exception),
         )
 
     def test_windows_plan_uses_import_library_for_phase5b_and_dll_for_phase5c(self):
@@ -170,6 +335,16 @@ class RunnerSelfTests(unittest.TestCase):
         self.assertEqual(kwargs["env"]["PRESERVED"], "yes")
         self.assertEqual(kwargs["env"]["EXTRA"], "value")
         self.assertEqual(stdout.getvalue(), "+ tool 'an argument'\n")
+
+    def test_nonzero_command_error_names_command_and_exit_code(self):
+        with contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(
+            RunnerError, r"tool.*exit code 9"
+        ):
+            run_command(
+                PlannedCommand(("tool", "arg"), Path("/repo")),
+                mock.Mock(return_value=mock.Mock(returncode=9)),
+                windows=False,
+            )
 
     def test_linux_x86_64_target(self):
         target = Target.for_host("Linux", "x86_64")
@@ -269,11 +444,32 @@ class RunnerSelfTests(unittest.TestCase):
             main(["--stage", "artifact"], system="Darwin", arch="arm64")
 
     def test_x86_64_unimplemented_stages_fail_closed(self):
-        for stage in ("sanitizers", "artifact"):
+        for stage in ("all", "sanitizers", "artifact"):
             with self.subTest(stage=stage), self.assertRaisesRegex(
                 RunnerError, f"Phase 5D stage is not implemented: {stage}"
             ):
                 main(["--stage", stage], system="Linux", arch="x86_64")
+
+    def test_all_fails_before_discovery_execution_or_success_output(self):
+        tool_lookup = mock.Mock(side_effect=AssertionError("unexpected tool lookup"))
+        version_output = mock.Mock(side_effect=AssertionError("unexpected probe"))
+        command_runner = mock.Mock(side_effect=AssertionError("unexpected command"))
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout), self.assertRaisesRegex(
+            RunnerError, "Phase 5D stage is not implemented: all"
+        ):
+            main(
+                ["--stage", "all"],
+                system="Linux",
+                arch="x86_64",
+                tool_lookup=tool_lookup,
+                version_output=version_output,
+                command_runner=command_runner,
+            )
+        tool_lookup.assert_not_called()
+        version_output.assert_not_called()
+        command_runner.assert_not_called()
+        self.assertNotIn("PASS", stdout.getvalue())
 
     def test_x86_64_bare_ci_fails_closed(self):
         with self.assertRaisesRegex(
@@ -423,6 +619,51 @@ def parse_version(output: str) -> tuple[int, ...] | None:
     return tuple(int(part) for part in match.group(1).split("."))
 
 
+TOOL_VERSION_PATTERNS = {
+    "cargo": r"^cargo\s+(\d+(?:\.\d+)*)",
+    "rustc": r"^rustc\s+(\d+(?:\.\d+)*)",
+    "python": r"^Python\s+(\d+(?:\.\d+)*)",
+    "go": r"^go version go(\d+(?:\.\d+)*)",
+    "java": r"^(?:openjdk|java) version\s+[\"']?(\d+(?:\.\d+)*)",
+    "javac": r"^javac\s+(\d+(?:\.\d+)*)",
+    "cmake": r"^cmake version\s+(\d+(?:\.\d+)*)",
+    "ctest": r"^ctest version\s+(\d+(?:\.\d+)*)",
+    "maven": r"^Apache Maven\s+(\d+(?:\.\d+)*)",
+    "node": r"^v(\d+(?:\.\d+)*)",
+    "node_api": r"^\s*(\d+(?:\.\d+)*)\s*$",
+    "node_gyp": r"^v(\d+(?:\.\d+)*)",
+}
+ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
+
+def parse_tool_version(tool: str, output: str) -> tuple[int, ...] | None:
+    pattern = TOOL_VERSION_PATTERNS[tool]
+    normalized_output = "\n".join(
+        line.lstrip() for line in ANSI_ESCAPE.sub("", output).splitlines()
+    )
+    match = re.search(
+        pattern, normalized_output, flags=re.IGNORECASE | re.MULTILINE
+    )
+    if match is None:
+        return None
+    return parse_version(match.group(1))
+
+
+def _bounded_diagnostic(output: str, limit: int = 512) -> str:
+    diagnostic = " ".join(output.split())
+    if not diagnostic:
+        return "no output"
+    if len(diagnostic) > limit:
+        return diagnostic[:limit] + "..."
+    return diagnostic
+
+
+def _format_command(argv: tuple[str, ...] | list[str], windows: bool | None = None) -> str:
+    if windows is None:
+        windows = platform.system() == "Windows"
+    return subprocess.list2cmdline(list(argv)) if windows else shlex.join(argv)
+
+
 def _version_output(path: str, *arguments: str) -> str:
     completed = subprocess.run(
         [path, *arguments],
@@ -432,6 +673,12 @@ def _version_output(path: str, *arguments: str) -> str:
         check=False,
         shell=False,
     )
+    if completed.returncode != 0:
+        command = _format_command([path, *arguments])
+        raise RunnerError(
+            f"version probe failed for {command} with exit code "
+            f"{completed.returncode}: {_bounded_diagnostic(completed.stdout)}"
+        )
     return completed.stdout
 
 
@@ -469,8 +716,6 @@ def detect_capabilities(
         "maven": ("--version",),
         "node": ("--version",),
         "node_gyp": ("--version",),
-        "cc": ("--version",),
-        "cxx": ("--version",),
     }
     paths = {key: tool_lookup(executable) for key, executable in executables.items()}
     if paths["python"] is None:
@@ -480,8 +725,12 @@ def detect_capabilities(
         path = paths[key]
         if path is None:
             return Capability(CAPABILITY_NAMES[key], None, None)
+        if key in {"cc", "cxx"}:
+            return Capability(CAPABILITY_NAMES[key], path, None)
         try:
-            version = parse_version(version_output(path, *version_arguments[key]))
+            version = parse_tool_version(
+                key, version_output(path, *version_arguments[key])
+            )
         except (OSError, subprocess.SubprocessError):
             version = None
         return Capability(CAPABILITY_NAMES[key], path, version)
@@ -492,7 +741,8 @@ def detect_capabilities(
         capabilities["node_api"] = Capability("Node-API", None, None)
     else:
         try:
-            node_api_version = parse_version(
+            node_api_version = parse_tool_version(
+                "node_api",
                 version_output(node_path, "-p", "process.versions.napi")
             )
         except (OSError, subprocess.SubprocessError):
@@ -548,14 +798,22 @@ def qualification_plan(
         ("CC", capabilities["cc"].path or ""),
         ("CXX", capabilities["cxx"].path or ""),
     )
+    cargo_environment = (("CARGO_TARGET_DIR", str(artifact_directory.parent)),)
     return [
-        PlannedCommand(("cargo", "fmt", "--check"), root),
+        PlannedCommand(("cargo", "fmt", "--check"), root, cargo_environment),
         PlannedCommand(
             ("cargo", "clippy", "--workspace", "--all-targets", "--", "-D", "warnings"),
             root,
+            cargo_environment,
         ),
-        PlannedCommand(("cargo", "test", "--workspace"), root),
-        PlannedCommand(("cargo", "build", "-p", "agentgate-ffi", "--release"), root),
+        PlannedCommand(
+            ("cargo", "test", "--workspace"), root, cargo_environment
+        ),
+        PlannedCommand(
+            ("cargo", "build", "-p", "agentgate-ffi", "--release"),
+            root,
+            cargo_environment,
+        ),
         PlannedCommand(
             (
                 python,
@@ -616,11 +874,7 @@ def run_command(
 ) -> str:
     if windows is None:
         windows = platform.system() == "Windows"
-    formatted = (
-        subprocess.list2cmdline(list(command.argv))
-        if windows
-        else shlex.join(command.argv)
-    )
+    formatted = _format_command(command.argv, windows)
     print("+ " + formatted)
     if dry_run:
         return "PLANNED"
@@ -636,7 +890,9 @@ def run_command(
     except (OSError, subprocess.SubprocessError) as error:
         raise RunnerError(f"unable to run {command.argv[0]}: {error}") from error
     if completed.returncode != 0:
-        raise RunnerError(f"command failed with exit code {completed.returncode}")
+        raise RunnerError(
+            f"command failed: {formatted} (exit code {completed.returncode})"
+        )
     return "PASS"
 
 
@@ -652,9 +908,15 @@ def run_qualification(
 ) -> str:
     require_ci_capabilities(capabilities)
     plan = qualification_plan(target, root, artifact_directory, capabilities)
-    for index, command in enumerate(plan):
-        if index == 4 and not dry_run:
+    artifacts_validated = False
+    for command in plan:
+        starts_phase5b = any(
+            argument.replace("\\", "/").endswith("/test-phase5b.py")
+            for argument in command.argv
+        )
+        if starts_phase5b and not artifacts_validated and not dry_run:
             validate_artifacts(target, artifact_directory, path_is_file)
+            artifacts_validated = True
         run_command(
             command,
             command_runner,
@@ -696,13 +958,13 @@ def main(
     validation = validate_target(host_system, host_arch, arguments.ci)
     if not validation.qualified and arguments.stage is not None:
         raise RunnerError("Phase 5D qualification requires x86_64")
-    if arguments.stage in {"sanitizers", "artifact"}:
+    if arguments.stage in {"all", "sanitizers", "artifact"}:
         raise RunnerError(f"Phase 5D stage is not implemented: {arguments.stage}")
     if arguments.ci:
         if arguments.stage is None:
             raise RunnerError("Phase 5D CI requires an explicit stage")
 
-    if arguments.stage in {"qualification", "all"}:
+    if arguments.stage == "qualification":
         target = Target.for_host(host_system, host_arch)
         capabilities = detect_capabilities(
             target.system, tool_lookup=tool_lookup, version_output=version_output
@@ -717,8 +979,6 @@ def main(
             path_is_file=path_is_file,
         )
         print(f"phase5d: qualification={status}")
-        if arguments.stage == "all":
-            raise RunnerError("Phase 5D stage is not implemented: sanitizers")
         return 0
 
     reason = validation.reason or "no qualification stage has run"
