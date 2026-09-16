@@ -51,6 +51,17 @@ def complete_capabilities():
             for key, version in versions.items()}
 
 
+def complete_sanitizer_capabilities():
+    capabilities = complete_capabilities()
+    capabilities.update(
+        {
+            "clang": Capability("Clang C compiler", "/tools/clang", (17, 0, 0)),
+            "clang++": Capability("Clang C++ compiler", "/tools/clang++", (17, 0, 0)),
+        }
+    )
+    return capabilities
+
+
 def target_fixture():
     return Target.for_host("Linux", "x86_64")
 
@@ -1921,27 +1932,68 @@ Dump of file agentgate_ffi.dll
 
     def test_sanitizer_plan_is_linux_clang_only(self):
         target = Target.for_host("Linux", "x86_64")
-        command = sanitizer_plan(target, Path("/repo"), complete_capabilities())[0]
+        capabilities = complete_sanitizer_capabilities()
+        command = sanitizer_plan(target, Path("/repo"), capabilities)[0]
         environment = dict(command.env)
-        self.assertEqual(environment["CC"], "clang")
-        self.assertEqual(environment["CXX"], "clang++")
+        self.assertEqual(environment["CC"], "/tools/clang")
+        self.assertEqual(environment["CXX"], "/tools/clang++")
         self.assertIn("-fsanitize=address,undefined", environment["CFLAGS"])
         self.assertEqual(environment["ASAN_OPTIONS"], "detect_leaks=1:halt_on_error=1")
         self.assertEqual(environment["UBSAN_OPTIONS"], "halt_on_error=1:print_stacktrace=1")
         with self.assertRaisesRegex(RunnerError, "Linux x86_64"):
-            sanitizer_plan(Target.for_host("Darwin", "x86_64"), Path("/repo"), complete_capabilities())
+            sanitizer_plan(Target.for_host("Darwin", "x86_64"), Path("/repo"), capabilities)
+
+    def test_sanitizer_plan_rejects_empty_fake_or_multiple_consumers(self):
+        target = Target.for_host("Linux", "x86_64")
+        root = Path("/repo")
+        capabilities = complete_sanitizer_capabilities()
+        command = sanitizer_plan(
+            target, root, capabilities
+        )[0]
+        fake = PlannedCommand(
+            (*command.argv[:-1], "/wrong/libagentgate_ffi.so"),
+            command.cwd, command.env, command.purpose,
+        )
+        for plan in ([], [fake], [command, command]):
+            with self.subTest(plan=plan), self.assertRaisesRegex(
+                RunnerError, "exactly one.*direct Phase 5B"
+            ):
+                _assert_sanitizer_plan(plan, target, root, capabilities)
 
     def test_sanitizer_plan_rejects_missing_compile_or_link_flags(self):
-        command = sanitizer_plan(
-            Target.for_host("Linux", "x86_64"), Path("/repo"), complete_capabilities()
-        )[0]
+        target = Target.for_host("Linux", "x86_64")
+        root = Path("/repo")
+        capabilities = complete_sanitizer_capabilities()
+        command = sanitizer_plan(target, root, capabilities)[0]
         environment = tuple(
             pair for pair in command.env if pair[0] != "LDFLAGS"
         )
         with self.assertRaisesRegex(RunnerError, "compile or link flags"):
             _assert_sanitizer_plan([
                 PlannedCommand(command.argv, command.cwd, environment, command.purpose)
-            ])
+            ], target, root, capabilities)
+
+    def test_sanitizer_plan_rejects_sanitizer_substrings_and_malformed_flags(self):
+        target = Target.for_host("Linux", "x86_64")
+        root = Path("/repo")
+        capabilities = complete_sanitizer_capabilities()
+        command = sanitizer_plan(target, root, capabilities)[0]
+        for variable, value in (
+            ("CFLAGS", "-O1 -g -fno-omit-frame-pointer -DNAME=-fsanitize=address,undefined"),
+            ("CXXFLAGS", "-O1 -g -fno-omit-frame-pointer '-fsanitize=address,undefined"),
+            ("LDFLAGS", "-Wl,--as-needed -fsanitize=address,undefined"),
+        ):
+            environment = tuple(
+                (key, value if key == variable else current)
+                for key, current in command.env
+            )
+            with self.subTest(variable=variable), self.assertRaisesRegex(
+                RunnerError, "compile or link flags"
+            ):
+                _assert_sanitizer_plan(
+                    [PlannedCommand(command.argv, command.cwd, environment, command.purpose)],
+                    target, root, capabilities,
+                )
 
     def test_sanitizer_run_builds_stable_ffi_before_direct_consumers(self):
         commands = []
@@ -1953,7 +2005,7 @@ Dump of file agentgate_ffi.dll
         self.assertEqual(
             run_sanitizers(
                 Target.for_host("Linux", "x86_64"), Path("/repo"),
-                complete_capabilities(), command_runner=runner,
+                complete_sanitizer_capabilities(), command_runner=runner,
             ),
             "PASS",
         )
@@ -1961,10 +2013,32 @@ Dump of file agentgate_ffi.dll
             commands[0][0], ("cargo", "build", "-p", "agentgate-ffi", "--release")
         )
         self.assertIn("--direct-native", commands[1][0])
-        self.assertEqual(commands[1][1]["env"]["CC"], "clang")
+        self.assertEqual(commands[1][1]["env"]["CC"], "/tools/clang")
         self.assertIn("-fsanitize=address,undefined", commands[1][1]["env"]["LDFLAGS"])
         self.assertFalse(commands[0][1]["shell"])
         self.assertFalse(commands[1][1]["shell"])
+
+    def test_sanitizer_preflight_rejects_missing_clang_before_any_command(self):
+        capabilities = complete_sanitizer_capabilities()
+        del capabilities["clang"]
+        runner = mock.Mock()
+        with self.assertRaisesRegex(RunnerError, "Clang C compiler"):
+            run_sanitizers(
+                Target.for_host("Linux", "x86_64"), Path("/repo"), capabilities,
+                command_runner=runner, dry_run=True,
+            )
+        runner.assert_not_called()
+
+    def test_sanitizer_preflight_rejects_missing_clangxx_before_any_command(self):
+        capabilities = complete_sanitizer_capabilities()
+        del capabilities["clang++"]
+        runner = mock.Mock()
+        with self.assertRaisesRegex(RunnerError, "Clang C\+\+ compiler"):
+            run_sanitizers(
+                Target.for_host("Linux", "x86_64"), Path("/repo"), capabilities,
+                command_runner=runner, dry_run=True,
+            )
+        runner.assert_not_called()
 
     def test_cargo_target_directory_overrides_conflicting_parent_environment(self):
         artifact_directory = Path("/controlled target/release")
@@ -3321,31 +3395,129 @@ def smoke_plan(
 
 
 SANITIZER_FLAG = "-fsanitize=address,undefined"
-SANITIZER_ENVIRONMENT = (
-    ("CC", "clang"),
-    ("CXX", "clang++"),
-    ("CFLAGS", "-O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined"),
-    ("CXXFLAGS", "-O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined"),
-    ("LDFLAGS", "-fsanitize=address,undefined"),
-    ("ASAN_OPTIONS", "detect_leaks=1:halt_on_error=1"),
-    ("UBSAN_OPTIONS", "halt_on_error=1:print_stacktrace=1"),
+SANITIZER_COMPILE_FLAGS = (
+    "-O1", "-g", "-fno-omit-frame-pointer", SANITIZER_FLAG,
+)
+SANITIZER_LINK_FLAGS = (SANITIZER_FLAG,)
+SANITIZER_COMPILERS = (
+    ("clang", "Clang C compiler"),
+    ("clang++", "Clang C++ compiler"),
 )
 
 
-def _assert_sanitizer_plan(plan: list[PlannedCommand]) -> None:
-    """Fail closed unless direct consumer builds carry compile and link sanitizers."""
-    for command in plan:
-        environment = dict(command.env)
-        if "--direct-native" not in command.argv:
-            raise RunnerError("sanitizer direct compile plan requires --direct-native")
-        if (
-            SANITIZER_FLAG not in environment.get("CFLAGS", "")
-            or SANITIZER_FLAG not in environment.get("CXXFLAGS", "")
-            or SANITIZER_FLAG not in environment.get("LDFLAGS", "")
-        ):
-            raise RunnerError(
-                "sanitizer direct compile plan is missing sanitizer compile or link flags"
-            )
+def detect_sanitizer_capabilities(
+    tool_lookup=shutil.which,
+) -> dict[str, Capability]:
+    """Discover the exact Clang executables required by the Linux sanitizer gate."""
+    capabilities = {}
+    for executable, label in SANITIZER_COMPILERS:
+        path = tool_lookup(executable)
+        if path is None:
+            raise RunnerError(f"required sanitizer capability: {label} ({executable})")
+        capabilities[executable] = Capability(
+            label, str(Path(path).absolute()), None
+        )
+    return capabilities
+
+
+def _sanitizer_compiler_paths(
+    capabilities: dict[str, Capability],
+) -> tuple[str, str]:
+    paths = []
+    for executable, label in SANITIZER_COMPILERS:
+        capability = capabilities.get(executable)
+        if capability is None or capability.path is None:
+            raise RunnerError(f"required sanitizer capability: {label} ({executable})")
+        path = Path(capability.path)
+        if not path.is_absolute():
+            raise RunnerError(f"sanitizer compiler path must be absolute: {label}")
+        paths.append(str(path))
+    return tuple(paths)
+
+
+def _sanitizer_environment(
+    capabilities: dict[str, Capability],
+) -> tuple[tuple[str, str], ...]:
+    clang, clangxx = _sanitizer_compiler_paths(capabilities)
+    return (
+        ("CC", clang),
+        ("CXX", clangxx),
+        ("CFLAGS", shlex.join(SANITIZER_COMPILE_FLAGS)),
+        ("CXXFLAGS", shlex.join(SANITIZER_COMPILE_FLAGS)),
+        ("LDFLAGS", shlex.join(SANITIZER_LINK_FLAGS)),
+        ("ASAN_OPTIONS", "detect_leaks=1:halt_on_error=1"),
+        ("UBSAN_OPTIONS", "halt_on_error=1:print_stacktrace=1"),
+    )
+
+
+def _sanitizer_flag_tokens(environment: dict[str, str]) -> None:
+    try:
+        cflags = shlex.split(environment.get("CFLAGS", ""))
+        cxxflags = shlex.split(environment.get("CXXFLAGS", ""))
+        ldflags = shlex.split(environment.get("LDFLAGS", ""))
+    except ValueError as error:
+        raise RunnerError(
+            "sanitizer direct compile plan is missing sanitizer compile or link flags"
+        ) from error
+    if (
+        tuple(cflags) != SANITIZER_COMPILE_FLAGS
+        or tuple(cxxflags) != SANITIZER_COMPILE_FLAGS
+        or tuple(ldflags) != SANITIZER_LINK_FLAGS
+    ):
+        raise RunnerError(
+            "sanitizer direct compile plan is missing sanitizer compile or link flags"
+        )
+
+
+def _sanitizer_consumer_command(
+    target: Target,
+    root: Path,
+    capabilities: dict[str, Capability],
+) -> PlannedCommand:
+    python = capabilities["python"].path
+    if python is None:
+        raise RunnerError("required capability: Python 3.11+")
+    root = Path(root)
+    return PlannedCommand(
+        (
+            python,
+            str(root / "scripts" / "test-phase5b.py"),
+            "--native-only",
+            "--direct-native",
+            "--library",
+            str(root / "target" / "release" / target.shared_name),
+        ),
+        root,
+        _sanitizer_environment(capabilities),
+        purpose="sanitizer-direct-native",
+    )
+
+
+def _assert_sanitizer_plan(
+    plan: list[PlannedCommand],
+    target: Target,
+    root: Path,
+    capabilities: dict[str, Capability],
+) -> None:
+    """Fail closed unless one exact direct Phase 5B sanitizer consumer is planned."""
+    if len(plan) != 1:
+        raise RunnerError(
+            "sanitizer plan requires exactly one direct Phase 5B consumer command"
+        )
+    expected = _sanitizer_consumer_command(target, root, capabilities)
+    command = plan[0]
+    environment = dict(command.env)
+    _sanitizer_flag_tokens(environment)
+    if (
+        len(environment) != len(command.env)
+        or command.argv != expected.argv
+        or command.cwd != expected.cwd
+        or environment != dict(expected.env)
+        or command.purpose != expected.purpose
+    ):
+        raise RunnerError(
+            "sanitizer plan requires exactly one direct Phase 5B consumer command"
+        )
 
 
 def sanitizer_plan(
@@ -3353,26 +3525,9 @@ def sanitizer_plan(
 ) -> list[PlannedCommand]:
     if target.system != "Linux" or target.arch != "x86_64":
         raise RunnerError("sanitizer stage requires Linux x86_64")
-    python = capabilities["python"].path
-    if python is None:
-        raise RunnerError("required capability: Python 3.11+")
     root = Path(root)
-    plan = [
-        PlannedCommand(
-            (
-                python,
-                str(root / "scripts" / "test-phase5b.py"),
-                "--native-only",
-                "--direct-native",
-                "--library",
-                str(root / "target" / "release" / target.shared_name),
-            ),
-            root,
-            SANITIZER_ENVIRONMENT,
-            purpose="sanitizer-direct-native",
-        )
-    ]
-    _assert_sanitizer_plan(plan)
+    plan = [_sanitizer_consumer_command(target, root, capabilities)]
+    _assert_sanitizer_plan(plan, target, root, capabilities)
     return plan
 
 
@@ -5141,7 +5296,7 @@ def run_sanitizers(
     require_ci_capabilities(capabilities)
     root = Path(root)
     plan = sanitizer_plan(target, root, capabilities)
-    _assert_sanitizer_plan(plan)
+    _assert_sanitizer_plan(plan, target, root, capabilities)
     stable_ffi_build = PlannedCommand(
         ("cargo", "build", "-p", "agentgate-ffi", "--release"),
         root,
@@ -5434,9 +5589,14 @@ def main(
         target = Target.for_host(host_system, host_arch)
         if arguments.stage == "sanitizers" and target.system != "Linux":
             raise RunnerError("sanitizer stage requires Linux x86_64")
+        sanitizer_capabilities = (
+            detect_sanitizer_capabilities(tool_lookup)
+            if arguments.stage == "sanitizers" else {}
+        )
         capabilities = detect_capabilities(
             target.system, tool_lookup=tool_lookup, version_output=version_output
         )
+        capabilities.update(sanitizer_capabilities)
         require_ci_capabilities(capabilities)
 
     if arguments.stage == "sanitizers":
