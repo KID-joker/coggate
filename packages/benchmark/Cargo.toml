@@ -1,0 +1,23 @@
+[package]
+name = "agentgate-benchmark"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "agentgate-bench"
+path = "src/main.rs"
+
+[dependencies]
+agentgate-core = { path = "../core", features = ["insecure-benchmarking"] }
+base64.workspace = true
+hex.workspace = true
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+zeroize.workspace = true

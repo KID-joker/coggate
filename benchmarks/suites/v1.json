@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "suite_version": "1.0",
+  "generator_version": "1.0",
+  "profiles": {
+    "quick": {
+      "scored_cases": 100,
+      "calibration_cases": 100,
+      "scored_namespace": "phase6a-scored-v1",
+      "calibration_namespace": "phase6a-calibration-v1"
+    },
+    "release": {
+      "scored_cases": 1000,
+      "calibration_cases": 1000,
+      "scored_namespace": "phase6a-release-scored-v1",
+      "calibration_namespace": "phase6a-release-calibration-v1"
+    }
+  },
+  "thresholds": {
+    "direct": { "comparison": "at_most", "percent": 5 },
+    "fingerprint": { "comparison": "at_most", "percent": 1 },
+    "llm": { "comparison": "at_least", "percent": 80 },
+    "regex": { "comparison": "at_most", "percent": 1 },
+    "simple_parser": { "comparison": "at_most", "percent": 1 }
+  },
+  "baseline_versions": {
+    "direct": "1.0",
+    "fingerprint": "1.0",
+    "regex": "1.0",
+    "simple_parser": "1.0"
+  },
+  "limits": {
+    "max_question_bytes": 12288,
+    "max_result_line_bytes": 16384,
+    "process_timeout_ms": 5000,
+    "max_process_output_bytes": 65536
+  },
+  "tools": {
+    "c": "cc",
+    "cpp": "c++",
+    "go": "go",
+    "java": "java",
+    "rust": "rustc"
+  }
+}
