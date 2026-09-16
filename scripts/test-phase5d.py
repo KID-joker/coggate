@@ -9,6 +9,7 @@ import sys
 import unittest
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,15 +22,53 @@ class RunnerError(Exception):
 class RunnerSelfTests(unittest.TestCase):
     def test_linux_x86_64_target(self):
         target = Target.for_host("Linux", "x86_64")
-        self.assertEqual(target.triple, "x86_64-unknown-linux-gnu")
+        self.assertEqual(
+            target,
+            Target(
+                "Linux",
+                "x86_64",
+                "x86_64-unknown-linux-gnu",
+                "libagentgate_ffi.so",
+                "libagentgate_ffi.a",
+                None,
+            ),
+        )
 
     def test_darwin_x86_64_target(self):
         target = Target.for_host("Darwin", "x86_64")
-        self.assertEqual(target.triple, "x86_64-apple-darwin")
+        self.assertEqual(
+            target,
+            Target(
+                "Darwin",
+                "x86_64",
+                "x86_64-apple-darwin",
+                "libagentgate_ffi.dylib",
+                "libagentgate_ffi.a",
+                None,
+            ),
+        )
 
     def test_windows_amd64_target(self):
         target = Target.for_host("Windows", "AMD64")
-        self.assertEqual(target.triple, "x86_64-pc-windows-msvc")
+        self.assertEqual(
+            target,
+            Target(
+                "Windows",
+                "x86_64",
+                "x86_64-pc-windows-msvc",
+                "agentgate_ffi.dll",
+                "agentgate_ffi.lib",
+                "agentgate_ffi.dll.lib",
+            ),
+        )
+
+    def test_padded_platform_and_arch_aliases_are_normalized(self):
+        self.assertEqual(normalize_system(" Linux "), "Linux")
+        self.assertEqual(normalize_system(" DARWIN "), "Darwin")
+        self.assertEqual(normalize_system(" Windows "), "Windows")
+        self.assertEqual(normalize_arch(" AMD64 "), "x86_64")
+        self.assertEqual(normalize_arch(" x64 "), "x86_64")
+        self.assertEqual(normalize_arch(" AARCH64 "), "arm64")
 
     def test_ci_rejects_darwin_arm64(self):
         with self.assertRaisesRegex(
@@ -78,11 +117,48 @@ class RunnerSelfTests(unittest.TestCase):
         ):
             main(["--stage", "artifact"], system="Darwin", arch="arm64")
 
+    def test_x86_64_unimplemented_stages_fail_closed(self):
+        for stage in ("all", "qualification", "sanitizers", "artifact"):
+            with self.subTest(stage=stage), self.assertRaisesRegex(
+                RunnerError, f"Phase 5D stage is not implemented: {stage}"
+            ):
+                main(["--stage", stage], system="Linux", arch="x86_64")
+
+    def test_x86_64_bare_ci_fails_closed(self):
+        with self.assertRaisesRegex(
+            RunnerError, "Phase 5D CI requires an explicit stage"
+        ):
+            main(["--ci"], system="Linux", arch="x86_64")
+
 
 @dataclass(frozen=True)
 class Validation:
     qualified: bool
     reason: str | None = None
+
+
+PLATFORM_TARGETS = MappingProxyType(
+    {
+        "Linux": (
+            "x86_64-unknown-linux-gnu",
+            "libagentgate_ffi.so",
+            "libagentgate_ffi.a",
+            None,
+        ),
+        "Darwin": (
+            "x86_64-apple-darwin",
+            "libagentgate_ffi.dylib",
+            "libagentgate_ffi.a",
+            None,
+        ),
+        "Windows": (
+            "x86_64-pc-windows-msvc",
+            "agentgate_ffi.dll",
+            "agentgate_ffi.lib",
+            "agentgate_ffi.dll.lib",
+        ),
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -98,35 +174,19 @@ class Target:
     def for_host(cls, system: str, arch: str) -> Target:
         normalized_system = normalize_system(system)
         normalized_arch = normalize_arch(arch)
-        targets = {
-            "Linux": (
-                "x86_64-unknown-linux-gnu",
-                "libagentgate_ffi.so",
-                "libagentgate_ffi.a",
-                None,
-            ),
-            "Darwin": (
-                "x86_64-apple-darwin",
-                "libagentgate_ffi.dylib",
-                "libagentgate_ffi.a",
-                None,
-            ),
-            "Windows": (
-                "x86_64-pc-windows-msvc",
-                "agentgate_ffi.dll",
-                "agentgate_ffi.lib",
-                "agentgate_ffi.dll.lib",
-            ),
-        }
-        if normalized_system not in targets:
+        if normalized_system not in PLATFORM_TARGETS:
             raise RunnerError(f"unsupported platform: {normalized_system}")
         if normalized_arch != "x86_64":
             raise RunnerError("Phase 5D qualification requires x86_64")
-        return cls(normalized_system, normalized_arch, *targets[normalized_system])
+        return cls(
+            normalized_system,
+            normalized_arch,
+            *PLATFORM_TARGETS[normalized_system],
+        )
 
 
 def normalize_system(system: str) -> str:
-    normalized = system.casefold()
+    normalized = system.strip().casefold()
     return {
         "linux": "Linux",
         "darwin": "Darwin",
@@ -135,7 +195,7 @@ def normalize_system(system: str) -> str:
 
 
 def normalize_arch(arch: str) -> str:
-    normalized = arch.casefold()
+    normalized = arch.strip().casefold()
     return {
         "amd64": "x86_64",
         "x64": "x86_64",
@@ -146,7 +206,7 @@ def normalize_arch(arch: str) -> str:
 def validate_target(system: str, arch: str, ci: bool) -> Validation:
     normalized_system = normalize_system(system)
     normalized_arch = normalize_arch(arch)
-    if normalized_system not in {"Linux", "Darwin", "Windows"}:
+    if normalized_system not in PLATFORM_TARGETS:
         raise RunnerError(f"unsupported platform: {normalized_system}")
     if normalized_arch != "x86_64":
         if ci:
@@ -170,7 +230,12 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv=None, *, system=None, arch=None):
+def main(
+    argv: list[str] | None = None,
+    *,
+    system: str | None = None,
+    arch: str | None = None,
+) -> int:
     arguments = build_parser().parse_args(argv)
     if arguments.self_test:
         return _run_self_tests()
@@ -180,13 +245,17 @@ def main(argv=None, *, system=None, arch=None):
     validation = validate_target(host_system, host_arch, arguments.ci)
     if not validation.qualified and arguments.stage is not None:
         raise RunnerError("Phase 5D qualification requires x86_64")
+    if arguments.stage is not None:
+        raise RunnerError(f"Phase 5D stage is not implemented: {arguments.stage}")
+    if arguments.ci:
+        raise RunnerError("Phase 5D CI requires an explicit stage")
 
     reason = validation.reason or "no qualification stage has run"
     print(f"phase5d: qualification=NOT_RUN reason={reason}")
     return 0
 
 
-def _run_self_tests():
+def _run_self_tests() -> int:
     suite = unittest.defaultTestLoader.loadTestsFromTestCase(RunnerSelfTests)
     return 0 if unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful() else 1
 
