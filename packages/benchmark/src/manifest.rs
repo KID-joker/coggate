@@ -10,14 +10,15 @@ const REQUIRED_THRESHOLDS: [&str; 5] = ["direct", "fingerprint", "llm", "regex",
 const REQUIRED_BASELINES: [&str; 4] = ["direct", "fingerprint", "regex", "simple_parser"];
 const REQUIRED_TOOLS: [&str; 5] = ["c", "cpp", "go", "java", "rust"];
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ProfileName {
     Quick,
     Release,
 }
 
 impl ProfileName {
-    const fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Quick => "quick",
             Self::Release => "release",
@@ -46,6 +47,22 @@ impl Threshold {
 
     pub const fn percent(self) -> u8 {
         self.percent
+    }
+
+    pub fn evaluate(self, successes: usize, total: usize) -> Result<bool, ManifestError> {
+        if self.percent > 100 || total == 0 || successes > total {
+            return Err(ManifestError::Invalid("invalid threshold inputs"));
+        }
+        let left = successes
+            .checked_mul(100)
+            .ok_or(ManifestError::Invalid("threshold arithmetic overflow"))?;
+        let right = total
+            .checked_mul(usize::from(self.percent))
+            .ok_or(ManifestError::Invalid("threshold arithmetic overflow"))?;
+        Ok(match self.comparison {
+            Comparison::AtMost => left <= right,
+            Comparison::AtLeast => left >= right,
+        })
     }
 }
 

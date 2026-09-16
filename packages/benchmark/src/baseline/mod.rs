@@ -1,5 +1,6 @@
 use std::{fmt, time::Instant};
 
+use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 use crate::corpus::CorpusCase;
@@ -23,7 +24,8 @@ impl fmt::Debug for Prediction {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum NoGuessReason {
     Unsupported,
     NoCandidate,
@@ -37,7 +39,8 @@ pub trait Baseline {
     fn predict(&self, case: &CorpusCase) -> Prediction;
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Outcome {
     Solved,
     Unsolved,
