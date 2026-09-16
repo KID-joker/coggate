@@ -1591,6 +1591,36 @@ Dump of file agentgate_ffi.dll
             ))
             self.assertFalse(temporary_roots[0].exists())
 
+    def test_artifact_smoke_creates_java_output_directory_before_javac(self):
+        temporary_roots = []
+        javac_outputs = []
+        with tempfile.TemporaryDirectory() as directory:
+            artifact = self._assembled_fixture(Path(directory))
+
+            def temporary_directory(**kwargs):
+                context = tempfile.TemporaryDirectory(**kwargs)
+                temporary_roots.append(Path(context.name))
+                return context
+
+            def runner(argv, **kwargs):
+                if argv[0] == "/tools/javac":
+                    output = Path(argv[argv.index("-d") + 1])
+                    javac_outputs.append((output, output.is_dir(), output.is_symlink()))
+                return mock.Mock(returncode=0)
+
+            self.assertEqual(
+                run_artifact_smoke(
+                    target_fixture(), artifact, complete_capabilities(),
+                    command_runner=runner, temporary_directory=temporary_directory,
+                ),
+                "PASS",
+            )
+        self.assertEqual(
+            javac_outputs,
+            [(temporary_roots[0] / "build/java-classes", True, False)],
+        )
+        self.assertFalse(temporary_roots[0].exists())
+
     def test_artifact_smoke_rejects_invalid_or_tampered_copy_before_commands(self):
         with tempfile.TemporaryDirectory() as directory:
             parent = Path(directory)
@@ -5054,6 +5084,7 @@ def run_artifact_smoke(
         )
         build_directory = temporary_root / "build"
         build_directory.mkdir()
+        (build_directory / "java-classes").mkdir()
         if target.system == "Windows":
             safe_copy_file(
                 extracted / "native" / target.shared_name,
