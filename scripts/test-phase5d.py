@@ -112,6 +112,35 @@ def workflow_run_script(step: str) -> str:
     return "\n".join(line[10:] if line else "" for line in body)
 
 
+def workflow_input(step: str, key: str) -> str | tuple[str, ...]:
+    """Return a scalar or literal-line sequence from a step's with mapping."""
+    lines = workflow_block(step, "with", 8).splitlines()
+    marker = "          " + key + ":"
+    matches = [
+        (index, line[len(marker):].lstrip())
+        for index, line in enumerate(lines)
+        if line.startswith(marker)
+    ]
+    if len(matches) != 1:
+        raise AssertionError(f"workflow step must have exactly one {key} input")
+    index, value = matches[0]
+    if value != "|":
+        if not value or value in {">", ">-", "|-"}:
+            raise AssertionError(f"unsupported workflow input scalar: {key}")
+        return value.strip()
+    values = []
+    for line in lines[index + 1:]:
+        if line.strip() and len(line) - len(line.lstrip()) <= 10:
+            break
+        if line.strip():
+            if not line.startswith("            "):
+                raise AssertionError(f"invalid workflow input indentation: {key}")
+            values.append(line[12:].strip())
+    if not values:
+        raise AssertionError(f"workflow input must not be empty: {key}")
+    return tuple(values)
+
+
 WORKFLOW_CONTRACT_TESTS = (
     "test_workflow_has_exact_triggers_permissions_concurrency_and_jobs",
     "test_workflow_qualification_matrix_and_artifact_contract_are_exact",
@@ -2903,10 +2932,14 @@ Dump of file agentgate_ffi.dll
     def test_workflow_has_exact_triggers_permissions_concurrency_and_jobs(self):
         source = read_phase5d_workflow()
         trigger = workflow_block(source, "on")
-        self.assertRegex(trigger, r"(?m)^  pull_request:\s*$")
-        self.assertRegex(trigger, r"(?m)^  workflow_dispatch:\s*$")
-        push = workflow_block(trigger, "push", 2)
-        self.assertRegex(push, r"(?m)^    branches:\s*\[main\]\s*$")
+        self.assertEqual(
+            trigger,
+            "on:\n"
+            "  pull_request:\n"
+            "  push:\n"
+            "    branches: [main]\n"
+            "  workflow_dispatch:\n",
+        )
         permissions = workflow_block(source, "permissions")
         self.assertEqual(permissions, "permissions:\n  contents: read\n")
         concurrency = workflow_block(source, "concurrency")
@@ -2952,11 +2985,15 @@ Dump of file agentgate_ffi.dll
             + qualification_command,
         )
         upload = workflow_step(qualification, "Upload verified artifact")
-        self.assertIn(
-            "path: target/phase5d/${{ matrix.target }}/artifact", upload
+        self.assertEqual(
+            workflow_input(upload, "name"), "agentgate-${{ matrix.target }}"
         )
-        self.assertIn("if-no-files-found: error", upload)
-        self.assertIn("retention-days: 14", upload)
+        self.assertEqual(
+            workflow_input(upload, "path"),
+            "target/phase5d/${{ matrix.target }}/artifact",
+        )
+        self.assertEqual(workflow_input(upload, "if-no-files-found"), "error")
+        self.assertEqual(workflow_input(upload, "retention-days"), "14")
 
     def test_workflow_pins_actions_and_configures_language_caches_safely(self):
         source = read_phase5d_workflow()
@@ -2984,8 +3021,10 @@ Dump of file agentgate_ffi.dll
         self.assertIn("python-version: '3.11'", python)
         go = workflow_step(qualification, "Set up Go")
         self.assertIn("go-version: '1.24.0'", go)
-        self.assertIn("cache: true", go)
-        self.assertIn("cache-dependency-path: bindings/go/go.mod", go)
+        self.assertEqual(workflow_input(go, "cache"), "true")
+        self.assertEqual(
+            workflow_input(go, "cache-dependency-path"), "bindings/go/go.mod"
+        )
         java = workflow_step(qualification, "Set up Java")
         self.assertIn("java-version: '17'", java)
         self.assertIn("cache: maven", java)
@@ -2993,9 +3032,17 @@ Dump of file agentgate_ffi.dll
         self.assertIn("node-version: '22.18.0'", node)
         self.assertNotRegex(node, r"(?m)^\s+cache:")
         cargo = workflow_step(qualification, "Cache Cargo registry and Git index")
-        self.assertIn("~/.cargo/registry", cargo)
-        self.assertIn("~/.cargo/git", cargo)
-        self.assertNotRegex(cargo, r"(?m)^\s+target(?:/.*)?\s*$")
+        self.assertEqual(
+            workflow_input(cargo, "path"),
+            ("~/.cargo/registry", "~/.cargo/git"),
+        )
+        self.assertEqual(
+            workflow_input(cargo, "key"),
+            "${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}",
+        )
+        self.assertEqual(
+            workflow_input(cargo, "restore-keys"), "${{ runner.os }}-cargo-"
+        )
         install = workflow_step(qualification, "Install pinned toolchains")
         self.assertEqual(
             workflow_run_script(install),
@@ -3011,9 +3058,10 @@ Dump of file agentgate_ffi.dll
         self.assertIn("python-version: '3.11'", sanitizer_python)
         sanitizer_go = workflow_step(sanitizers, "Set up Go")
         self.assertIn("go-version: '1.24.0'", sanitizer_go)
-        self.assertIn("cache: true", sanitizer_go)
-        self.assertIn(
-            "cache-dependency-path: bindings/go/go.mod", sanitizer_go
+        self.assertEqual(workflow_input(sanitizer_go, "cache"), "true")
+        self.assertEqual(
+            workflow_input(sanitizer_go, "cache-dependency-path"),
+            "bindings/go/go.mod",
         )
         sanitizer_java = workflow_step(sanitizers, "Set up Java")
         self.assertIn("java-version: '17'", sanitizer_java)
@@ -3024,9 +3072,17 @@ Dump of file agentgate_ffi.dll
         sanitizer_cargo = workflow_step(
             sanitizers, "Cache Cargo registry and Git index"
         )
-        self.assertIn("~/.cargo/registry", sanitizer_cargo)
-        self.assertIn("~/.cargo/git", sanitizer_cargo)
-        self.assertNotRegex(sanitizer_cargo, r"(?m)^\s+target(?:/.*)?\s*$")
+        self.assertEqual(
+            workflow_input(sanitizer_cargo, "path"),
+            ("~/.cargo/registry", "~/.cargo/git"),
+        )
+        self.assertEqual(
+            workflow_input(sanitizer_cargo, "key"),
+            "linux-cargo-${{ hashFiles('Cargo.lock') }}",
+        )
+        self.assertEqual(
+            workflow_input(sanitizer_cargo, "restore-keys"), "linux-cargo-"
+        )
         sanitizer_install = workflow_step(sanitizers, "Install pinned toolchains")
         self.assertEqual(
             workflow_run_script(sanitizer_install), workflow_run_script(install)
@@ -3181,6 +3237,108 @@ Dump of file agentgate_ffi.dll
                     ),
                     f"wrong condition on {step_name}",
                 )
+
+    def test_workflow_contract_rejects_extra_or_inexact_yaml_values(self):
+        source = read_phase5d_workflow()
+        mutations = [
+            (
+                "extra trigger",
+                source.replace("on:\n", "on:\n  schedule:\n", 1),
+            ),
+            (
+                "artifact path suffix",
+                self._replace_in_workflow_step(
+                    source,
+                    "qualification",
+                    "Upload verified artifact",
+                    "target/phase5d/${{ matrix.target }}/artifact",
+                    "target/phase5d/${{ matrix.target }}/artifact-extra",
+                ),
+            ),
+            (
+                "artifact name suffix",
+                self._replace_in_workflow_step(
+                    source,
+                    "qualification",
+                    "Upload verified artifact",
+                    "agentgate-${{ matrix.target }}",
+                    "agentgate-${{ matrix.target }}-extra",
+                ),
+            ),
+            (
+                "artifact missing-file policy",
+                self._replace_in_workflow_step(
+                    source,
+                    "qualification",
+                    "Upload verified artifact",
+                    "if-no-files-found: error",
+                    "if-no-files-found: ignore",
+                ),
+            ),
+            (
+                "artifact retention suffix",
+                self._replace_in_workflow_step(
+                    source,
+                    "qualification",
+                    "Upload verified artifact",
+                    "retention-days: 14",
+                    "retention-days: 140",
+                ),
+            ),
+        ]
+        for job_name in ("qualification", "sanitizers"):
+            restore_key = (
+                "restore-keys: ${{ runner.os }}-cargo-"
+                if job_name == "qualification"
+                else "restore-keys: linux-cargo-"
+            )
+            mutations.extend(
+                (
+                    (
+                        f"{job_name} Cargo third cache path",
+                        self._replace_in_workflow_step(
+                            source,
+                            job_name,
+                            "Cache Cargo registry and Git index",
+                            "            ~/.cargo/git",
+                            "            ~/.cargo/git\n            ~/.cargo/bin",
+                        ),
+                    ),
+                    (
+                        f"{job_name} Cargo cache key",
+                        self._replace_in_workflow_step(
+                            source,
+                            job_name,
+                            "Cache Cargo registry and Git index",
+                            "-cargo-${{ hashFiles('Cargo.lock') }}",
+                            "-cargo-extra-${{ hashFiles('Cargo.lock') }}",
+                        ),
+                    ),
+                    (
+                        f"{job_name} Cargo restore key",
+                        self._replace_in_workflow_step(
+                            source,
+                            job_name,
+                            "Cache Cargo registry and Git index",
+                            restore_key,
+                            restore_key + "extra-",
+                        ),
+                    ),
+                    (
+                        f"{job_name} Go dependency suffix",
+                        self._replace_in_workflow_step(
+                            source,
+                            job_name,
+                            "Set up Go",
+                            "bindings/go/go.mod",
+                            "bindings/go/go.mod.backup",
+                        ),
+                    ),
+                )
+            )
+        for label, mutant in mutations:
+            with self.subTest(label=label):
+                self._assert_workflow_mutant_rejected(mutant, label)
 
 
 @dataclass(frozen=True)
