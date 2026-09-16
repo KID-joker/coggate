@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import ctypes
+import errno
 import hashlib
 import io
 import json
@@ -104,6 +106,28 @@ class RunnerSelfTests(unittest.TestCase):
             path.write_text(f"fixture {relative}\n", encoding="utf-8")
         return root
 
+    def _assembled_fixture(self, parent, target=None):
+        target = target_fixture() if target is None else target
+        parent = Path(parent).resolve()
+        source = self._source_fixture(parent / "source", target)
+        return assemble_artifact(
+            source, parent / "output", target, tool_versions_fixture()
+        )
+
+    def _remove_layout_path(self, root, relative):
+        path = root / relative
+        if path.is_dir():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+        manifest = json.loads((root / MANIFEST_NAME).read_text(encoding="utf-8"))
+        prefix = relative.rstrip("/") + "/"
+        manifest["files"] = [
+            entry for entry in manifest["files"]
+            if entry["path"] != relative and not entry["path"].startswith(prefix)
+        ]
+        self._rewrite_manifest(root, manifest)
+
     def test_manifest_and_checksums_are_deterministic_sorted_and_relative(self):
         snapshots = []
         with tempfile.TemporaryDirectory() as directory:
@@ -134,11 +158,83 @@ class RunnerSelfTests(unittest.TestCase):
 
     def test_verification_passes_then_rejects_payload_tamper(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = build_fixture_artifact(Path(directory))
-            write_checksums(root)
+            root = self._assembled_fixture(Path(directory))
             self.assertEqual(verify_artifact(root, target_fixture()), "PASS")
             (root / "include/agentgate.h").write_text("tampered\n", encoding="utf-8")
             with self.assertRaisesRegex(RunnerError, "size|sha256"):
+                verify_artifact(root, target_fixture())
+
+    def test_verification_rejects_consistent_minimal_artifact_without_layout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = build_fixture_artifact(Path(directory))
+            write_checksums(root)
+            with self.assertRaisesRegex(RunnerError, "layout"):
+                verify_artifact(root, target_fixture())
+
+    def test_verification_requires_every_singleton_and_recursive_group(self):
+        target = target_fixture()
+        singletons = {
+            "include/agentgate.h",
+            f"native/{target.shared_name}",
+            f"native/{target.static_name}",
+            "go/go.mod",
+            "java/agentgate-java-0.1.0-SNAPSHOT.jar",
+            "java/libagentgate_jni.so",
+            f"java/{target.shared_name}",
+            "java/examples/Complete.java",
+            "node/package.json",
+            "node/examples/complete.js",
+            "node/build/Release/agentgate.node",
+            f"node/build/Release/{target.shared_name}",
+            "smoke/abi_probe.c",
+            "smoke/abi_probe.cpp",
+        }
+        groups = {"go/agentgate", "go/examples/complete", "node/lib"}
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory).resolve()
+            base = self._assembled_fixture(parent / "base", target)
+            for index, relative in enumerate(sorted(singletons | groups)):
+                with self.subTest(relative=relative):
+                    root = parent / f"case-{index}" / "artifact"
+                    shutil.copytree(base, root)
+                    self._remove_layout_path(root, relative)
+                    with self.assertRaisesRegex(RunnerError, "layout"):
+                        verify_artifact(root, target)
+
+    def test_verification_rejects_paths_outside_layout_and_nonwindows_import(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory).resolve()
+            for index, relative in enumerate(
+                ("java/unexpected.txt", "native/agentgate_ffi.dll.lib")
+            ):
+                with self.subTest(relative=relative):
+                    root = self._assembled_fixture(parent / str(index))
+                    path = root / relative
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text("unexpected", encoding="utf-8")
+                    manifest = build_manifest(
+                        root, target_fixture(), tool_versions_fixture()
+                    )
+                    self._rewrite_manifest(root, manifest)
+                    with self.assertRaisesRegex(RunnerError, "layout"):
+                        verify_artifact(root, target_fixture())
+
+    def test_windows_verification_requires_import_library(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Target.for_host("Windows", "AMD64")
+            root = self._assembled_fixture(Path(directory), target)
+            self.assertEqual(verify_artifact(root, target), "PASS")
+            self._remove_layout_path(root, f"native/{target.import_name}")
+            with self.assertRaisesRegex(RunnerError, "layout"):
+                verify_artifact(root, target)
+
+    def test_verification_rejects_forged_manifest_kind(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = self._assembled_fixture(Path(directory))
+            manifest = json.loads((root / MANIFEST_NAME).read_text(encoding="utf-8"))
+            manifest["files"][0]["kind"] = "forged-kind"
+            self._rewrite_manifest(root, manifest)
+            with self.assertRaisesRegex(RunnerError, "kind"):
                 verify_artifact(root, target_fixture())
 
     def test_verification_rejects_extra_missing_symlink_and_nonregular_payloads(self):
@@ -148,8 +244,7 @@ class RunnerSelfTests(unittest.TestCase):
                 with self.subTest(anomaly=anomaly):
                     case = parent / anomaly
                     case.mkdir()
-                    root = build_fixture_artifact(case)
-                    write_checksums(root)
+                    root = self._assembled_fixture(case)
                     payload = root / "include/agentgate.h"
                     if anomaly == "extra":
                         (root / "extra.txt").write_text("extra", encoding="utf-8")
@@ -283,7 +378,7 @@ class RunnerSelfTests(unittest.TestCase):
             parent = Path(directory)
             for name, mutate in mutations.items():
                 with self.subTest(name=name):
-                    root = build_fixture_artifact(parent / name)
+                    root = self._assembled_fixture(parent / name)
                     manifest = json.loads((root / "manifest.json").read_text())
                     mutate(manifest)
                     self._rewrite_manifest(root, manifest)
@@ -300,8 +395,7 @@ class RunnerSelfTests(unittest.TestCase):
             parent = Path(directory)
             for anomaly in ("duplicate", "mismatch", "missing", "extra"):
                 with self.subTest(anomaly=anomaly):
-                    root = build_fixture_artifact(parent / anomaly)
-                    write_checksums(root)
+                    root = self._assembled_fixture(parent / anomaly)
                     checksum = root / "SHA256SUMS"
                     lines = checksum.read_text(encoding="utf-8").splitlines()
                     if anomaly == "duplicate":
@@ -414,7 +508,7 @@ class RunnerSelfTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, mock.patch.dict(
             os.environ, {"AGENTGATE_SECRET": sentinels[-1]}, clear=False
         ):
-            parent = Path(directory)
+            parent = Path(directory).resolve()
             root = self._source_fixture(parent, target_fixture())
             header = root / "packages/ffi/include/agentgate.h"
             header.write_text("\n".join(sentinels[:-1]), encoding="utf-8")
@@ -426,6 +520,238 @@ class RunnerSelfTests(unittest.TestCase):
             for sentinel in sentinels:
                 self.assertNotIn(sentinel.encode(), manifest_bytes)
             self.assertEqual(verify_artifact(artifact, target_fixture()), "PASS")
+
+    def test_assembly_rejects_lexical_traversal_and_symlinked_output_parent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory).resolve()
+            root = self._source_fixture(parent / "source", target_fixture())
+            traversal = parent / "safe" / ".." / "escaped-output"
+            with self.assertRaisesRegex(RunnerError, "output.*traversal"):
+                assemble_artifact(
+                    root, traversal, target_fixture(), tool_versions_fixture()
+                )
+            self.assertFalse((parent / "escaped-output" / "artifact").exists())
+
+            real = parent / "real-output"
+            real.mkdir()
+            linked = parent / "linked-output"
+            linked.symlink_to(real, target_is_directory=True)
+            with self.assertRaisesRegex(RunnerError, "symlink|reparse"):
+                assemble_artifact(
+                    root,
+                    linked / "child",
+                    target_fixture(),
+                    tool_versions_fixture(),
+                )
+            self.assertFalse((real / "child" / "artifact").exists())
+
+    def test_failed_post_publish_verification_rolls_back_only_new_artifact(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory).resolve()
+            root = self._source_fixture(parent / "source", target_fixture())
+            output = parent / "output"
+            output.mkdir()
+            sibling = output / "unrelated.txt"
+            sibling.write_text("preserve", encoding="utf-8")
+            working_directory = Path.cwd()
+            real_verify = _verify_artifact_at
+            calls = 0
+
+            def fail_after_publish(path, target):
+                nonlocal calls
+                calls += 1
+                if calls == 2:
+                    raise RunnerError("injected post-publish verification failure")
+                return real_verify(path, target)
+
+            with mock.patch.object(
+                sys.modules[__name__], "_verify_artifact_at", side_effect=fail_after_publish
+            ), self.assertRaisesRegex(RunnerError, "post-publish"):
+                assemble_artifact(
+                    root, output, target_fixture(), tool_versions_fixture()
+                )
+            self.assertEqual(calls, 2)
+            self.assertFalse((output / "artifact").exists())
+            self.assertEqual(sibling.read_text(encoding="utf-8"), "preserve")
+            self.assertEqual(Path.cwd(), working_directory)
+
+    def test_rollback_preserves_artifact_replaced_after_publication(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory).resolve()
+            root = self._source_fixture(parent / "source", target_fixture())
+            output = parent / "output"
+            displaced = output / "displaced-published-artifact"
+            calls = 0
+            real_verify = _verify_artifact_at
+
+            def replace_after_publish(descriptor, target):
+                nonlocal calls
+                calls += 1
+                if calls == 2:
+                    (output / "artifact").rename(displaced)
+                    (output / "artifact").mkdir()
+                    (output / "artifact/replacement.txt").write_text(
+                        "preserve replacement", encoding="utf-8"
+                    )
+                    raise RunnerError("injected replacement race")
+                return real_verify(descriptor, target)
+
+            with mock.patch.object(
+                sys.modules[__name__],
+                "_verify_artifact_at",
+                side_effect=replace_after_publish,
+            ), self.assertRaisesRegex(RunnerError, "replacement race"):
+                assemble_artifact(
+                    root, output, target_fixture(), tool_versions_fixture()
+                )
+            self.assertEqual(calls, 2)
+            self.assertEqual(
+                (output / "artifact/replacement.txt").read_text(encoding="utf-8"),
+                "preserve replacement",
+            )
+            self.assertTrue(displaced.is_dir())
+
+    def test_publication_rejects_destination_created_during_rename(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory).resolve()
+            root = self._source_fixture(parent / "source", target_fixture())
+            output = parent / "output"
+            real_rename = _rename_noreplace
+
+            def create_destination(parent_descriptor, source, destination):
+                if destination != "artifact":
+                    return real_rename(parent_descriptor, source, destination)
+                os.mkdir(destination, dir_fd=parent_descriptor)
+                destination_descriptor = os.open(
+                    destination,
+                    _directory_open_flags(),
+                    dir_fd=parent_descriptor,
+                )
+                try:
+                    _write_bytes_at(destination_descriptor, "marker", b"preserve")
+                finally:
+                    os.close(destination_descriptor)
+                real_rename(parent_descriptor, source, destination)
+
+            with mock.patch.object(
+                sys.modules[__name__],
+                "_rename_noreplace",
+                side_effect=create_destination,
+            ), self.assertRaisesRegex(RunnerError, "already exists"):
+                assemble_artifact(
+                    root, output, target_fixture(), tool_versions_fixture()
+                )
+            self.assertEqual(
+                (output / "artifact/marker").read_text(encoding="utf-8"),
+                "preserve",
+            )
+            self.assertFalse((output / ".artifact.tmp").exists())
+
+    def test_windows_path_fallback_avoids_dir_fd_and_rejects_existing_destination(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory).resolve()
+            root = self._source_fixture(parent / "source", target_fixture())
+            output = parent / "output"
+            output.mkdir()
+            identity = _filesystem_identity(output.lstat())
+            real_rename = Path.rename
+
+            def destination_race(source, destination):
+                if source.name == ".artifact.tmp":
+                    destination.mkdir()
+                    (destination / "marker").write_text("preserve", encoding="utf-8")
+                    raise FileExistsError(destination)
+                return real_rename(source, destination)
+
+            with mock.patch.object(
+                sys.modules[__name__],
+                "_open_output_directory",
+                return_value=(output, None, identity),
+            ), mock.patch.object(
+                Path, "rename", autospec=True, side_effect=destination_race
+            ), mock.patch.object(
+                sys.modules[__name__],
+                "_copy_file_at",
+                side_effect=AssertionError("dir_fd copy must not run"),
+            ), self.assertRaisesRegex(RunnerError, "already exists"):
+                assemble_artifact(
+                    root, output, target_fixture(), tool_versions_fixture()
+                )
+            self.assertEqual(
+                (output / "artifact/marker").read_text(encoding="utf-8"),
+                "preserve",
+            )
+
+    def test_windows_path_fallback_rejects_replaced_output_and_preserves_replacement(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory).resolve()
+            root = self._source_fixture(parent / "source", target_fixture())
+            output = parent / "output"
+            output.mkdir()
+            displaced = parent / "displaced-output"
+            identity = _filesystem_identity(output.lstat())
+            real_verify = verify_artifact
+            calls = 0
+
+            def replace_output(path, target):
+                nonlocal calls
+                calls += 1
+                if calls == 2:
+                    output.rename(displaced)
+                    (output / "artifact").mkdir(parents=True)
+                    (output / "artifact/replacement.txt").write_text(
+                        "preserve", encoding="utf-8"
+                    )
+                    return "PASS"
+                return real_verify(path, target)
+
+            with mock.patch.object(
+                sys.modules[__name__],
+                "_open_output_directory",
+                return_value=(output, None, identity),
+            ), mock.patch.object(
+                sys.modules[__name__], "verify_artifact", side_effect=replace_output
+            ), self.assertRaisesRegex(RunnerError, "(?:output|ancestry) changed"):
+                assemble_artifact(
+                    root, output, target_fixture(), tool_versions_fixture()
+                )
+            self.assertEqual(
+                (output / "artifact/replacement.txt").read_text(encoding="utf-8"),
+                "preserve",
+            )
+
+    def test_windows_path_fallback_rejects_reparse_inserted_in_output_ancestor(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory).resolve()
+            root = self._source_fixture(parent / "source", target_fixture())
+            container = parent / "container"
+            output = container / "output"
+            output.mkdir(parents=True)
+            displaced = parent / "displaced-container"
+            identity = _filesystem_identity(output.lstat())
+            real_copy = safe_copy_file
+            calls = 0
+
+            def replace_ancestor(*args, **kwargs):
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    container.rename(displaced)
+                    container.symlink_to(displaced, target_is_directory=True)
+                return real_copy(*args, **kwargs)
+
+            with mock.patch.object(
+                sys.modules[__name__],
+                "_open_output_directory",
+                return_value=(output, None, identity),
+            ), mock.patch.object(
+                sys.modules[__name__], "safe_copy_file", side_effect=replace_ancestor
+            ), self.assertRaisesRegex(RunnerError, "ancestry changed"):
+                assemble_artifact(
+                    root, output, target_fixture(), tool_versions_fixture()
+                )
+            self.assertTrue(container.is_symlink())
+
     def test_abi_probes_reference_every_frozen_export(self):
         for extension in ("c", "cpp"):
             source = (
@@ -2383,6 +2709,64 @@ def _artifact_kind(path: str) -> str:
     return "metadata"
 
 
+def _required_artifact_singletons(target: Target) -> set[str]:
+    required = {
+        "include/agentgate.h",
+        f"native/{target.shared_name}",
+        f"native/{target.static_name}",
+        "go/go.mod",
+        "java/agentgate-java-0.1.0-SNAPSHOT.jar",
+        f"java/{JNI_SHIM_NAMES[target.system]}",
+        f"java/{target.shared_name}",
+        "java/examples/Complete.java",
+        "node/package.json",
+        "node/examples/complete.js",
+        "node/build/Release/agentgate.node",
+        f"node/build/Release/{target.shared_name}",
+        "smoke/abi_probe.c",
+        "smoke/abi_probe.cpp",
+    }
+    if target.import_name is not None:
+        required.add(f"native/{target.import_name}")
+    return required
+
+
+REQUIRED_ARTIFACT_GROUPS = (
+    "go/agentgate/",
+    "go/examples/complete/",
+    "node/lib/",
+)
+
+
+def _validate_artifact_layout(entries: list[dict], target: Target) -> None:
+    paths = {entry["path"] for entry in entries}
+    required = _required_artifact_singletons(target)
+    missing = required - paths
+    empty_groups = [
+        prefix.rstrip("/")
+        for prefix in REQUIRED_ARTIFACT_GROUPS
+        if not any(path.startswith(prefix) for path in paths)
+    ]
+    unexpected = {
+        path for path in paths
+        if path not in required
+        and not any(path.startswith(prefix) for prefix in REQUIRED_ARTIFACT_GROUPS)
+    }
+    if missing or empty_groups or unexpected:
+        differences = []
+        if missing:
+            differences.append(f"missing layout paths: {_format_paths(missing)}")
+        if empty_groups:
+            differences.append(
+                f"empty layout groups: {_format_paths(empty_groups)}"
+            )
+        if unexpected:
+            differences.append(
+                f"unexpected layout paths: {_format_paths(unexpected)}"
+            )
+        raise RunnerError("artifact layout mismatch: " + "; ".join(differences))
+
+
 def _validate_tool_versions(tool_versions: dict[str, str]) -> dict[str, str]:
     if not isinstance(tool_versions, dict) or set(tool_versions) != REQUIRED_TOOL_KEYS:
         raise RunnerError("artifact tool metadata must contain every required tool")
@@ -2550,10 +2934,13 @@ def _validate_manifest_schema(manifest: dict, expected_target: Target | None) ->
         previous = relative
         if not isinstance(entry["kind"], str) or not entry["kind"]:
             raise RunnerError(f"manifest kind is malformed: {relative}")
+        if entry["kind"] != _artifact_kind(relative):
+            raise RunnerError(f"manifest kind is not canonical: {relative}")
         if type(entry["size"]) is not int or entry["size"] < 0:
             raise RunnerError(f"manifest size is malformed: {relative}")
         if not isinstance(entry["sha256"], str) or not SHA256_PATTERN.fullmatch(entry["sha256"]):
             raise RunnerError(f"manifest sha256 is malformed: {relative}")
+    _validate_artifact_layout(files, recorded_target)
     return files
 
 
@@ -2772,6 +3159,404 @@ def _is_within(path: Path, root: Path) -> bool:
     return path == root or root in path.parents
 
 
+def _filesystem_identity(value) -> tuple[int, int, int]:
+    return (value.st_dev, value.st_ino, stat.S_IFMT(value.st_mode))
+
+
+def _is_link_or_reparse(value) -> bool:
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    attributes = getattr(value, "st_file_attributes", 0)
+    return stat.S_ISLNK(value.st_mode) or bool(reparse_flag and attributes & reparse_flag)
+
+
+def _validate_output_path(output: Path) -> Path:
+    output = Path(output)
+    if ".." in output.parts:
+        raise RunnerError(f"artifact output traversal is not allowed: {output}")
+    absolute = output.absolute()
+    current = Path(absolute.anchor)
+    components = absolute.parts[1:] if absolute.anchor else absolute.parts
+    for component in components:
+        current = current / component
+        try:
+            value = current.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as error:
+            raise RunnerError(f"unable to validate artifact output: {current}") from error
+        if _is_link_or_reparse(value):
+            raise RunnerError(f"artifact output contains symlink or reparse point: {current}")
+        if not stat.S_ISDIR(value.st_mode):
+            raise RunnerError(f"artifact output component is not a directory: {current}")
+    return absolute
+
+
+def _snapshot_output_ancestry(output: Path) -> list[tuple[Path, tuple[int, int, int]]]:
+    snapshot = []
+    current = Path(output.anchor)
+    for component in output.parts[1:]:
+        current = current / component
+        value = current.lstat()
+        if _is_link_or_reparse(value) or not stat.S_ISDIR(value.st_mode):
+            raise RunnerError(f"artifact output ancestry is not a real directory: {current}")
+        snapshot.append((current, _filesystem_identity(value)))
+    return snapshot
+
+
+def _validate_output_ancestry(
+    snapshot: list[tuple[Path, tuple[int, int, int]]]
+) -> None:
+    for path, expected in snapshot:
+        try:
+            value = path.lstat()
+        except OSError as error:
+            raise RunnerError(f"artifact output ancestry changed: {path}") from error
+        if _is_link_or_reparse(value) or _filesystem_identity(value) != expected:
+            raise RunnerError(f"artifact output ancestry changed: {path}")
+
+
+def _directory_open_flags() -> int:
+    return (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+
+
+def _open_output_directory(output: Path):
+    output = _validate_output_path(output)
+    if getattr(os, "O_DIRECTORY", 0) and os.open in os.supports_dir_fd:
+        descriptor = os.open(output.anchor, _directory_open_flags())
+        try:
+            for component in output.parts[1:]:
+                try:
+                    value = os.stat(
+                        component, dir_fd=descriptor, follow_symlinks=False
+                    )
+                except FileNotFoundError:
+                    try:
+                        os.mkdir(component, dir_fd=descriptor)
+                    except FileExistsError:
+                        pass
+                    value = os.stat(
+                        component, dir_fd=descriptor, follow_symlinks=False
+                    )
+                if _is_link_or_reparse(value) or not stat.S_ISDIR(value.st_mode):
+                    raise RunnerError(
+                        f"artifact output component is not a real directory: {component}"
+                    )
+                child = os.open(component, _directory_open_flags(), dir_fd=descriptor)
+                if _filesystem_identity(os.fstat(child)) != _filesystem_identity(value):
+                    os.close(child)
+                    raise RunnerError("artifact output changed while opening")
+                os.close(descriptor)
+                descriptor = child
+            return output, descriptor, _filesystem_identity(os.fstat(descriptor))
+        except Exception:
+            os.close(descriptor)
+            raise
+    if not output.exists():
+        output.mkdir(parents=True)
+    before = output.lstat()
+    if _is_link_or_reparse(before) or not stat.S_ISDIR(before.st_mode):
+        raise RunnerError(f"artifact output is not a real directory: {output}")
+    return output, None, _filesystem_identity(before)
+
+
+def _rename_noreplace(parent_descriptor: int, source: str, destination: str) -> None:
+    library = ctypes.CDLL(None, use_errno=True)
+    source_bytes = os.fsencode(source)
+    destination_bytes = os.fsencode(destination)
+    if sys.platform.startswith("linux"):
+        rename = getattr(library, "renameat2", None)
+        if rename is None:
+            raise RunnerError("exclusive artifact publication is unavailable")
+        result = rename(
+            parent_descriptor,
+            ctypes.c_char_p(source_bytes),
+            parent_descriptor,
+            ctypes.c_char_p(destination_bytes),
+            1,
+        )
+    elif sys.platform == "darwin":
+        rename = getattr(library, "renameatx_np", None)
+        if rename is None:
+            raise RunnerError("exclusive artifact publication is unavailable")
+        result = rename(
+            parent_descriptor,
+            ctypes.c_char_p(source_bytes),
+            parent_descriptor,
+            ctypes.c_char_p(destination_bytes),
+            4,
+        )
+    else:
+        raise RunnerError("exclusive descriptor-relative publication is unavailable")
+    if result == 0:
+        return
+    error_number = ctypes.get_errno()
+    if error_number in (errno.EEXIST, errno.ENOTEMPTY):
+        raise RunnerError(f"artifact destination already exists: {destination}")
+    raise RunnerError(
+        f"unable to publish artifact exclusively: {os.strerror(error_number)}"
+    )
+
+
+def _open_tree_directory(root_descriptor: int, parts, *, create: bool = False) -> int:
+    descriptor = os.dup(root_descriptor)
+    try:
+        for component in parts:
+            if create:
+                try:
+                    os.mkdir(component, dir_fd=descriptor)
+                except FileExistsError:
+                    pass
+            child = os.open(component, _directory_open_flags(), dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = child
+        return descriptor
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+def _write_bytes_at(root_descriptor: int, relative: str, data: bytes) -> None:
+    parts = relative.split("/")
+    parent = _open_tree_directory(root_descriptor, parts[:-1], create=True)
+    descriptor = None
+    try:
+        descriptor = os.open(
+            parts[-1],
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+            0o644,
+            dir_fd=parent,
+        )
+        with os.fdopen(descriptor, "wb", closefd=False) as destination:
+            destination.write(data)
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        os.close(parent)
+
+
+def _read_bytes_at(
+    root_descriptor: int, relative: str, *, max_bytes: int | None = None
+) -> bytes:
+    parts = relative.split("/")
+    parent = _open_tree_directory(root_descriptor, parts[:-1])
+    descriptor = None
+    try:
+        descriptor = os.open(
+            parts[-1],
+            os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=parent,
+        )
+        value = os.fstat(descriptor)
+        if not stat.S_ISREG(value.st_mode):
+            raise RunnerError(f"artifact file is not regular: {relative}")
+        if max_bytes is not None and value.st_size > max_bytes:
+            raise RunnerError(f"artifact file exceeds the size limit: {relative}")
+        with os.fdopen(descriptor, "rb", closefd=False) as source:
+            return source.read() if max_bytes is None else source.read(max_bytes + 1)
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        os.close(parent)
+
+
+def _copy_file_at(
+    source: Path, source_root: Path, root_descriptor: int, relative: str
+) -> tuple[int, str]:
+    parts = normalize_artifact_path(relative).split("/")
+    parent = _open_tree_directory(root_descriptor, parts[:-1], create=True)
+    destination_descriptor = None
+    digest = hashlib.sha256()
+    size = 0
+    try:
+        destination_descriptor = os.open(
+            parts[-1],
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+            0o644,
+            dir_fd=parent,
+        )
+        with _open_regular_file(source, trusted_root=source_root) as input_file, os.fdopen(
+            destination_descriptor, "wb", closefd=False
+        ) as output_file:
+            while True:
+                chunk = input_file.read(1024 * 1024)
+                if not chunk:
+                    break
+                output_file.write(chunk)
+                digest.update(chunk)
+                size += len(chunk)
+    finally:
+        if destination_descriptor is not None:
+            os.close(destination_descriptor)
+        os.close(parent)
+    return size, digest.hexdigest()
+
+
+def _walk_files_at(root_descriptor: int) -> dict[str, tuple[int, str]]:
+    files = {}
+    pending = [(os.dup(root_descriptor), "")]
+    while pending:
+        descriptor, prefix = pending.pop()
+        try:
+            for name in sorted(os.listdir(descriptor)):
+                relative = f"{prefix}/{name}" if prefix else name
+                value = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+                if _is_link_or_reparse(value):
+                    raise RunnerError(f"artifact contains symlink: {relative}")
+                if stat.S_ISDIR(value.st_mode):
+                    child = os.open(
+                        name, _directory_open_flags(), dir_fd=descriptor
+                    )
+                    if _filesystem_identity(os.fstat(child)) != _filesystem_identity(value):
+                        os.close(child)
+                        raise RunnerError(f"artifact directory changed: {relative}")
+                    pending.append((child, relative))
+                elif stat.S_ISREG(value.st_mode):
+                    parts = relative.split("/")
+                    parent = _open_tree_directory(root_descriptor, parts[:-1])
+                    file_descriptor = os.open(
+                        parts[-1],
+                        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                        dir_fd=parent,
+                    )
+                    try:
+                        digest = hashlib.sha256()
+                        size = 0
+                        with os.fdopen(file_descriptor, "rb", closefd=False) as source:
+                            while True:
+                                chunk = source.read(1024 * 1024)
+                                if not chunk:
+                                    break
+                                digest.update(chunk)
+                                size += len(chunk)
+                        files[relative] = (size, digest.hexdigest())
+                    finally:
+                        os.close(file_descriptor)
+                        os.close(parent)
+                else:
+                    raise RunnerError(f"artifact contains non-regular file: {relative}")
+        finally:
+            os.close(descriptor)
+    return files
+
+
+def _verify_artifact_at(root_descriptor: int, target: Target) -> str:
+    try:
+        manifest = json.loads(
+            _read_bytes_at(
+                root_descriptor, MANIFEST_NAME, max_bytes=MAX_METADATA_BYTES
+            ).decode("utf-8")
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise RunnerError("artifact manifest is malformed") from error
+    entries = _validate_manifest_schema(manifest, target)
+    actual = _walk_files_at(root_descriptor)
+    manifest_bytes = actual.pop(MANIFEST_NAME, None)
+    checksum_bytes = _read_bytes_at(
+        root_descriptor, CHECKSUM_NAME, max_bytes=MAX_METADATA_BYTES
+    )
+    actual.pop(CHECKSUM_NAME, None)
+    expected = {entry["path"]: (entry["size"], entry["sha256"]) for entry in entries}
+    if actual != expected:
+        raise RunnerError("artifact payload does not match manifest")
+    try:
+        checksum_text = checksum_bytes.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise RunnerError("unable to read SHA256SUMS as UTF-8") from error
+    if not checksum_text or not checksum_text.endswith("\n"):
+        raise RunnerError("SHA256SUMS must end with a newline")
+    checksums = {}
+    previous = None
+    for line in checksum_text.splitlines():
+        match = re.fullmatch(r"([0-9a-f]{64})  (.+)", line)
+        if match is None or match.group(2) in checksums:
+            raise RunnerError("SHA256SUMS line is malformed")
+        relative = match.group(2)
+        if relative != MANIFEST_NAME:
+            relative = normalize_artifact_path(relative)
+        if previous is not None and relative <= previous:
+            raise RunnerError("SHA256SUMS entries are not sorted")
+        checksums[relative] = match.group(1)
+        previous = relative
+    expected_checksums = {path: digest for path, (_, digest) in actual.items()}
+    if manifest_bytes is None:
+        raise RunnerError("artifact manifest is missing")
+    expected_checksums[MANIFEST_NAME] = manifest_bytes[1]
+    if checksums != dict(sorted(expected_checksums.items())):
+        raise RunnerError("SHA256SUMS mismatch")
+    return "PASS"
+
+
+def _relative_lstat(parent: Path, descriptor, name: str):
+    if descriptor is not None and os.stat in os.supports_dir_fd:
+        return os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+    return (parent / name).lstat()
+
+
+def _remove_published_artifact(
+    output: Path,
+    output_descriptor,
+    published_identity: tuple[int, int, int],
+) -> None:
+    try:
+        current = _relative_lstat(output, output_descriptor, "artifact")
+    except FileNotFoundError:
+        return
+    if (
+        _is_link_or_reparse(current)
+        or not stat.S_ISDIR(current.st_mode)
+        or _filesystem_identity(current) != published_identity
+    ):
+        return
+    quarantine_name = (
+        f".artifact.rollback-{published_identity[0]}-{published_identity[1]}"
+    )
+    quarantine = output / quarantine_name
+    try:
+        if output_descriptor is not None:
+            _rename_noreplace(output_descriptor, "artifact", quarantine_name)
+            moved = _relative_lstat(output, output_descriptor, quarantine_name)
+        else:
+            if quarantine.exists() or quarantine.is_symlink():
+                return
+            (output / "artifact").rename(quarantine)
+            moved = quarantine.lstat()
+    except (OSError, RunnerError):
+        return
+    if _filesystem_identity(moved) == published_identity:
+        return
+    try:
+        if output_descriptor is not None:
+            _rename_noreplace(output_descriptor, quarantine_name, "artifact")
+        elif not (output / "artifact").exists():
+            quarantine.rename(output / "artifact")
+    except (OSError, RunnerError):
+        pass
+
+
+def _remove_staging_artifact(
+    output: Path, output_descriptor, staging_identity: tuple[int, int, int]
+) -> None:
+    try:
+        current = _relative_lstat(output, output_descriptor, ".artifact.tmp")
+    except FileNotFoundError:
+        return
+    if _filesystem_identity(current) != staging_identity:
+        return
+    quarantine_name = f".artifact.failed-{staging_identity[0]}-{staging_identity[1]}"
+    try:
+        if output_descriptor is not None:
+            _rename_noreplace(output_descriptor, ".artifact.tmp", quarantine_name)
+        else:
+            (output / ".artifact.tmp").rename(output / quarantine_name)
+    except (OSError, RunnerError):
+        return
+
+
 def safe_copy_file(
     source: Path,
     artifact_root: Path,
@@ -2839,43 +3624,180 @@ def tool_versions_from_capabilities(
     return _validate_tool_versions(versions)
 
 
+def _assemble_artifact_path_fallback(
+    root: Path,
+    output: Path,
+    output_identity: tuple[int, int, int],
+    sources: dict[str, Path],
+    target: Target,
+    tool_versions: dict[str, str],
+) -> Path:
+    ancestry = _snapshot_output_ancestry(output)
+    artifact = output / "artifact"
+    staging = output / ".artifact.tmp"
+    for destination in (artifact, staging):
+        if destination.exists() or destination.is_symlink():
+            raise RunnerError(f"artifact destination already exists: {destination}")
+    staging_identity = None
+    published_identity = None
+    try:
+        staging.mkdir()
+        staging_identity = _filesystem_identity(staging.lstat())
+        for relative, source in sources.items():
+            _validate_output_ancestry(ancestry)
+            safe_copy_file(source, staging, relative, source_root=root)
+            _validate_output_ancestry(ancestry)
+        _validate_output_ancestry(ancestry)
+        manifest = build_manifest(staging, target, tool_versions)
+        write_manifest(staging, manifest)
+        write_checksums(staging)
+        verify_artifact(staging, target)
+        _validate_output_ancestry(ancestry)
+        before_publish = output.lstat()
+        if (
+            _is_link_or_reparse(before_publish)
+            or _filesystem_identity(before_publish) != output_identity
+            or _filesystem_identity(staging.lstat()) != staging_identity
+        ):
+            raise RunnerError("artifact output changed during publication")
+        try:
+            staging.rename(artifact)
+        except FileExistsError as error:
+            raise RunnerError(f"artifact destination already exists: {artifact}") from error
+        published = artifact.lstat()
+        if _filesystem_identity(published) != staging_identity:
+            raise RunnerError("published artifact identity changed")
+        published_identity = staging_identity
+        staging_identity = None
+        verify_artifact(artifact, target)
+        _validate_output_ancestry(ancestry)
+        after_publish = output.lstat()
+        if (
+            _is_link_or_reparse(after_publish)
+            or _filesystem_identity(after_publish) != output_identity
+            or _filesystem_identity(artifact.lstat()) != published_identity
+        ):
+            raise RunnerError("artifact output changed during publication")
+        return artifact
+    except Exception:
+        if published_identity is not None:
+            _remove_published_artifact(output, None, published_identity)
+        elif staging_identity is not None:
+            _remove_staging_artifact(output, None, staging_identity)
+        raise
+
+
 def assemble_artifact(
     root: Path,
     output: Path,
     target: Target,
     tool_versions: dict[str, str],
 ) -> Path:
-    root = Path(root)
-    output = Path(output)
+    root = Path(root).absolute()
+    output = _validate_output_path(Path(output))
     sources = collect_artifact_sources(root, target)
-    if output.exists() or output.is_symlink():
-        _require_directory(output, "artifact output directory")
-    else:
-        try:
-            output.mkdir(parents=True)
-        except OSError as error:
-            raise RunnerError(f"unable to create artifact output directory: {output}") from error
     artifact = output / "artifact"
-    staging = output / ".artifact.tmp"
-    for destination in (artifact, staging):
-        if destination.exists() or destination.is_symlink():
-            if destination.is_symlink():
-                raise RunnerError(f"artifact destination is a symlink: {destination}")
-            raise RunnerError(f"artifact destination already exists: {destination}")
+    output_descriptor = None
+    staging_descriptor = None
+    published_identity = None
+    staging_identity = None
     try:
-        staging.mkdir()
+        output, output_descriptor, output_identity = _open_output_directory(output)
+        if output_descriptor is None:
+            return _assemble_artifact_path_fallback(
+                root,
+                output,
+                output_identity,
+                sources,
+                target,
+                tool_versions,
+            )
+        for name in ("artifact", ".artifact.tmp"):
+            try:
+                value = _relative_lstat(output, output_descriptor, name)
+            except FileNotFoundError:
+                continue
+            if _is_link_or_reparse(value):
+                raise RunnerError(f"artifact destination is a symlink: {output / name}")
+            raise RunnerError(f"artifact destination already exists: {output / name}")
+        os.mkdir(".artifact.tmp", dir_fd=output_descriptor)
+        staging_identity = _filesystem_identity(
+            _relative_lstat(output, output_descriptor, ".artifact.tmp")
+        )
+        staging_descriptor = os.open(
+            ".artifact.tmp", _directory_open_flags(), dir_fd=output_descriptor
+        )
+        file_entries = []
         for relative, source in sources.items():
-            safe_copy_file(source, staging, relative, source_root=root)
-        manifest = build_manifest(staging, target, tool_versions)
-        write_manifest(staging, manifest)
-        write_checksums(staging)
-        verify_artifact(staging, target)
-        staging.rename(artifact)
-        verify_artifact(artifact, target)
+            size, digest = _copy_file_at(
+                source, root, staging_descriptor, relative
+            )
+            file_entries.append(
+                {
+                    "path": relative,
+                    "kind": _artifact_kind(relative),
+                    "size": size,
+                    "sha256": digest,
+                }
+            )
+        manifest = {
+            "schema_version": 1,
+            "agentgate_version": AGENTGATE_VERSION,
+            "abi_version": ABI_VERSION,
+            "target": {
+                "os": target.system,
+                "arch": target.arch,
+                "triple": target.triple,
+            },
+            "tools": _validate_tool_versions(tool_versions),
+            "files": file_entries,
+        }
+        manifest_data = _canonical_json(manifest)
+        _write_bytes_at(staging_descriptor, MANIFEST_NAME, manifest_data)
+        checksums = {entry["path"]: entry["sha256"] for entry in file_entries}
+        checksums[MANIFEST_NAME] = hashlib.sha256(manifest_data).hexdigest()
+        checksum_data = "".join(
+            f"{digest}  {relative}\n"
+            for relative, digest in sorted(checksums.items())
+        ).encode("utf-8")
+        _write_bytes_at(staging_descriptor, CHECKSUM_NAME, checksum_data)
+        _verify_artifact_at(staging_descriptor, target)
+        os.close(staging_descriptor)
+        staging_descriptor = None
+        _rename_noreplace(output_descriptor, ".artifact.tmp", "artifact")
+        published_value = _relative_lstat(output, output_descriptor, "artifact")
+        if _is_link_or_reparse(published_value) or not stat.S_ISDIR(published_value.st_mode):
+            raise RunnerError("published artifact is not a real directory")
+        if _filesystem_identity(published_value) != staging_identity:
+            raise RunnerError("published artifact identity changed")
+        published_identity = staging_identity
+        staging_identity = None
+        published_descriptor = os.open(
+            "artifact", _directory_open_flags(), dir_fd=output_descriptor
+        )
+        try:
+            _verify_artifact_at(published_descriptor, target)
+        finally:
+            os.close(published_descriptor)
+        current_output = output.lstat()
+        if (
+            _is_link_or_reparse(current_output)
+            or _filesystem_identity(current_output) != output_identity
+        ):
+            raise RunnerError("artifact output changed during publication")
     except Exception:
-        if staging.exists() and not staging.is_symlink():
-            shutil.rmtree(staging)
+        if published_identity is not None:
+            _remove_published_artifact(
+                output, output_descriptor, published_identity
+            )
+        elif staging_identity is not None and output_descriptor is not None:
+            _remove_staging_artifact(output, output_descriptor, staging_identity)
         raise
+    finally:
+        if staging_descriptor is not None:
+            os.close(staging_descriptor)
+        if output_descriptor is not None:
+            os.close(output_descriptor)
     return artifact
 
 
