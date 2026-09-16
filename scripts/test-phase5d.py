@@ -1486,6 +1486,48 @@ Dump of file agentgate_ffi.dll
         self.assertEqual(plan[10].argv[-2:], ("--library", str(artifact / "native/libagentgate_ffi.so")))
         self.assertEqual(plan[-1].cwd, artifact / "node")
 
+    def test_posix_go_smoke_uses_only_quoted_extracted_cgo_paths(self):
+        artifact = Path("/isolated/路径 with spaces Ω/agentgate")
+        plan = smoke_plan(
+            target_fixture(), artifact, Path("/fresh/smoke build"),
+            complete_capabilities(),
+        )
+        go_commands = [
+            command for command in plan if command.purpose.startswith("smoke-go-")
+        ]
+        self.assertEqual(len(go_commands), 2)
+        for command in go_commands:
+            environment = dict(command.env)
+            self.assertEqual(
+                shlex.split(environment["CGO_CFLAGS"]),
+                ["-I" + str(artifact / "include")],
+            )
+            self.assertEqual(
+                shlex.split(environment["CGO_LDFLAGS"]),
+                ["-L" + str(artifact / "native")],
+            )
+            self.assertNotIn("/repo", environment["CGO_CFLAGS"])
+            self.assertNotIn("/repo", environment["CGO_LDFLAGS"])
+
+    def test_windows_go_smoke_uses_only_quoted_extracted_include_path(self):
+        artifact = Path("C:/isolated/路径 with spaces Ω/agentgate")
+        plan = smoke_plan(
+            Target.for_host("Windows", "AMD64"), artifact,
+            Path("C:/fresh/smoke build"), complete_capabilities(),
+        )
+        go_commands = [
+            command for command in plan if command.purpose.startswith("smoke-go-")
+        ]
+        self.assertEqual(len(go_commands), 2)
+        for command in go_commands:
+            environment = dict(command.env)
+            self.assertEqual(
+                shlex.split(environment["CGO_CFLAGS"]),
+                ["-I" + str(artifact / "include")],
+            )
+            self.assertNotIn("CGO_LDFLAGS", environment)
+            self.assertNotIn("/repo", environment["CGO_CFLAGS"])
+
     def test_windows_smoke_plan_links_import_library_and_stages_only_shared_dll(self):
         target = Target.for_host("Windows", "AMD64")
         artifact = Path("C:/isolated/路径 with spaces Ω/agentgate")
@@ -1571,6 +1613,48 @@ Dump of file agentgate_ffi.dll
                 )
             runner.assert_not_called()
 
+    def test_artifact_smoke_rechecks_extracted_go_header_before_go_commands(self):
+        with tempfile.TemporaryDirectory() as directory:
+            artifact = self._assembled_fixture(Path(directory))
+            commands = []
+
+            def runner(argv, **kwargs):
+                commands.append(tuple(argv))
+                if argv[:2] == ["/tools/python", "-c"]:
+                    (Path(kwargs["cwd"]) / "include/agentgate.h").unlink()
+                if argv[0] == "/tools/go":
+                    raise AssertionError("Go ran after extracted header removal")
+                return mock.Mock(returncode=0)
+
+            with self.assertRaisesRegex(RunnerError, "extracted Go header"):
+                run_artifact_smoke(
+                    target_fixture(), artifact, complete_capabilities(),
+                    command_runner=runner,
+                )
+            self.assertFalse(any(command[0] == "/tools/go" for command in commands))
+
+    def test_artifact_smoke_rechecks_header_before_each_go_command(self):
+        with tempfile.TemporaryDirectory() as directory:
+            artifact = self._assembled_fixture(Path(directory))
+            go_calls = []
+
+            def runner(argv, **kwargs):
+                if argv[0] == "/tools/go":
+                    go_calls.append(tuple(argv))
+                    if len(go_calls) == 1:
+                        root = Path(kwargs["cwd"]).parent
+                        (root / "include/agentgate.h").unlink()
+                    else:
+                        raise AssertionError("second Go command ran without header")
+                return mock.Mock(returncode=0)
+
+            with self.assertRaisesRegex(RunnerError, "extracted Go header"):
+                run_artifact_smoke(
+                    target_fixture(), artifact, complete_capabilities(),
+                    command_runner=runner,
+                )
+            self.assertEqual(len(go_calls), 1)
+
     def test_artifact_smoke_clears_inherited_loader_and_agentgate_environment(self):
         with tempfile.TemporaryDirectory() as directory:
             artifact = self._assembled_fixture(Path(directory))
@@ -1583,6 +1667,10 @@ Dump of file agentgate_ffi.dll
                 "AGENTGATE_RUNTIME_LIBRARY": "inherited-agentgate",
                 "GOWORK": "/repo/go.work",
                 "GOFLAGS": "-modfile=/repo/go.mod",
+                "CGO_CFLAGS": "-I/repo/include",
+                "CGO_CPPFLAGS": "-I/repo/include",
+                "CGO_CXXFLAGS": "-I/repo/include",
+                "CGO_LDFLAGS": "-L/repo/target/release",
             }
             with mock.patch.dict(os.environ, forbidden, clear=True):
                 self.assertEqual(
@@ -2953,6 +3041,10 @@ SMOKE_CLEARED_ENVIRONMENT = frozenset(
         "AGENTGATE_RUNTIME_LIBRARY",
         "GOWORK",
         "GOFLAGS",
+        "CGO_CFLAGS",
+        "CGO_CPPFLAGS",
+        "CGO_CXXFLAGS",
+        "CGO_LDFLAGS",
     }
 )
 
@@ -3018,18 +3110,18 @@ def smoke_plan(
         )
     )
 
-    go_environment = ()
+    go_environment = (
+        ("CGO_CFLAGS", shlex.join(["-I" + str(artifact / "include")])),
+        ("GOWORK", "off"),
+    )
     if target.system in {"Linux", "Darwin"}:
         loader_variable = (
             "LD_LIBRARY_PATH" if target.system == "Linux" else "DYLD_LIBRARY_PATH"
         )
-        go_environment = (
-            ("CGO_LDFLAGS", "-L" + str(native)),
+        go_environment += (
+            ("CGO_LDFLAGS", shlex.join(["-L" + str(native)])),
             (loader_variable, str(native)),
-            ("GOWORK", "off"),
         )
-    else:
-        go_environment = (("GOWORK", "off"),)
     commands.extend(
         (
             PlannedCommand(
@@ -4873,6 +4965,20 @@ def run_smoke_command(
     return "PASS"
 
 
+def _validate_extracted_go_header(artifact: Path) -> Path:
+    artifact = Path(artifact)
+    header = artifact / "include" / "agentgate.h"
+    try:
+        _require_regular_file(header, "extracted Go header")
+        artifact_root = artifact.resolve(strict=True)
+        resolved = header.resolve(strict=True)
+    except (OSError, RunnerError) as error:
+        raise RunnerError(f"extracted Go header is unavailable: {header}") from error
+    if not _is_within(resolved, artifact_root):
+        raise RunnerError(f"extracted Go header escapes artifact: {header}")
+    return resolved
+
+
 def run_artifact_smoke(
     target: Target,
     artifact: Path,
@@ -4913,6 +5019,8 @@ def run_artifact_smoke(
                 source_root=extracted,
             )
         for command in smoke_plan(target, extracted, build_directory, capabilities):
+            if command.purpose.startswith("smoke-go-"):
+                _validate_extracted_go_header(extracted)
             run_smoke_command(
                 command, command_runner, windows=target.system == "Windows",
             )
