@@ -82,15 +82,56 @@ def workflow_action_references(source: str) -> list[str]:
     return re.findall(r"^\s*uses:\s*([^\s#]+)", source, flags=re.MULTILINE)
 
 
+def _yaml_mapping_key(line: str, indentation: int) -> str | None:
+    if len(line) - len(line.lstrip(" ")) != indentation:
+        return None
+    content = line[indentation:]
+    if not content:
+        return None
+    if content.startswith("'"):
+        index = 1
+        decoded = []
+        while index < len(content):
+            if content[index] != "'":
+                decoded.append(content[index])
+                index += 1
+                continue
+            if index + 1 < len(content) and content[index + 1] == "'":
+                decoded.append("'")
+                index += 2
+                continue
+            remainder = content[index + 1:].lstrip()
+            return "".join(decoded) if remainder.startswith(":") else None
+        return None
+    if content.startswith('"'):
+        escaped = False
+        for index in range(1, len(content)):
+            character = content[index]
+            if character == '"' and not escaped:
+                remainder = content[index + 1:].lstrip()
+                if not remainder.startswith(":"):
+                    return None
+                try:
+                    decoded = json.loads(content[: index + 1])
+                except (json.JSONDecodeError, TypeError):
+                    return None
+                return decoded if isinstance(decoded, str) else None
+            escaped = character == "\\" and not escaped
+            if character != "\\":
+                escaped = False
+        return None
+    separator = content.find(":")
+    if separator < 0:
+        return None
+    key = content[:separator].strip()
+    return key or None
+
+
 def workflow_mapping_keys(source: str, indentation: int) -> tuple[str, ...]:
-    prefix = " " * indentation
-    pattern = re.compile(
-        r"^" + re.escape(prefix) + r"([a-zA-Z][a-zA-Z0-9_-]*)\s*:"
-    )
     return tuple(
-        match.group(1)
+        key
         for line in source.splitlines()
-        if (match := pattern.match(line)) is not None
+        if (key := _yaml_mapping_key(line, indentation)) is not None
     )
 
 
@@ -2982,8 +3023,14 @@ Dump of file agentgate_ffi.dll
         )
         qualification = workflow_block(jobs, "qualification", 2)
         sanitizers = workflow_block(jobs, "sanitizers", 2)
-        self.assertNotIn("permissions", workflow_mapping_keys(qualification, 4))
-        self.assertNotIn("permissions", workflow_mapping_keys(sanitizers, 4))
+        self.assertEqual(
+            workflow_mapping_keys(qualification, 4),
+            ("name", "runs-on", "timeout-minutes", "strategy", "steps"),
+        )
+        self.assertEqual(
+            workflow_mapping_keys(sanitizers, 4),
+            ("name", "runs-on", "timeout-minutes", "steps"),
+        )
         self.assertEqual(
             workflow_step_names(qualification),
             (
@@ -3063,6 +3110,9 @@ Dump of file agentgate_ffi.dll
         job = (
             "  sample:\n"
             "    permissions : {}\n"
+            '    "permis\\u0073ions": {}\n'
+            "    'permis''sions': {}\n"
+            "    <<: {unexpected: true}\n"
             "    steps:\n"
             "      - name: First\n"
             "        run: |\n"
@@ -3072,7 +3122,8 @@ Dump of file agentgate_ffi.dll
             "        run: echo done\n"
         )
         self.assertEqual(
-            workflow_mapping_keys(job, 4), ("permissions", "steps")
+            workflow_mapping_keys(job, 4),
+            ("permissions", "permissions", "permis'sions", "<<", "steps"),
         )
         self.assertEqual(workflow_step_names(job), ("First", "Second"))
         self.assertEqual(
@@ -3531,6 +3582,28 @@ Dump of file agentgate_ffi.dll
                 ),
             )
         )
+        for label, mutant in mutations:
+            with self.subTest(label=label):
+                self._assert_workflow_mutant_rejected(mutant, label)
+
+    def test_workflow_contract_rejects_quoted_and_merged_job_keys(self):
+        source = read_phase5d_workflow()
+        mutations = []
+        for job_name in ("qualification", "sanitizers"):
+            marker = f"  {job_name}:\n"
+            entries = (
+                ('double-quoted permissions', '    "permissions":\n      contents: write\n'),
+                ("single-quoted permissions", "    'permissions':\n      contents: write\n"),
+                ("quoted unknown key", '    "unexpected": true\n'),
+                ("merge key", "    <<: {permissions: read-all}\n"),
+            )
+            for label, entry in entries:
+                mutations.append(
+                    (
+                        f"{job_name} {label}",
+                        source.replace(marker, marker + entry, 1),
+                    )
+                )
         for label, mutant in mutations:
             with self.subTest(label=label):
                 self._assert_workflow_mutant_rejected(mutant, label)
