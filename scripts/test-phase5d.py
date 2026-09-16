@@ -70,6 +70,16 @@ def build_fixture_artifact(parent: Path) -> Path:
 
 
 class RunnerSelfTests(unittest.TestCase):
+    def _reparse_stat(self, path):
+        original = Path(path).lstat()
+        value = mock.Mock()
+        for attribute in (
+            "st_mode", "st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns"
+        ):
+            setattr(value, attribute, getattr(original, attribute))
+        value.st_file_attributes = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        return value
+
     def _rewrite_manifest(self, root, manifest):
         write_manifest(root, manifest)
         write_checksums(root)
@@ -676,6 +686,89 @@ class RunnerSelfTests(unittest.TestCase):
             finally:
                 os.close(root_descriptor)
 
+    def test_windows_reparse_points_are_rejected_at_every_path_boundary(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory).resolve()
+            source = self._source_fixture(parent / "source", target_fixture())
+            artifact = self._assembled_fixture(parent / "assembled")
+            real_lstat = Path.lstat
+
+            cases = [
+                (source, lambda: _require_directory(source, "root")),
+                (
+                    source / "packages/ffi/include/agentgate.h",
+                    lambda: _require_regular_file(
+                        source / "packages/ffi/include/agentgate.h", "source"
+                    ),
+                ),
+                (
+                    artifact / "include",
+                    lambda: _walk_regular_files(artifact, exclude_metadata=True),
+                ),
+                (
+                    source / "bindings/go/agentgate/service.go",
+                    lambda: _collect_tree(
+                        {}, source, "bindings/go/agentgate", "go/agentgate"
+                    ),
+                ),
+                (
+                    artifact / MANIFEST_NAME,
+                    lambda: verify_artifact(artifact, target_fixture()),
+                ),
+                (
+                    artifact / CHECKSUM_NAME,
+                    lambda: verify_artifact(artifact, target_fixture()),
+                ),
+                (
+                    parent / "output-ancestry",
+                    lambda: _validate_output_path(parent / "output-ancestry/child"),
+                ),
+            ]
+            (parent / "output-ancestry").mkdir()
+            for reparse_path, operation in cases:
+                with self.subTest(path=reparse_path):
+                    reparse_value = self._reparse_stat(reparse_path)
+
+                    def lstat(path, *args, **kwargs):
+                        if Path(path) == reparse_path:
+                            return reparse_value
+                        return real_lstat(path, *args, **kwargs)
+
+                    with mock.patch.object(
+                        stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400, create=True
+                    ), mock.patch.object(Path, "lstat", autospec=True, side_effect=lstat):
+                        with self.assertRaisesRegex(RunnerError, "symlink|reparse|real"):
+                            operation()
+
+    def test_windows_no_dirfd_reader_rejects_reparse_root_parent_and_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            parent = root / "parent"
+            parent.mkdir()
+            payload = parent / "payload"
+            payload.write_bytes(b"payload")
+            real_lstat = Path.lstat
+            for reparse_path in (root, parent, payload):
+                with self.subTest(path=reparse_path):
+                    reparse_value = self._reparse_stat(reparse_path)
+
+                    def lstat(path, *args, **kwargs):
+                        if Path(path) == reparse_path:
+                            return reparse_value
+                        return real_lstat(path, *args, **kwargs)
+
+                    with mock.patch.object(
+                        Path, "lstat", autospec=True, side_effect=lstat
+                    ), mock.patch.object(
+                        sys.modules[__name__], "SECURE_DIR_FD_SUPPORTED", False
+                    ), mock.patch.object(
+                        stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400, create=True
+                    ), self.assertRaisesRegex(RunnerError, "real|regular"):
+                        with _open_regular_file(
+                            payload, trusted_root=root
+                        ) as source_file:
+                            source_file.read()
+
     def test_descriptor_verifier_uses_strict_canonical_manifest_and_checksums(self):
         with tempfile.TemporaryDirectory() as directory:
             base = self._assembled_fixture(Path(directory) / "base")
@@ -759,6 +852,177 @@ class RunnerSelfTests(unittest.TestCase):
                         token,
                     )
                 self.assertEqual(sibling.read_text(encoding="utf-8"), "preserve")
+
+    def test_prepublication_failures_remove_owned_staging_and_preserve_collisions(self):
+        failure_points = ("copy", "write", "verify")
+        for failure_point in failure_points:
+            with self.subTest(failure_point=failure_point), tempfile.TemporaryDirectory() as directory:
+                parent = Path(directory).resolve()
+                root = self._source_fixture(parent / "source", target_fixture())
+                output = parent / "output"
+                output.mkdir()
+                sibling = output / "unrelated.txt"
+                sibling.write_text("preserve", encoding="utf-8")
+                collision = output / ".artifact.failed-collision"
+                collision.mkdir()
+                (collision / "marker").write_text("preserve", encoding="utf-8")
+                patches = {
+                    "copy": mock.patch.object(
+                        sys.modules[__name__],
+                        "_copy_file_at",
+                        side_effect=RunnerError("injected copy failure"),
+                    ),
+                    "write": mock.patch.object(
+                        sys.modules[__name__],
+                        "_write_bytes_at",
+                        side_effect=RunnerError("injected write failure"),
+                    ),
+                    "verify": mock.patch.object(
+                        sys.modules[__name__],
+                        "_verify_artifact_at",
+                        side_effect=RunnerError("injected verify failure"),
+                    ),
+                }
+                with patches[failure_point], mock.patch.object(
+                    secrets, "token_hex", side_effect=("collision", "success")
+                ), self.assertRaisesRegex(RunnerError, "injected"):
+                    assemble_artifact(
+                        root, output, target_fixture(), tool_versions_fixture()
+                    )
+                self.assertFalse((output / ".artifact.tmp").exists())
+                self.assertEqual(
+                    [path.name for path in output.glob(".artifact.failed-*")],
+                    [".artifact.failed-collision"],
+                )
+                self.assertEqual(
+                    (collision / "marker").read_text(encoding="utf-8"), "preserve"
+                )
+                self.assertEqual(sibling.read_text(encoding="utf-8"), "preserve")
+
+    def test_windows_fallback_prepublication_failure_removes_owned_staging(self):
+        for failure_point, function_name in (
+            ("copy", "safe_copy_file"),
+            ("write", "write_manifest"),
+            ("verify", "verify_artifact"),
+        ):
+            with self.subTest(failure_point=failure_point), tempfile.TemporaryDirectory() as directory:
+                parent = Path(directory).resolve()
+                root = self._source_fixture(parent / "source", target_fixture())
+                output = parent / "output"
+                output.mkdir()
+                identity = _filesystem_identity(output.lstat())
+                collision = output / ".artifact.failed-collision"
+                collision.mkdir()
+                (collision / "marker").write_text("preserve", encoding="utf-8")
+                with mock.patch.object(
+                    sys.modules[__name__],
+                    "_open_output_directory",
+                    return_value=(output, None, identity),
+                ), mock.patch.object(
+                    sys.modules[__name__],
+                    function_name,
+                    side_effect=RunnerError(f"injected fallback {failure_point} failure"),
+                ), mock.patch.object(
+                    secrets, "token_hex", side_effect=("collision", "success")
+                ), self.assertRaisesRegex(RunnerError, f"fallback {failure_point}"):
+                    assemble_artifact(
+                        root, output, target_fixture(), tool_versions_fixture()
+                    )
+                self.assertFalse((output / ".artifact.tmp").exists())
+                self.assertEqual(
+                    [path.name for path in output.glob(".artifact.failed-*")],
+                    [".artifact.failed-collision"],
+                )
+                self.assertEqual(
+                    (collision / "marker").read_text(encoding="utf-8"), "preserve"
+                )
+
+    def test_prepublication_cleanup_removes_displaced_owned_staging_only(self):
+        for descriptor_mode in (True, False):
+            with self.subTest(descriptor_mode=descriptor_mode), tempfile.TemporaryDirectory() as directory:
+                parent = Path(directory).resolve()
+                root = self._source_fixture(parent / "source", target_fixture())
+                output = parent / "output"
+                output.mkdir()
+                output_identity = _filesystem_identity(output.lstat())
+                owned_identity = None
+
+                def displace_then_fail(*args, **kwargs):
+                    nonlocal owned_identity
+                    staging = output / ".artifact.tmp"
+                    owned_identity = _filesystem_identity(staging.lstat())
+                    staging.rename(output / "displaced-staging")
+                    replacement = output / ".artifact.tmp"
+                    replacement.mkdir()
+                    (replacement / "marker").write_text("preserve", encoding="utf-8")
+                    raise RunnerError("injected displaced staging failure")
+
+                open_output_patch = (
+                    contextlib.nullcontext()
+                    if descriptor_mode
+                    else mock.patch.object(
+                        sys.modules[__name__],
+                        "_open_output_directory",
+                        return_value=(output, None, output_identity),
+                    )
+                )
+                copy_name = "_copy_file_at" if descriptor_mode else "safe_copy_file"
+                with open_output_patch, mock.patch.object(
+                    sys.modules[__name__], copy_name, side_effect=displace_then_fail
+                ), self.assertRaisesRegex(RunnerError, "displaced staging"):
+                    assemble_artifact(
+                        root, output, target_fixture(), tool_versions_fixture()
+                    )
+
+                self.assertEqual(
+                    (output / ".artifact.tmp/marker").read_text(encoding="utf-8"),
+                    "preserve",
+                )
+                self.assertIsNotNone(owned_identity)
+                self.assertFalse(
+                    any(
+                        _filesystem_identity(child.lstat()) == owned_identity
+                        for child in output.iterdir()
+                    )
+                )
+                self.assertEqual(list(output.glob(".artifact.failed-*")), [])
+
+    def test_descriptor_walk_closes_queued_directories_on_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for index in range(16):
+                child = root / f"dir-{index:02d}"
+                child.mkdir()
+                (child / "payload").write_text("payload", encoding="utf-8")
+            root_descriptor = os.open(root, _directory_open_flags())
+            real_open = os.open
+            real_close = os.close
+            opened = set()
+            closed = set()
+
+            def tracking_open(*args, **kwargs):
+                descriptor = real_open(*args, **kwargs)
+                if kwargs.get("dir_fd") is not None and args[0] != "payload":
+                    opened.add(descriptor)
+                return descriptor
+
+            def tracking_close(descriptor):
+                if descriptor in opened:
+                    closed.add(descriptor)
+                return real_close(descriptor)
+
+            try:
+                with mock.patch.object(os, "open", side_effect=tracking_open), mock.patch.object(
+                    os, "close", side_effect=tracking_close
+                ), mock.patch.object(
+                    sys.modules[__name__],
+                    "_hash_file_at",
+                    side_effect=RunnerError("injected hash failure"),
+                ), self.assertRaisesRegex(RunnerError, "hash failure"):
+                    _walk_files_at(root_descriptor)
+            finally:
+                real_close(root_descriptor)
+            self.assertEqual(opened, closed)
 
     def test_publication_rejects_destination_created_during_rename(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1589,6 +1853,15 @@ Dump of file agentgate_ffi.dll
         self.assertIsNone(
             parse_compiler_version("warning: fallback compiler 99.0.0")
         )
+        for banner, expected in (
+            ("warning: build 2026\nUbuntu clang version 18.1.3", (18, 1, 3)),
+            ("notice: runtime 99\nDebian clang version 16.0.6", (16, 0, 6)),
+        ):
+            with self.subTest(banner=banner):
+                self.assertEqual(parse_compiler_version(banner), expected)
+        self.assertIsNone(
+            parse_compiler_version("Ubuntu toolchain warning 22.04 compiler 99.0.0")
+        )
         self.assertEqual(
             parse_tool_version(
                 "maven",
@@ -2104,7 +2377,7 @@ TOOL_VERSION_PATTERNS = {
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 COMPILER_VERSION_PATTERNS = (
     re.compile(
-        r"^(?:Apple\s+)?clang version\s+(\d+(?:\.\d+)*)",
+        r"^(?:(?:Apple|Ubuntu|Debian)\s+)?clang version\s+(\d+(?:\.\d+)*)",
         flags=re.IGNORECASE | re.MULTILINE,
     ),
     re.compile(
@@ -2598,26 +2871,26 @@ def normalize_artifact_path(value: str) -> str:
     return normalized
 
 
-def _path_mode(path: Path) -> int:
+def _path_lstat(path: Path):
     try:
-        return path.lstat().st_mode
+        return path.lstat()
     except OSError as error:
         raise RunnerError(f"artifact path is missing or inaccessible: {path}") from error
 
 
 def _require_directory(path: Path, label: str) -> None:
-    mode = _path_mode(path)
-    if stat.S_ISLNK(mode):
-        raise RunnerError(f"{label} is a symlink: {path}")
-    if not stat.S_ISDIR(mode):
+    value = _path_lstat(path)
+    if _is_link_or_reparse(value):
+        raise RunnerError(f"{label} is a symlink or reparse point: {path}")
+    if not stat.S_ISDIR(value.st_mode):
         raise RunnerError(f"{label} is not a directory: {path}")
 
 
 def _require_regular_file(path: Path, label: str = "artifact file") -> None:
-    mode = _path_mode(path)
-    if stat.S_ISLNK(mode):
-        raise RunnerError(f"{label} is a symlink: {path}")
-    if not stat.S_ISREG(mode):
+    value = _path_lstat(path)
+    if _is_link_or_reparse(value):
+        raise RunnerError(f"{label} is a symlink or reparse point: {path}")
+    if not stat.S_ISREG(value.st_mode):
         raise RunnerError(f"{label} is not a regular file: {path}")
 
 
@@ -2662,7 +2935,7 @@ def _open_regular_file(
     try:
         if supports_descriptor_walk:
             root_before = absolute_root.lstat()
-            if stat.S_ISLNK(root_before.st_mode) or not stat.S_ISDIR(root_before.st_mode):
+            if _is_link_or_reparse(root_before) or not stat.S_ISDIR(root_before.st_mode):
                 raise RunnerError(f"trusted root is not a real directory: {root}")
             root_descriptor = os.open(
                 absolute_root,
@@ -2677,7 +2950,7 @@ def _open_regular_file(
                 before = os.stat(
                     component, dir_fd=parent_descriptor, follow_symlinks=False
                 )
-                if stat.S_ISLNK(before.st_mode) or not stat.S_ISDIR(before.st_mode):
+                if _is_link_or_reparse(before) or not stat.S_ISDIR(before.st_mode):
                     raise RunnerError(f"{label} parent is not a real directory: {path}")
                 child_descriptor = os.open(
                     component,
@@ -2691,7 +2964,7 @@ def _open_regular_file(
                 parent_descriptor = child_descriptor
             filename = relative.parts[-1]
             before = os.stat(filename, dir_fd=parent_descriptor, follow_symlinks=False)
-            if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+            if _is_link_or_reparse(before) or not stat.S_ISREG(before.st_mode):
                 raise RunnerError(f"{label} is not a regular file: {path}")
             file_descriptor = os.open(
                 filename,
@@ -2711,7 +2984,8 @@ def _open_regular_file(
                 filename, dir_fd=parent_descriptor, follow_symlinks=False
             )
             if (
-                file_identity(after_open) != file_identity(opened)
+                _is_link_or_reparse(after_path)
+                or file_identity(after_open) != file_identity(opened)
                 or file_identity(after_path) != file_identity(before)
             ):
                 raise RunnerError(f"{label} changed while being read: {path}")
@@ -2719,26 +2993,32 @@ def _open_regular_file(
                 current = os.stat(
                     component, dir_fd=parent_fd, follow_symlinks=False
                 )
-                if directory_identity(current) != directory_identity(expected):
+                if (
+                    _is_link_or_reparse(current)
+                    or directory_identity(current) != directory_identity(expected)
+                ):
                     raise RunnerError(f"{label} parent changed while being read: {path}")
             root_after = absolute_root.lstat()
-            if directory_identity(root_after) != directory_identity(root_before):
+            if (
+                _is_link_or_reparse(root_after)
+                or directory_identity(root_after) != directory_identity(root_before)
+            ):
                 raise RunnerError(f"trusted root changed while reading {label}: {root}")
         else:
             parents = []
             current = absolute_root
             root_before = current.lstat()
-            if stat.S_ISLNK(root_before.st_mode) or not stat.S_ISDIR(root_before.st_mode):
+            if _is_link_or_reparse(root_before) or not stat.S_ISDIR(root_before.st_mode):
                 raise RunnerError(f"trusted root is not a real directory: {root}")
             parents.append((current, root_before))
             for component in relative.parts[:-1]:
                 current = current / component
                 before_parent = current.lstat()
-                if stat.S_ISLNK(before_parent.st_mode) or not stat.S_ISDIR(before_parent.st_mode):
+                if _is_link_or_reparse(before_parent) or not stat.S_ISDIR(before_parent.st_mode):
                     raise RunnerError(f"{label} parent is not a real directory: {path}")
                 parents.append((current, before_parent))
             before = absolute_path.lstat()
-            if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+            if _is_link_or_reparse(before) or not stat.S_ISREG(before.st_mode):
                 raise RunnerError(f"{label} is not a regular file: {path}")
             file_descriptor = os.open(absolute_path, read_flags | nofollow)
             descriptors.append(file_descriptor)
@@ -2746,24 +3026,35 @@ def _open_regular_file(
             current_file = absolute_path.lstat()
             if (
                 not stat.S_ISREG(opened.st_mode)
+                or _is_link_or_reparse(current_file)
                 or file_identity(opened) != file_identity(before)
                 or file_identity(current_file) != file_identity(before)
             ):
                 raise RunnerError(f"{label} changed during validation: {path}")
             for parent_path, expected in parents:
-                if directory_identity(parent_path.lstat()) != directory_identity(expected):
+                current_parent = parent_path.lstat()
+                if (
+                    _is_link_or_reparse(current_parent)
+                    or directory_identity(current_parent) != directory_identity(expected)
+                ):
                     raise RunnerError(f"{label} parent changed during validation: {path}")
             if max_bytes is not None and opened.st_size > max_bytes:
                 raise RunnerError(f"{label} exceeds the size limit")
             source = os.fdopen(file_descriptor, "rb", closefd=False)
             yield source
+            current_file = absolute_path.lstat()
             if (
                 file_identity(os.fstat(file_descriptor)) != file_identity(opened)
-                or file_identity(absolute_path.lstat()) != file_identity(before)
+                or _is_link_or_reparse(current_file)
+                or file_identity(current_file) != file_identity(before)
             ):
                 raise RunnerError(f"{label} changed while being read: {path}")
             for parent_path, expected in parents:
-                if directory_identity(parent_path.lstat()) != directory_identity(expected):
+                current_parent = parent_path.lstat()
+                if (
+                    _is_link_or_reparse(current_parent)
+                    or directory_identity(current_parent) != directory_identity(expected)
+                ):
                     raise RunnerError(f"{label} parent changed while being read: {path}")
     except RunnerError:
         raise
@@ -2807,12 +3098,12 @@ def _walk_regular_files(root: Path, *, exclude_metadata: bool) -> list[tuple[str
             raise RunnerError(f"unable to inspect artifact directory: {directory}") from error
         for child in children:
             relative = f"{prefix}/{child.name}" if prefix else child.name
-            mode = _path_mode(child)
-            if stat.S_ISLNK(mode):
-                raise RunnerError(f"artifact contains symlink: {relative}")
-            if stat.S_ISDIR(mode):
+            value = _path_lstat(child)
+            if _is_link_or_reparse(value):
+                raise RunnerError(f"artifact contains symlink or reparse point: {relative}")
+            if stat.S_ISDIR(value.st_mode):
                 pending.append((child, relative))
-            elif stat.S_ISREG(mode):
+            elif stat.S_ISREG(value.st_mode):
                 if exclude_metadata and relative in RESERVED_ARTIFACT_NAMES:
                     continue
                 normalized = (
@@ -3244,13 +3535,13 @@ def _collect_tree(
     while pending:
         current, prefix = pending.pop()
         for child in sorted(current.iterdir(), key=lambda item: item.name):
-            mode = _path_mode(child)
+            value = _path_lstat(child)
             relative = f"{prefix}/{child.name}"
-            if stat.S_ISLNK(mode):
-                raise RunnerError(f"artifact source is a symlink: {child}")
-            if stat.S_ISDIR(mode):
+            if _is_link_or_reparse(value):
+                raise RunnerError(f"artifact source is a symlink or reparse point: {child}")
+            if stat.S_ISDIR(value.st_mode):
                 pending.append((child, relative))
-            elif stat.S_ISREG(mode):
+            elif stat.S_ISREG(value.st_mode):
                 normalized = normalize_artifact_path(relative)
                 sources[normalized] = child
                 found = True
@@ -3629,27 +3920,31 @@ def _copy_file_at(
 def _walk_files_at(root_descriptor: int) -> dict[str, tuple[int, str]]:
     files = {}
     pending = [(os.dup(root_descriptor), "")]
-    while pending:
-        descriptor, prefix = pending.pop()
-        try:
-            for name in sorted(os.listdir(descriptor)):
-                relative = f"{prefix}/{name}" if prefix else name
-                value = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
-                if _is_link_or_reparse(value):
-                    raise RunnerError(f"artifact contains symlink: {relative}")
-                if stat.S_ISDIR(value.st_mode):
-                    child = os.open(
-                        name, _directory_open_flags(), dir_fd=descriptor
-                    )
-                    if _filesystem_identity(os.fstat(child)) != _filesystem_identity(value):
-                        os.close(child)
-                        raise RunnerError(f"artifact directory changed: {relative}")
-                    pending.append((child, relative))
-                elif stat.S_ISREG(value.st_mode):
-                    files[relative] = _hash_file_at(root_descriptor, relative)
-                else:
-                    raise RunnerError(f"artifact contains non-regular file: {relative}")
-        finally:
+    try:
+        while pending:
+            descriptor, prefix = pending.pop()
+            try:
+                for name in sorted(os.listdir(descriptor)):
+                    relative = f"{prefix}/{name}" if prefix else name
+                    value = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+                    if _is_link_or_reparse(value):
+                        raise RunnerError(f"artifact contains symlink: {relative}")
+                    if stat.S_ISDIR(value.st_mode):
+                        child = os.open(
+                            name, _directory_open_flags(), dir_fd=descriptor
+                        )
+                        if _filesystem_identity(os.fstat(child)) != _filesystem_identity(value):
+                            os.close(child)
+                            raise RunnerError(f"artifact directory changed: {relative}")
+                        pending.append((child, relative))
+                    elif stat.S_ISREG(value.st_mode):
+                        files[relative] = _hash_file_at(root_descriptor, relative)
+                    else:
+                        raise RunnerError(f"artifact contains non-regular file: {relative}")
+            finally:
+                os.close(descriptor)
+    finally:
+        for descriptor, _ in pending:
             os.close(descriptor)
     return files
 
@@ -3811,22 +4106,61 @@ def _remove_published_artifact(
 
 
 def _remove_staging_artifact(
-    output: Path, output_descriptor, staging_identity: tuple[int, int, int]
+    output: Path,
+    output_descriptor,
+    staging_identity: tuple[int, int, int],
+    staging_descriptor=None,
 ) -> None:
-    try:
-        current = _relative_lstat(output, output_descriptor, ".artifact.tmp")
-    except FileNotFoundError:
+    owned_name = _find_owned_directory_name(
+        output, output_descriptor, staging_identity
+    )
+    if owned_name is None:
         return
-    if _filesystem_identity(current) != staging_identity:
+    quarantine_name = None
+    for _ in range(32):
+        candidate = f".artifact.failed-{secrets.token_hex(12)}"
+        try:
+            if output_descriptor is not None:
+                _rename_noreplace(output_descriptor, owned_name, candidate)
+            else:
+                destination = output / candidate
+                try:
+                    destination.lstat()
+                except FileNotFoundError:
+                    pass
+                else:
+                    continue
+                (output / owned_name).rename(destination)
+            quarantine_name = candidate
+            break
+        except (FileExistsError, RunnerError) as error:
+            if isinstance(error, RunnerError) and "already exists" not in str(error):
+                return
+            continue
+        except OSError:
+            return
+    if quarantine_name is None:
         return
-    quarantine_name = f".artifact.failed-{staging_identity[0]}-{staging_identity[1]}"
-    try:
-        if output_descriptor is not None:
-            _rename_noreplace(output_descriptor, ".artifact.tmp", quarantine_name)
-        else:
-            (output / ".artifact.tmp").rename(output / quarantine_name)
-    except (OSError, RunnerError):
+    moved = _relative_lstat(output, output_descriptor, quarantine_name)
+    if _filesystem_identity(moved) != staging_identity:
         return
+    if output_descriptor is not None:
+        descriptor = (
+            os.dup(staging_descriptor)
+            if staging_descriptor is not None
+            else os.open(quarantine_name, _directory_open_flags(), dir_fd=output_descriptor)
+        )
+        try:
+            if _filesystem_identity(os.fstat(descriptor)) != staging_identity:
+                return
+            _remove_directory_contents_at(descriptor)
+        finally:
+            os.close(descriptor)
+        current = _relative_lstat(output, output_descriptor, quarantine_name)
+        if _filesystem_identity(current) == staging_identity:
+            os.rmdir(quarantine_name, dir_fd=output_descriptor)
+        return
+    shutil.rmtree(output / quarantine_name)
 
 
 def safe_copy_file(
@@ -4064,7 +4398,12 @@ def assemble_artifact(
                 published_descriptor,
             )
         elif staging_identity is not None and output_descriptor is not None:
-            _remove_staging_artifact(output, output_descriptor, staging_identity)
+            _remove_staging_artifact(
+                output,
+                output_descriptor,
+                staging_identity,
+                staging_descriptor,
+            )
         raise
     finally:
         if staging_descriptor is not None:
