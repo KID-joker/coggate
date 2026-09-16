@@ -1,0 +1,127 @@
+name: Phase 6A adversarial qualification
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phase6a-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quick:
+    name: Quick qualification
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Install C and C++ toolchains
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes build-essential
+      - name: Install Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version: '1.23.6'
+      - name: Install Java
+        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Install pinned Rust
+        run: |
+          rustup toolchain install 1.85.0 --profile minimal
+          rustup override set 1.85.0
+      - name: Run implementation gates
+        run: |
+          cargo fmt --all --check
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo test --workspace
+          cargo test -p agentgate-benchmark --test quick_qualification
+          cargo test -p agentgate-benchmark --test quick_qualification real_quick_direct_qualification -- --ignored --exact
+      - name: Run quick baseline qualification
+        id: baselines
+        continue-on-error: true
+        run: |
+          mkdir -p target/phase6a/quick
+          cargo run -p agentgate-benchmark --bin agentgate-bench -- run-baselines --profile quick --output target/phase6a/quick
+      - name: Verify quick reports
+        if: always()
+        run: |
+          for report in target/phase6a/quick/*.json; do
+            cargo run -p agentgate-benchmark --bin agentgate-bench -- verify-report --input "$report"
+          done
+      - name: Upload quick reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: phase6a-quick-reports
+          if-no-files-found: error
+          path: |
+            target/phase6a/quick/*.json
+            target/phase6a/quick/*.md
+      - name: Enforce quick qualification
+        if: steps.baselines.outcome == 'failure'
+        run: exit 1
+
+  release:
+    name: Release qualification
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Install C and C++ toolchains
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes build-essential
+      - name: Install Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version: '1.23.6'
+      - name: Install Java
+        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Install pinned Rust
+        run: |
+          rustup toolchain install 1.85.0 --profile minimal
+          rustup override set 1.85.0
+      - name: Run implementation gates
+        run: |
+          cargo fmt --all --check
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo test --workspace
+          cargo test -p agentgate-benchmark --test quick_qualification
+          cargo test -p agentgate-benchmark --test quick_qualification real_quick_direct_qualification -- --ignored --exact
+      - name: Run release baseline qualification
+        id: baselines
+        continue-on-error: true
+        run: |
+          mkdir -p target/phase6a/release
+          cargo run -p agentgate-benchmark --bin agentgate-bench -- run-baselines --profile release --output target/phase6a/release
+      - name: Verify release reports
+        if: always()
+        run: |
+          for report in target/phase6a/release/*.json; do
+            cargo run -p agentgate-benchmark --bin agentgate-bench -- verify-report --input "$report"
+          done
+      - name: Upload release reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: phase6a-release-reports
+          if-no-files-found: error
+          path: |
+            target/phase6a/release/*.json
+            target/phase6a/release/*.md
+      - name: Enforce release qualification
+        if: steps.baselines.outcome == 'failure'
+        run: exit 1
