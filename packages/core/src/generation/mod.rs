@@ -13,11 +13,16 @@ mod random;
 mod render;
 mod secret;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "insecure-benchmarking"))]
 mod test_random;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "insecure-benchmarking"))]
 pub(crate) use test_random::DeterministicRandom;
+
+#[cfg(feature = "insecure-benchmarking")]
+mod benchmark;
+#[cfg(feature = "insecure-benchmarking")]
+pub use benchmark::{BenchmarkCase, BenchmarkError, BenchmarkOracle, generate_benchmark_case};
 
 pub use answer::evaluate_semantic_graph;
 pub(crate) use candidate::{
