@@ -1581,7 +1581,10 @@ Dump of file agentgate_ffi.dll
                 )
             extracted = temporary_roots[0] / "路径 with spaces Ω"
             self.assertTrue(all(root == extracted for root in copied_roots))
-            self.assertEqual([call.args[0] for call in verifier.call_args_list], [artifact, extracted])
+            verified_paths = [call.args[0] for call in verifier.call_args_list]
+            self.assertEqual(verified_paths[0], artifact)
+            self.assertTrue(all(path == extracted for path in verified_paths[1:]))
+            self.assertEqual(len(verified_paths), 17)
             self.assertTrue(all(
                 str(artifact) not in argument
                 for argv, _ in calls for argument in argv
@@ -1613,7 +1616,7 @@ Dump of file agentgate_ffi.dll
                 )
             runner.assert_not_called()
 
-    def test_artifact_smoke_rechecks_extracted_go_header_before_go_commands(self):
+    def test_artifact_smoke_rejects_regular_header_replacement_before_go(self):
         with tempfile.TemporaryDirectory() as directory:
             artifact = self._assembled_fixture(Path(directory))
             commands = []
@@ -1621,19 +1624,20 @@ Dump of file agentgate_ffi.dll
             def runner(argv, **kwargs):
                 commands.append(tuple(argv))
                 if argv[:2] == ["/tools/python", "-c"]:
-                    (Path(kwargs["cwd"]) / "include/agentgate.h").unlink()
+                    header = Path(kwargs["cwd"]) / "include/agentgate.h"
+                    header.write_bytes(b"x" * len(header.read_bytes()))
                 if argv[0] == "/tools/go":
-                    raise AssertionError("Go ran after extracted header removal")
+                    raise AssertionError("Go ran after extracted header replacement")
                 return mock.Mock(returncode=0)
 
-            with self.assertRaisesRegex(RunnerError, "extracted Go header"):
+            with self.assertRaisesRegex(RunnerError, "sha256"):
                 run_artifact_smoke(
                     target_fixture(), artifact, complete_capabilities(),
                     command_runner=runner,
                 )
             self.assertFalse(any(command[0] == "/tools/go" for command in commands))
 
-    def test_artifact_smoke_rechecks_header_before_each_go_command(self):
+    def test_artifact_smoke_rejects_regular_header_replacement_between_go_commands(self):
         with tempfile.TemporaryDirectory() as directory:
             artifact = self._assembled_fixture(Path(directory))
             go_calls = []
@@ -1643,17 +1647,56 @@ Dump of file agentgate_ffi.dll
                     go_calls.append(tuple(argv))
                     if len(go_calls) == 1:
                         root = Path(kwargs["cwd"]).parent
-                        (root / "include/agentgate.h").unlink()
+                        header = root / "include/agentgate.h"
+                        header.write_bytes(b"x" * len(header.read_bytes()))
                     else:
-                        raise AssertionError("second Go command ran without header")
+                        raise AssertionError("second Go command ran after header replacement")
                 return mock.Mock(returncode=0)
 
-            with self.assertRaisesRegex(RunnerError, "extracted Go header"):
+            with self.assertRaisesRegex(RunnerError, "sha256"):
                 run_artifact_smoke(
                     target_fixture(), artifact, complete_capabilities(),
                     command_runner=runner,
                 )
             self.assertEqual(len(go_calls), 1)
+
+    def test_artifact_smoke_rejects_jar_replacement_before_java_command(self):
+        with tempfile.TemporaryDirectory() as directory:
+            artifact = self._assembled_fixture(Path(directory))
+            commands = []
+
+            def runner(argv, **kwargs):
+                commands.append(tuple(argv))
+                if argv[:3] == ["/tools/go", "run", "./examples/complete"]:
+                    root = Path(kwargs["cwd"]).parent
+                    jar = root / "java/agentgate-java-0.1.0-SNAPSHOT.jar"
+                    jar.write_bytes(b"x" * len(jar.read_bytes()))
+                if argv[0] == "/tools/javac":
+                    raise AssertionError("Java ran after extracted JAR replacement")
+                return mock.Mock(returncode=0)
+
+            with self.assertRaisesRegex(RunnerError, "sha256"):
+                run_artifact_smoke(
+                    target_fixture(), artifact, complete_capabilities(),
+                    command_runner=runner,
+                )
+            self.assertFalse(any(command[0] == "/tools/javac" for command in commands))
+
+    def test_artifact_smoke_reverifies_after_final_command(self):
+        with tempfile.TemporaryDirectory() as directory:
+            artifact = self._assembled_fixture(Path(directory))
+
+            def runner(argv, **kwargs):
+                if argv == ["/tools/node", "examples/complete.js"]:
+                    script = Path(kwargs["cwd"]) / "examples/complete.js"
+                    script.write_bytes(b"x" * len(script.read_bytes()))
+                return mock.Mock(returncode=0)
+
+            with self.assertRaisesRegex(RunnerError, "sha256"):
+                run_artifact_smoke(
+                    target_fixture(), artifact, complete_capabilities(),
+                    command_runner=runner,
+                )
 
     def test_artifact_smoke_clears_inherited_loader_and_agentgate_environment(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -5021,9 +5064,11 @@ def run_artifact_smoke(
         for command in smoke_plan(target, extracted, build_directory, capabilities):
             if command.purpose.startswith("smoke-go-"):
                 _validate_extracted_go_header(extracted)
+            verify_artifact(extracted, target)
             run_smoke_command(
                 command, command_runner, windows=target.system == "Windows",
             )
+        verify_artifact(extracted, target)
     return "PASS"
 
 
