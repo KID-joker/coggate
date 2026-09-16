@@ -17,6 +17,8 @@ type storedChallenge struct {
 	consumed bool
 }
 
+// Callbacks run while the Service holds callMu. They must not synchronously
+// reenter that Service through Issue, Verify, or Close, or they will deadlock.
 type memoryLifecycle struct {
 	mu         sync.Mutex
 	challenges map[string]*storedChallenge
@@ -118,10 +120,13 @@ func run(library, answer string) error {
 		activeID: "example-2026-09", activeKey: bytes.Repeat([]byte{0x41}, 32),
 		oldID: "2026-08", oldKey: []byte("0123456789abcdef0123456789abcdef"),
 	}
+	// External goroutines may call Issue, Verify, and Close concurrently; the
+	// Service serializes those calls and waits for the current call to finish.
 	service, err := agentgate.NewService(lifecycle, keys, discardObserver{}, library)
 	if err != nil {
 		return err
 	}
+	// Correctness must not depend on the finalizer; callers explicitly Close.
 	defer service.Close()
 
 	request, err := agentgate.NewV1IssueRequest(issueBinding)
