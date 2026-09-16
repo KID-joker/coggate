@@ -2844,15 +2844,90 @@ Dump of file agentgate_ffi.dll
         self.assertIn("phase5d: qualification=NOT_RUN reason=", stdout.getvalue())
         self.assertNotIn("PASS", stdout.getvalue())
 
-    def test_local_arm64_artifact_stage_fails(self):
-        with self.assertRaisesRegex(
-            RunnerError, "Phase 5D qualification requires x86_64"
-        ):
-            main(["--stage", "artifact"], system="Darwin", arch="arm64")
+    def test_local_arm64_explicit_stages_fail(self):
+        for stage in ("qualification", "artifact", "sanitizers", "all"):
+            with self.subTest(stage=stage), self.assertRaisesRegex(
+                RunnerError, "Phase 5D qualification requires x86_64"
+            ):
+                main(["--stage", stage], system="Darwin", arch="arm64")
 
-    def test_x86_64_all_stage_fails_closed(self):
-        with self.assertRaisesRegex(RunnerError, "Phase 5D stage is not implemented: all"):
-            main(["--stage", "all"], system="Linux", arch="x86_64")
+    def _assert_main_runs_complete_path(self, argv, system, arch):
+        artifact = Path("/output/artifact")
+        target = Target.for_host(system, arch)
+        capabilities = complete_capabilities()
+        command_runner = mock.Mock(
+            side_effect=AssertionError("complete path bypassed stage runners")
+        )
+        stages = mock.Mock()
+        qualifier = stages.qualification
+        qualifier.return_value = "PASS"
+        assembler = stages.assembly
+        assembler.return_value = artifact
+        verifier = stages.verification
+        verifier.return_value = "PASS"
+        smoker = stages.smoke
+        smoker.return_value = "PASS"
+
+        stdout = io.StringIO()
+        with mock.patch.object(
+            sys.modules[__name__], "detect_capabilities",
+            return_value=capabilities,
+        ), mock.patch.object(
+            sys.modules[__name__], "run_qualification", qualifier
+        ), mock.patch.object(
+            sys.modules[__name__], "assemble_artifact", assembler
+        ), mock.patch.object(
+            sys.modules[__name__], "verify_artifact", verifier
+        ), mock.patch.object(
+            sys.modules[__name__], "run_artifact_smoke", smoker
+        ), contextlib.redirect_stdout(stdout):
+            self.assertEqual(
+                main(
+                    argv,
+                    system=system,
+                    arch=arch,
+                    root=Path("/repo"),
+                    command_runner=command_runner,
+                ),
+                0,
+            )
+        self.assertEqual(
+            [call[0] for call in stages.mock_calls],
+            ["qualification", "assembly", "verification", "smoke"],
+        )
+        qualifier.assert_called_once_with(
+            target,
+            Path("/repo"),
+            Path("/repo/target/release"),
+            capabilities,
+            command_runner=command_runner,
+            dry_run=False,
+            path_is_file=None,
+        )
+        assembler.assert_called_once_with(
+            Path("/repo"),
+            Path("/output"),
+            target,
+            tool_versions_from_capabilities(capabilities),
+        )
+        verifier.assert_called_once_with(artifact, target)
+        smoker.assert_called_once_with(
+            target, artifact, capabilities, command_runner=command_runner,
+        )
+        self.assertIs(verifier.call_args.args[0], artifact)
+        self.assertIs(smoker.call_args.args[1], artifact)
+        self.assertIn("qualification=PASS artifact=PASS", stdout.getvalue())
+
+    def test_all_stage_runs_complete_path_on_qualified_platforms(self):
+        for system, arch in (
+            ("Linux", "x86_64"),
+            ("Darwin", "x86_64"),
+            ("Windows", "x86_64"),
+        ):
+            with self.subTest(system=system, arch=arch):
+                self._assert_main_runs_complete_path(
+                    ["--stage", "all", "--output", "/output"], system, arch
+                )
 
     def test_sanitizer_stage_requires_linux_x86_64(self):
         with self.assertRaisesRegex(RunnerError, "Linux x86_64"):
@@ -2977,26 +3052,72 @@ Dump of file agentgate_ffi.dll
         self.assertEqual(events, ["qualification", "assembly", "verification", "smoke"])
         self.assertIn("qualification=PASS artifact=PASS", stdout.getvalue())
 
-    def test_all_fails_before_discovery_execution_or_success_output(self):
-        tool_lookup = mock.Mock(side_effect=AssertionError("unexpected tool lookup"))
-        version_output = mock.Mock(side_effect=AssertionError("unexpected probe"))
-        command_runner = mock.Mock(side_effect=AssertionError("unexpected command"))
-        stdout = io.StringIO()
-        with contextlib.redirect_stdout(stdout), self.assertRaisesRegex(
-            RunnerError, "Phase 5D stage is not implemented: all"
+    def test_local_default_stage_runs_complete_path_on_qualified_platforms(self):
+        for system, arch in (
+            ("Linux", "x86_64"),
+            ("Darwin", "x86_64"),
+            ("Windows", "x86_64"),
         ):
-            main(
-                ["--stage", "all"],
-                system="Linux",
-                arch="x86_64",
-                tool_lookup=tool_lookup,
-                version_output=version_output,
-                command_runner=command_runner,
+            with self.subTest(system=system, arch=arch):
+                self._assert_main_runs_complete_path(
+                    ["--output", "/output"], system, arch
+                )
+
+    def test_all_dry_run_plans_complete_path_without_assembly(self):
+        artifact = Path("/output/artifact")
+        capabilities = complete_capabilities()
+        qualifier = mock.Mock(return_value="PLANNED")
+        assembler = mock.Mock(side_effect=AssertionError("dry run assembled artifact"))
+        verifier = mock.Mock(side_effect=AssertionError("dry run verified artifact"))
+        smoker = mock.Mock(return_value="PLANNED")
+        command_runner = mock.Mock(
+            side_effect=AssertionError("dry run executed a command")
+        )
+        path_is_file = mock.Mock(
+            side_effect=AssertionError("dry run inspected an artifact")
+        )
+        stdout = io.StringIO()
+        with mock.patch.object(
+            sys.modules[__name__], "detect_capabilities",
+            return_value=capabilities,
+        ), mock.patch.object(
+            sys.modules[__name__], "run_qualification", qualifier
+        ), mock.patch.object(
+            sys.modules[__name__], "assemble_artifact", assembler
+        ), mock.patch.object(
+            sys.modules[__name__], "verify_artifact", verifier
+        ), mock.patch.object(
+            sys.modules[__name__], "run_artifact_smoke", smoker
+        ), contextlib.redirect_stdout(stdout):
+            self.assertEqual(
+                main(
+                    ["--stage", "all", "--dry-run", "--output", "/output"],
+                    system="Linux",
+                    arch="x86_64",
+                    root=Path("/repo"),
+                    command_runner=command_runner,
+                    path_is_file=path_is_file,
+                ),
+                0,
             )
-        tool_lookup.assert_not_called()
-        version_output.assert_not_called()
-        command_runner.assert_not_called()
-        self.assertNotIn("PASS", stdout.getvalue())
+        qualifier.assert_called_once_with(
+            target_fixture(),
+            Path("/repo"),
+            Path("/repo/target/release"),
+            capabilities,
+            command_runner=command_runner,
+            dry_run=True,
+            path_is_file=path_is_file,
+        )
+        assembler.assert_not_called()
+        verifier.assert_not_called()
+        smoker.assert_called_once_with(
+            target_fixture(), artifact, capabilities,
+            command_runner=command_runner, dry_run=True,
+        )
+        output = stdout.getvalue()
+        self.assertIn("qualification=PLANNED artifact=PLANNED", output)
+        self.assertNotIn("PASS", output)
 
     def test_x86_64_bare_ci_fails_closed(self):
         with self.assertRaisesRegex(
@@ -6576,24 +6697,31 @@ def main(
     if arguments.self_test:
         return _run_self_tests()
 
+    requested_stage = arguments.stage
+    if arguments.ci and requested_stage is None:
+        raise RunnerError("Phase 5D CI requires an explicit stage")
+
     host_system = platform.system() if system is None else system
     host_arch = platform.machine() if arch is None else arch
     validation = validate_target(host_system, host_arch, arguments.ci)
-    if not validation.qualified and arguments.stage is not None:
-        raise RunnerError("Phase 5D qualification requires x86_64")
-    if arguments.stage == "all":
-        raise RunnerError(f"Phase 5D stage is not implemented: {arguments.stage}")
-    if arguments.ci:
-        if arguments.stage is None:
-            raise RunnerError("Phase 5D CI requires an explicit stage")
+    if not validation.qualified:
+        if requested_stage is not None:
+            raise RunnerError("Phase 5D qualification requires x86_64")
+        reason = validation.reason or "no qualification stage has run"
+        print(f"phase5d: qualification=NOT_RUN reason={reason}")
+        return 0
 
-    if arguments.stage in {"qualification", "artifact", "sanitizers"}:
+    stage = (
+        "qualification" if requested_stage in {None, "all"} else requested_stage
+    )
+
+    if stage in {"qualification", "artifact", "sanitizers"}:
         target = Target.for_host(host_system, host_arch)
-        if arguments.stage == "sanitizers" and target.system != "Linux":
+        if stage == "sanitizers" and target.system != "Linux":
             raise RunnerError("sanitizer stage requires Linux x86_64")
         sanitizer_capabilities = (
             detect_sanitizer_capabilities(tool_lookup, version_output)
-            if arguments.stage == "sanitizers" else {}
+            if stage == "sanitizers" else {}
         )
         capabilities = detect_capabilities(
             target.system, tool_lookup=tool_lookup, version_output=version_output
@@ -6601,7 +6729,7 @@ def main(
         capabilities.update(sanitizer_capabilities)
         require_ci_capabilities(capabilities)
 
-    if arguments.stage == "sanitizers":
+    if stage == "sanitizers":
         status = run_sanitizers(
             target,
             Path(root),
@@ -6612,7 +6740,7 @@ def main(
         print(f"phase5d: qualification=NOT_RUN sanitizers={status}")
         return 0
 
-    if arguments.stage == "artifact":
+    if stage == "artifact":
         if arguments.dry_run:
             print(f"+ assemble verified artifact {arguments.output / 'artifact'}")
             run_artifact_smoke(
@@ -6637,7 +6765,7 @@ def main(
         print("phase5d: qualification=NOT_RUN artifact=PASS")
         return 0
 
-    if arguments.stage == "qualification":
+    if stage == "qualification":
         status = run_qualification(
             target,
             Path(root),
