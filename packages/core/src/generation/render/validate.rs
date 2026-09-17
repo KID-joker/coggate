@@ -4,20 +4,20 @@ use crate::generation::{NodeId, NodeKind, OperationKind, ValidatedSemanticGraph}
 
 use super::{
     emitter::{
-        MAX_STEP_BYTES, declared_template_max_bytes, emit_fragment, emit_operation,
-        format_dependency_clue,
+        MAX_STEP_BYTES, declared_template_max_bytes, emit_distractor, emit_fragment,
+        emit_operation, format_dependency_clue,
     },
     error::RenderError,
     model::{
-        DisplayStep, DisplayStepKind, FragmentLiteralPlan, HelperSemantic, MAX_FRAGMENT_BYTES,
-        MAX_QUESTION_BYTES, NumericStyle, RenderLanguage, RenderPlan, TemplateFamily,
+        DisplayDistractor, DisplayStep, DisplayStepKind, DistractorOperation, FragmentLiteralPlan,
+        HelperSemantic, MAX_DISTRACTOR_SEED_BYTES, MAX_FRAGMENT_BYTES, MAX_QUESTION_BYTES,
+        MIN_DISTRACTOR_SEED_BYTES, NumericStyle, RenderLanguage, RenderPlan, TemplateFamily,
     },
     names::{MAX_IDENTIFIER_BYTES, is_valid_identifier},
 };
 
 pub(super) const COMMON_QUESTION_BUDGET: usize = 2_048;
 pub(super) const FRAGMENT_WRAPPER_BUDGET: usize = 64;
-pub(super) const DISTRACTOR_WRAPPER_BUDGET: usize = 256;
 
 pub(super) fn validate_plan(
     graph: &ValidatedSemanticGraph,
@@ -66,34 +66,18 @@ fn validate_source_fragments(
 }
 
 fn validate_shape(plan: &RenderPlan, expected_fragment_count: usize) -> Result<(), RenderError> {
-    let distractors = plan
-        .fragments
-        .iter()
-        .filter(|fragment| fragment.distractor)
-        .collect::<Vec<_>>();
-    if distractors.len() > 1 {
-        return Err(RenderError::InvalidPlan);
-    }
-    if distractors
-        .iter()
-        .any(|fragment| !fragment.steps.is_empty())
-    {
-        return Err(RenderError::DistractorReferenced);
-    }
-
-    let effective = plan
-        .fragments
-        .iter()
-        .filter(|fragment| !fragment.distractor)
-        .collect::<Vec<_>>();
-    if effective.len() != expected_fragment_count
-        || !(3..=5).contains(&effective.len())
-        || effective.iter().any(|fragment| fragment.steps.is_empty())
+    if plan.fragments.len() != expected_fragment_count
+        || !(3..=5).contains(&plan.fragments.len())
+        || plan
+            .fragments
+            .iter()
+            .any(|fragment| fragment.steps.is_empty())
     {
         return Err(RenderError::InvalidPlan);
     }
 
-    let languages = effective
+    let languages = plan
+        .fragments
         .iter()
         .map(|fragment| fragment.language)
         .collect::<BTreeSet<_>>();
@@ -123,17 +107,19 @@ fn validate_identifiers(plan: &RenderPlan) -> Result<(), RenderError> {
             validate_identifier(&step.local_name)?;
         }
     }
+    if let Some(distractor) = &plan.distractor {
+        validate_identifier(&distractor.heading)?;
+        for step in &distractor.steps {
+            validate_identifier(&step.output_label)?;
+            validate_identifier(&step.local_name)?;
+        }
+    }
     for alias in plan.profile.aliases().values() {
         validate_identifier(alias)?;
     }
 
     let mut output_labels = BTreeSet::new();
-    for step in plan
-        .fragments
-        .iter()
-        .filter(|fragment| !fragment.distractor)
-        .flat_map(|fragment| &fragment.steps)
-    {
+    for step in plan.fragments.iter().flat_map(|fragment| &fragment.steps) {
         if !output_labels.insert(step.output_label.as_str()) {
             return Err(RenderError::DuplicateReference(step.node));
         }
@@ -174,6 +160,18 @@ fn validate_identifiers(plan: &RenderPlan) -> Result<(), RenderError> {
             return Err(RenderError::InvalidPlan);
         }
     }
+    if let Some(distractor) = &plan.distractor {
+        if !all_names.insert(distractor.heading.as_str()) {
+            return Err(RenderError::InvalidPlan);
+        }
+        for step in &distractor.steps {
+            if !all_names.insert(step.output_label.as_str())
+                || !all_names.insert(step.local_name.as_str())
+            {
+                return Err(RenderError::InvalidPlan);
+            }
+        }
+    }
     Ok(())
 }
 
@@ -194,12 +192,7 @@ fn validate_obfuscation(
         return Err(RenderError::InvalidPlan);
     }
 
-    for step in plan
-        .fragments
-        .iter()
-        .filter(|fragment| !fragment.distractor)
-        .flat_map(|fragment| &fragment.steps)
-    {
+    for step in plan.fragments.iter().flat_map(|fragment| &fragment.steps) {
         match (step.template, step.guard_value) {
             (TemplateFamily::Guarded, Some(guard)) if widened_guard_predicate(guard) => {}
             (
@@ -223,6 +216,51 @@ fn validate_obfuscation(
             _ => return Err(RenderError::InvalidPlan),
         }
     }
+    if let Some(distractor) = &plan.distractor {
+        validate_distractor(distractor)?;
+    }
+    Ok(())
+}
+
+fn validate_distractor(distractor: &DisplayDistractor) -> Result<(), RenderError> {
+    if !supported(distractor.language)
+        || !(MIN_DISTRACTOR_SEED_BYTES..=MAX_DISTRACTOR_SEED_BYTES)
+            .contains(&distractor.seed_value.len())
+        || !distractor.seed_value.iter().all(u8::is_ascii_alphanumeric)
+        || !(1..=2).contains(&distractor.steps.len())
+    {
+        return Err(RenderError::InvalidPlan);
+    }
+    validate_literal_plan(&distractor.literal_plan, distractor.seed_value.len())?;
+
+    let previous_length = distractor.seed_value.len();
+    for step in &distractor.steps {
+        validate_surface_fields(step.template, step.numeric_style, step.guard_value)?;
+        match &step.operation {
+            DistractorOperation::Reverse => {}
+            DistractorOperation::Xor(key) if key.len() == 1 => {}
+            DistractorOperation::RotateLeft(amount) if (1..=previous_length).contains(amount) => {}
+            _ => return Err(RenderError::InvalidPlan),
+        }
+    }
+    Ok(())
+}
+
+fn validate_surface_fields(
+    template: TemplateFamily,
+    numeric_style: NumericStyle,
+    guard_value: Option<u8>,
+) -> Result<(), RenderError> {
+    match (template, guard_value) {
+        (TemplateFamily::Guarded, Some(guard)) if widened_guard_predicate(guard) => {}
+        (TemplateFamily::Direct | TemplateFamily::Helper | TemplateFamily::AliasChain, None) => {}
+        _ => return Err(RenderError::InvalidPlan),
+    }
+    if let NumericStyle::IdentityOffset { delta } = numeric_style {
+        if !(1..=15).contains(&delta) {
+            return Err(RenderError::InvalidPlan);
+        }
+    }
     Ok(())
 }
 
@@ -244,12 +282,22 @@ fn expected_helper_semantics(
     if plan
         .fragments
         .iter()
-        .filter(|fragment| !fragment.distractor)
         .flat_map(|fragment| &fragment.steps)
         .filter_map(|step| step.literal_plan.as_ref())
         .any(|literal_plan| !matches!(literal_plan, FragmentLiteralPlan::Whole))
+        || plan.distractor.as_ref().is_some_and(|distractor| {
+            !matches!(distractor.literal_plan, FragmentLiteralPlan::Whole)
+        })
     {
         expected.insert(HelperSemantic::Operation(OperationKind::Concat));
+    }
+    if let Some(distractor) = &plan.distractor {
+        expected.extend(
+            distractor
+                .steps
+                .iter()
+                .map(|step| HelperSemantic::Operation(step.operation.operation_kind())),
+        );
     }
     expected
 }
@@ -335,12 +383,7 @@ fn index_effective_steps(
     plan: &RenderPlan,
 ) -> Result<BTreeMap<NodeId, (&DisplayStep, usize)>, RenderError> {
     let mut steps = BTreeMap::new();
-    for (fragment_index, fragment) in plan
-        .fragments
-        .iter()
-        .filter(|fragment| !fragment.distractor)
-        .enumerate()
-    {
+    for (fragment_index, fragment) in plan.fragments.iter().enumerate() {
         for step in &fragment.steps {
             if steps.insert(step.node, (step, fragment_index)).is_some() {
                 return Err(RenderError::DuplicateReference(step.node));
@@ -405,11 +448,7 @@ fn validate_fragment_dependencies(
     plan: &RenderPlan,
     steps: &BTreeMap<NodeId, (&DisplayStep, usize)>,
 ) -> Result<(), RenderError> {
-    let fragment_count = plan
-        .fragments
-        .iter()
-        .filter(|fragment| !fragment.distractor)
-        .count();
+    let fragment_count = plan.fragments.len();
     let mut edges = BTreeSet::new();
     for (step, target_fragment) in steps.values() {
         let DisplayStepKind::Operation { inputs, .. } = &step.kind else {
@@ -459,19 +498,15 @@ fn validate_length_bounds(
     plan: &RenderPlan,
     steps: &BTreeMap<NodeId, (&DisplayStep, usize)>,
 ) -> Result<(), RenderError> {
-    let effective = plan
+    let mut fragment_budgets = plan
         .fragments
-        .iter()
-        .filter(|fragment| !fragment.distractor)
-        .collect::<Vec<_>>();
-    let mut fragment_budgets = effective
         .iter()
         .map(|fragment| checked_add(FRAGMENT_WRAPPER_BUDGET, fragment.heading.len()))
         .collect::<Result<Vec<_>, _>>()?;
 
     for (step, fragment_index) in steps.values() {
         let step_budget = emitted_step_bytes(
-            effective[*fragment_index].language,
+            plan.fragments[*fragment_index].language,
             step,
             fragments,
             steps,
@@ -510,8 +545,12 @@ fn validate_length_bounds(
     for budget in fragment_budgets {
         total = checked_add(total, budget)?;
     }
-    if let Some(distractor) = plan.fragments.iter().find(|fragment| fragment.distractor) {
-        total = checked_sum(&[total, DISTRACTOR_WRAPPER_BUDGET, distractor.heading.len()])?;
+    if let Some(distractor) = &plan.distractor {
+        let distractor_bytes = emit_distractor(distractor, &plan.profile)?.len();
+        if distractor_bytes > MAX_FRAGMENT_BYTES {
+            return Err(RenderError::LengthLimit);
+        }
+        total = checked_add(total, distractor_bytes)?;
     }
     if total > MAX_QUESTION_BYTES {
         return Err(RenderError::LengthLimit);
@@ -566,12 +605,6 @@ fn emitted_step_bytes(
     Ok(emitted.len())
 }
 
-fn checked_sum(values: &[usize]) -> Result<usize, RenderError> {
-    values
-        .iter()
-        .try_fold(0_usize, |sum, value| checked_add(sum, *value))
-}
-
 fn checked_add(left: usize, right: usize) -> Result<usize, RenderError> {
     left.checked_add(right).ok_or(RenderError::LengthLimit)
 }
@@ -585,8 +618,9 @@ mod tests {
         render::{
             error::RenderError,
             model::{
-                DisplayFragment, DisplayStepKind, FragmentLiteralPlan, HelperSemantic,
-                NumericStyle, ObfuscationProfile, RenderLanguage, RenderPlan, TemplateFamily,
+                DisplayFragment, DisplayStepKind, DistractorOperation, FragmentLiteralPlan,
+                HelperSemantic, NumericStyle, ObfuscationProfile, RenderLanguage, RenderPlan,
+                TemplateFamily,
             },
             planner::plan_rendering,
         },
@@ -627,6 +661,18 @@ mod tests {
         (graph, fragments, plan)
     }
 
+    fn fixture_plan_with_distractor() -> (ValidatedSemanticGraph, Vec<Vec<u8>>, RenderPlan) {
+        let (graph, fragments) = fixture();
+        let plan = (0_u8..=127)
+            .find_map(|seed| {
+                let mut random = DeterministicRandom::new([seed; 32]);
+                let plan = plan_rendering(&graph, &fragments, &mut random).unwrap();
+                plan.distractor.is_some().then_some(plan)
+            })
+            .expect("seed matrix includes a distractor");
+        (graph, fragments, plan)
+    }
+
     fn diverse_alias_fixture() -> (ValidatedSemanticGraph, Vec<Vec<u8>>, RenderPlan) {
         let fragments = vec![b"A0".to_vec(), b"B1".to_vec(), b"C2".to_vec()];
         let mut builder = SemanticGraphBuilder::new(vec![2, 2, 2]);
@@ -639,8 +685,13 @@ mod tests {
         let output = builder.operation(Operation::Concat, vec![reversed, rotated, xored]);
         builder.output(output);
         let graph = builder.validate().unwrap();
-        let mut random = DeterministicRandom::new([83; 32]);
-        let plan = plan_rendering(&graph, &fragments, &mut random).unwrap();
+        let plan = (0_u8..=127)
+            .find_map(|seed| {
+                let mut random = DeterministicRandom::new([seed; 32]);
+                let plan = plan_rendering(&graph, &fragments, &mut random).unwrap();
+                plan.distractor.is_none().then_some(plan)
+            })
+            .expect("seed matrix includes an absent distractor");
         (graph, fragments, plan)
     }
 
@@ -657,10 +708,7 @@ mod tests {
     }
 
     fn effective_fragments(plan: &mut RenderPlan) -> Vec<&mut DisplayFragment> {
-        plan.fragments
-            .iter_mut()
-            .filter(|fragment| !fragment.distractor)
-            .collect()
+        plan.fragments.iter_mut().collect()
     }
 
     #[test]
@@ -732,11 +780,7 @@ mod tests {
         let (_, fragments, plan) = fixture_plan();
         let steps = index_effective_steps(&plan).unwrap();
 
-        for fragment in plan
-            .fragments
-            .iter()
-            .filter(|fragment| !fragment.distractor)
-        {
+        for fragment in &plan.fragments {
             for step in &fragment.steps {
                 let actual = match &step.kind {
                     DisplayStepKind::Fragment { index } => {
@@ -851,7 +895,6 @@ mod tests {
         let duplicate = plan
             .fragments
             .iter()
-            .filter(|fragment| !fragment.distractor)
             .flat_map(|fragment| &fragment.steps)
             .next()
             .unwrap()
@@ -1263,24 +1306,18 @@ mod tests {
     }
 
     #[test]
-    fn rejects_more_than_one_distractor() {
-        let (graph, fragments, mut plan) = fixture_plan();
-        let mut distractor = plan
-            .fragments
-            .iter()
-            .find(|fragment| fragment.distractor)
-            .cloned()
-            .unwrap_or_else(|| DisplayFragment {
-                heading: "audit_0".to_owned(),
-                language: RenderLanguage::C,
-                steps: Vec::new(),
-                distractor: true,
-            });
-        distractor.heading = "audit_1".to_owned();
-        plan.fragments.push(distractor.clone());
-        distractor.heading = "audit_2".to_owned();
-        plan.fragments.push(distractor);
+    fn rejects_zero_or_three_distractor_steps() {
+        let (graph, fragments, mut plan) = fixture_plan_with_distractor();
+        plan.distractor.as_mut().unwrap().steps.clear();
 
+        assert_eq!(
+            validate_plan(&graph, &fragments, &plan),
+            Err(RenderError::InvalidPlan)
+        );
+
+        let (_, _, mut plan) = fixture_plan_with_distractor();
+        let step = plan.distractor.as_ref().unwrap().steps[0].clone();
+        plan.distractor.as_mut().unwrap().steps = vec![step.clone(), step.clone(), step];
         assert_eq!(
             validate_plan(&graph, &fragments, &plan),
             Err(RenderError::InvalidPlan)
@@ -1288,27 +1325,115 @@ mod tests {
     }
 
     #[test]
-    fn rejects_a_distractor_containing_an_effective_step() {
-        let (graph, fragments, mut plan) = fixture_plan();
-        let step = effective_fragments(&mut plan)[0].steps.pop().unwrap();
-        if let Some(distractor) = plan
-            .fragments
-            .iter_mut()
-            .find(|fragment| fragment.distractor)
-        {
-            distractor.steps.push(step);
-        } else {
-            plan.fragments.push(DisplayFragment {
-                heading: "audit_0".to_owned(),
-                language: RenderLanguage::C,
-                steps: vec![step],
-                distractor: true,
-            });
-        }
-
+    fn rejects_bad_distractor_parameters_literal_and_guard_shape() {
+        let (graph, fragments, mut plan) = fixture_plan_with_distractor();
+        plan.distractor.as_mut().unwrap().steps[0].operation = DistractorOperation::Xor(Vec::new());
         assert_eq!(
             validate_plan(&graph, &fragments, &plan),
-            Err(RenderError::DistractorReferenced)
+            Err(RenderError::InvalidPlan)
+        );
+
+        let (_, _, mut plan) = fixture_plan_with_distractor();
+        plan.distractor.as_mut().unwrap().steps[0].operation = DistractorOperation::RotateLeft(0);
+        assert_eq!(
+            validate_plan(&graph, &fragments, &plan),
+            Err(RenderError::InvalidPlan)
+        );
+
+        let (_, _, mut plan) = fixture_plan_with_distractor();
+        plan.distractor.as_mut().unwrap().literal_plan =
+            FragmentLiteralPlan::OrderedChunks(vec![0..1, 0..3]);
+        assert_eq!(
+            validate_plan(&graph, &fragments, &plan),
+            Err(RenderError::InvalidPlan)
+        );
+
+        let (_, _, mut plan) = fixture_plan_with_distractor();
+        let step = &mut plan.distractor.as_mut().unwrap().steps[0];
+        step.template = TemplateFamily::Guarded;
+        step.guard_value = None;
+        assert_eq!(
+            validate_plan(&graph, &fragments, &plan),
+            Err(RenderError::InvalidPlan)
+        );
+    }
+
+    #[test]
+    fn rejects_bad_distractor_seed_values() {
+        for seed_value in [b"A1".to_vec(), b"ABCDEFGHI".to_vec(), b"Ab!".to_vec()] {
+            let (graph, fragments, mut plan) = fixture_plan_with_distractor();
+            plan.distractor.as_mut().unwrap().seed_value = seed_value;
+            assert_eq!(
+                validate_plan(&graph, &fragments, &plan),
+                Err(RenderError::InvalidPlan)
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_distractor_name_collisions_in_every_category_including_requested_output() {
+        for category in 0..3 {
+            let (graph, fragments, mut plan) = fixture_plan_with_distractor();
+            let requested = plan
+                .fragments
+                .iter()
+                .flat_map(|fragment| &fragment.steps)
+                .find(|step| step.node == plan.output)
+                .unwrap()
+                .output_label
+                .clone();
+            let distractor = plan.distractor.as_mut().unwrap();
+            match category {
+                0 => distractor.heading = requested.clone(),
+                1 => distractor.steps[0].output_label = requested.clone(),
+                2 => distractor.steps[0].local_name = requested.clone(),
+                _ => unreachable!(),
+            }
+            assert_eq!(
+                validate_plan(&graph, &fragments, &plan),
+                Err(RenderError::InvalidPlan),
+                "collision category {category}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_missing_and_extra_distractor_helper_aliases() {
+        let (graph, fragments) = fixture();
+        let plan = (0_u8..=u8::MAX)
+            .find_map(|seed| {
+                let mut random = DeterministicRandom::new([seed; 32]);
+                let plan = plan_rendering(&graph, &fragments, &mut random).unwrap();
+                let unique_semantic = plan.distractor.as_ref().and_then(|distractor| {
+                    distractor.steps.iter().find_map(|step| {
+                        let kind = step.operation.operation_kind();
+                        (!matches!(kind, OperationKind::Reverse | OperationKind::Concat))
+                            .then_some(HelperSemantic::Operation(kind))
+                    })
+                });
+                unique_semantic.map(|semantic| (plan, semantic))
+            })
+            .expect("seed matrix includes a distractor-only helper semantic");
+        let semantic = plan.1;
+        let mut plan = plan.0;
+        let mut aliases = plan.profile.aliases().clone();
+        aliases.remove(&semantic);
+        plan.profile = ObfuscationProfile::new(aliases);
+        assert_eq!(
+            validate_plan(&graph, &fragments, &plan),
+            Err(RenderError::InvalidPlan)
+        );
+
+        let (_, _, mut plan) = fixture_plan_with_distractor();
+        let mut aliases = plan.profile.aliases().clone();
+        aliases.insert(
+            HelperSemantic::Operation(OperationKind::ConditionalOrder),
+            "unused_alias_2".to_owned(),
+        );
+        plan.profile = ObfuscationProfile::new(aliases);
+        assert_eq!(
+            validate_plan(&graph, &fragments, &plan),
+            Err(RenderError::InvalidPlan)
         );
     }
 
@@ -1400,7 +1525,7 @@ mod tests {
     #[test]
     fn rejects_allocator_reserved_identifiers_in_every_rendered_category() {
         for forbidden in ["if", "contract_assert", "reverse", "_reserved", "A__B"] {
-            for category in 0..5 {
+            for category in 0..7 {
                 let (graph, fragments, mut plan) = fixture_plan();
                 match category {
                     0 => effective_fragments(&mut plan)[0].heading = forbidden.to_owned(),
@@ -1419,20 +1544,21 @@ mod tests {
                         plan.profile = ObfuscationProfile::new(aliases);
                     }
                     4 => {
-                        if let Some(distractor) = plan
-                            .fragments
-                            .iter_mut()
-                            .find(|fragment| fragment.distractor)
-                        {
-                            distractor.heading = forbidden.to_owned();
-                        } else {
-                            plan.fragments.push(DisplayFragment {
-                                heading: forbidden.to_owned(),
-                                language: RenderLanguage::Java,
-                                steps: Vec::new(),
-                                distractor: true,
-                            });
-                        }
+                        let (_, _, distractor_plan) = fixture_plan_with_distractor();
+                        plan = distractor_plan;
+                        plan.distractor.as_mut().unwrap().heading = forbidden.to_owned();
+                    }
+                    5 => {
+                        let (_, _, distractor_plan) = fixture_plan_with_distractor();
+                        plan = distractor_plan;
+                        plan.distractor.as_mut().unwrap().steps[0].output_label =
+                            forbidden.to_owned();
+                    }
+                    6 => {
+                        let (_, _, distractor_plan) = fixture_plan_with_distractor();
+                        plan = distractor_plan;
+                        plan.distractor.as_mut().unwrap().steps[0].local_name =
+                            forbidden.to_owned();
                     }
                     _ => unreachable!(),
                 }

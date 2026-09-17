@@ -5,6 +5,9 @@ use crate::generation::{NodeId, Operation, OperationKind};
 /// Maximum conservative pre-emission budget for one effective display fragment.
 pub(super) const MAX_FRAGMENT_BYTES: usize = 2_048;
 
+pub(super) const MIN_DISTRACTOR_SEED_BYTES: usize = 3;
+pub(super) const MAX_DISTRACTOR_SEED_BYTES: usize = 8;
+
 /// Maximum UTF-8 byte length of a complete rendered question.
 pub const MAX_QUESTION_BYTES: usize = 12_288;
 
@@ -115,7 +118,50 @@ pub(super) struct DisplayFragment {
     pub(super) heading: String,
     pub(super) language: RenderLanguage,
     pub(super) steps: Vec<DisplayStep>,
-    pub(super) distractor: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum DistractorOperation {
+    Reverse,
+    Xor(Vec<u8>),
+    RotateLeft(usize),
+}
+
+impl DistractorOperation {
+    pub(super) fn operation_kind(&self) -> OperationKind {
+        match self {
+            Self::Reverse => OperationKind::Reverse,
+            Self::Xor(_) => OperationKind::Xor,
+            Self::RotateLeft(_) => OperationKind::RotateLeft,
+        }
+    }
+
+    pub(super) fn operation(&self) -> Operation {
+        match self {
+            Self::Reverse => Operation::Reverse,
+            Self::Xor(key) => Operation::Xor(key.clone()),
+            Self::RotateLeft(amount) => Operation::RotateLeft(*amount),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct DisplayDistractorStep {
+    pub(super) output_label: String,
+    pub(super) local_name: String,
+    pub(super) template: TemplateFamily,
+    pub(super) numeric_style: NumericStyle,
+    pub(super) guard_value: Option<u8>,
+    pub(super) operation: DistractorOperation,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct DisplayDistractor {
+    pub(super) heading: String,
+    pub(super) language: RenderLanguage,
+    pub(super) seed_value: Vec<u8>,
+    pub(super) literal_plan: FragmentLiteralPlan,
+    pub(super) steps: Vec<DisplayDistractorStep>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -124,6 +170,7 @@ pub(super) struct RenderPlan {
     pub(super) fragments: Vec<DisplayFragment>,
     pub(super) output: NodeId,
     pub(super) profile: ObfuscationProfile,
+    pub(super) distractor: Option<DisplayDistractor>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -139,17 +186,12 @@ impl RenderMetadata {
         let languages = plan
             .fragments
             .iter()
-            .filter(|fragment| !fragment.distractor)
             .map(|fragment| fragment.language)
             .collect::<std::collections::BTreeSet<_>>()
             .into_iter()
             .collect();
-        let effective_fragment_count = plan
-            .fragments
-            .iter()
-            .filter(|fragment| !fragment.distractor)
-            .count();
-        let has_distractor = plan.fragments.iter().any(|fragment| fragment.distractor);
+        let effective_fragment_count = plan.fragments.len();
+        let has_distractor = plan.distractor.is_some();
 
         Self {
             languages,
@@ -210,9 +252,9 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::{
-        DisplayFragment, DisplayStep, DisplayStepKind, FragmentLiteralPlan, HelperSemantic,
-        NumericStyle, ObfuscationProfile, RenderLanguage, RenderMetadata, RenderPlan,
-        RenderedQuestion, TemplateFamily,
+        DisplayDistractor, DisplayDistractorStep, DisplayFragment, DisplayStep, DisplayStepKind,
+        DistractorOperation, FragmentLiteralPlan, HelperSemantic, NumericStyle, ObfuscationProfile,
+        RenderLanguage, RenderMetadata, RenderPlan, RenderedQuestion, TemplateFamily,
     };
     use crate::generation::{NodeId, Operation};
 
@@ -293,18 +335,36 @@ mod tests {
                 heading: "Step one".to_owned(),
                 language: RenderLanguage::C,
                 steps: vec![fragment_step, operation_step],
-                distractor: false,
             }],
             output: NodeId(1),
             profile,
+            distractor: Some(DisplayDistractor {
+                heading: "scratch".to_owned(),
+                language: RenderLanguage::Go,
+                seed_value: b"Ab3".to_vec(),
+                literal_plan: FragmentLiteralPlan::Whole,
+                steps: vec![DisplayDistractorStep {
+                    output_label: "scratch_out".to_owned(),
+                    local_name: "scratch_local".to_owned(),
+                    template: TemplateFamily::Direct,
+                    numeric_style: NumericStyle::Decimal,
+                    guard_value: None,
+                    operation: DistractorOperation::Reverse,
+                }],
+            }),
         };
 
         assert_eq!(plan.fragments.len(), 1);
         assert_eq!(plan.fragments[0].steps.len(), 2);
         assert_eq!(plan.output, NodeId(1));
+        assert_eq!(plan.distractor.as_ref().unwrap().steps.len(), 1);
         assert_eq!(
             plan.profile.alias(HelperSemantic::BytesAscii),
             Some("decode_bytes")
         );
+        let metadata = RenderMetadata::from_validated_plan(&plan, 123);
+        assert_eq!(metadata.languages(), &[RenderLanguage::C]);
+        assert_eq!(metadata.effective_fragment_count(), 1);
+        assert!(metadata.has_distractor());
     }
 }

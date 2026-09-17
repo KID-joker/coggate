@@ -176,18 +176,12 @@ mod tests {
         let rendered =
             render_with(semantics.graph(), semantics.fragments(), &mut render_random).unwrap();
 
-        for step in plan
-            .fragments
-            .iter()
-            .filter(|fragment| !fragment.distractor)
-            .flat_map(|fragment| &fragment.steps)
-        {
+        for step in plan.fragments.iter().flat_map(|fragment| &fragment.steps) {
             assert!(rendered.question().contains(&step.output_label));
         }
         let expected_languages = plan
             .fragments
             .iter()
-            .filter(|fragment| !fragment.distractor)
             .map(|fragment| fragment.language)
             .collect::<BTreeSet<_>>()
             .into_iter()
@@ -199,7 +193,7 @@ mod tests {
         );
         assert_eq!(
             rendered.metadata().has_distractor(),
-            plan.fragments.iter().any(|fragment| fragment.distractor)
+            plan.distractor.is_some()
         );
     }
 
@@ -232,7 +226,6 @@ mod tests {
                     guard_value: None,
                     kind: DisplayStepKind::Fragment { index: 0 },
                 }],
-                distractor: false,
             })
             .collect();
         let plan = RenderPlan {
@@ -242,6 +235,7 @@ mod tests {
                 HelperSemantic::BytesAscii,
                 "make_bytes".to_owned(),
             )])),
+            distractor: None,
         };
 
         let error = emitter::emit_question(&plan, &fragments).unwrap_err();
@@ -357,7 +351,6 @@ mod tests {
                         guard_value: None,
                         kind: DisplayStepKind::Fragment { index: 0 },
                     }],
-                    distractor: false,
                 },
                 DisplayFragment {
                     heading: "second".to_owned(),
@@ -387,7 +380,6 @@ mod tests {
                             },
                         },
                     ],
-                    distractor: false,
                 },
             ],
             output: combined,
@@ -398,6 +390,7 @@ mod tests {
                     "join_bytes".to_owned(),
                 ),
             ])),
+            distractor: None,
         };
 
         let question = emitter::emit_question(&plan, &fragments).unwrap();

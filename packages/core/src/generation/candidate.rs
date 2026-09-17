@@ -132,7 +132,6 @@ fn map_render_error(error: RenderError) -> CandidateError {
         | RenderError::DuplicateReference(_)
         | RenderError::SemanticMismatch(_)
         | RenderError::AmbiguousOutput
-        | RenderError::DistractorReferenced
         | RenderError::UnsupportedTemplate => CandidateError::Internal,
     }
 }

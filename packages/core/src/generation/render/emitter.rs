@@ -5,9 +5,9 @@ use crate::generation::{NodeId, Operation, OperationKind};
 use super::error::RenderError;
 use super::languages;
 use super::model::{
-    DisplayStep, DisplayStepKind, FragmentLiteralPlan, HelperSemantic, MAX_FRAGMENT_BYTES,
-    MAX_QUESTION_BYTES, NumericStyle, ObfuscationProfile, RenderLanguage, RenderPlan,
-    TemplateFamily,
+    DisplayDistractor, DisplayDistractorStep, DisplayStep, DisplayStepKind, FragmentLiteralPlan,
+    HelperSemantic, MAX_FRAGMENT_BYTES, MAX_QUESTION_BYTES, NumericStyle, ObfuscationProfile,
+    RenderLanguage, RenderPlan, TemplateFamily,
 };
 
 pub(super) const MAX_STEP_BYTES: usize = 512;
@@ -50,87 +50,77 @@ pub(super) fn emit_question(
             MAX_FRAGMENT_BYTES,
         )?;
 
-        if display_fragment.distractor {
-            push_with_limit(
-                &mut rendered_fragment,
-                "This audit/example branch does not contribute to the requested result.\n\n",
-                MAX_FRAGMENT_BYTES,
-            )?;
-        } else {
-            push_with_limit(
-                &mut rendered_fragment,
-                &format!("Section identifier: {}\n", display_fragment.heading),
-                MAX_FRAGMENT_BYTES,
-            )?;
+        push_with_limit(
+            &mut rendered_fragment,
+            &format!("Section identifier: {}\n", display_fragment.heading),
+            MAX_FRAGMENT_BYTES,
+        )?;
 
-            for step in &display_fragment.steps {
-                let emitted = match &step.kind {
-                    DisplayStepKind::Fragment { index } => emit_fragment(
+        for step in &display_fragment.steps {
+            let emitted = match &step.kind {
+                DisplayStepKind::Fragment { index } => emit_fragment(
+                    display_fragment.language,
+                    step,
+                    &plan.profile,
+                    fragments.get(*index).ok_or(RenderError::InvalidPlan)?,
+                )?,
+                DisplayStepKind::Operation {
+                    operation: _,
+                    inputs,
+                } => {
+                    let input_labels = inputs
+                        .iter()
+                        .map(|input| {
+                            locations
+                                .get(input)
+                                .map(|location| location.output_label.clone())
+                                .ok_or(RenderError::MissingReference(*input))
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    emit_operation(
                         display_fragment.language,
                         step,
                         &plan.profile,
-                        fragments.get(*index).ok_or(RenderError::InvalidPlan)?,
-                    )?,
-                    DisplayStepKind::Operation {
-                        operation: _,
-                        inputs,
-                    } => {
-                        let input_labels = inputs
-                            .iter()
-                            .map(|input| {
-                                locations
-                                    .get(input)
-                                    .map(|location| location.output_label.clone())
-                                    .ok_or(RenderError::MissingReference(*input))
-                            })
-                            .collect::<Result<Vec<_>, _>>()?;
-                        emit_operation(
-                            display_fragment.language,
-                            step,
-                            &plan.profile,
-                            &input_labels,
-                        )?
-                    }
-                };
-                if emitted.len() > MAX_STEP_BYTES {
-                    return Err(RenderError::LengthLimit);
+                        &input_labels,
+                    )?
                 }
-                push_with_limit(&mut rendered_fragment, &emitted, MAX_FRAGMENT_BYTES)?;
-                push_with_limit(&mut rendered_fragment, "\n", MAX_FRAGMENT_BYTES)?;
+            };
+            if emitted.len() > MAX_STEP_BYTES {
+                return Err(RenderError::LengthLimit);
+            }
+            push_with_limit(&mut rendered_fragment, &emitted, MAX_FRAGMENT_BYTES)?;
+            push_with_limit(&mut rendered_fragment, "\n", MAX_FRAGMENT_BYTES)?;
 
-                if let DisplayStepKind::Operation { inputs, .. } = &step.kind {
-                    let mut seen_producers = BTreeSet::new();
-                    let mut producers = Vec::new();
-                    for input in inputs {
-                        let producer = locations
-                            .get(input)
-                            .ok_or(RenderError::MissingReference(*input))?;
-                        if producer.display_index != display_index && seen_producers.insert(*input)
-                        {
-                            producers
-                                .push((producer.output_label.as_str(), producer.display_index));
-                        }
+            if let DisplayStepKind::Operation { inputs, .. } = &step.kind {
+                let mut seen_producers = BTreeSet::new();
+                let mut producers = Vec::new();
+                for input in inputs {
+                    let producer = locations
+                        .get(input)
+                        .ok_or(RenderError::MissingReference(*input))?;
+                    if producer.display_index != display_index && seen_producers.insert(*input) {
+                        producers.push((producer.output_label.as_str(), producer.display_index));
                     }
-                    if !producers.is_empty() {
-                        let clue =
-                            format_dependency_clue(&producers, &step.output_label, display_index)?;
-                        let clue_bytes = dependency_bytes_by_fragment[display_index]
-                            .checked_add(clue.len())
-                            .ok_or(RenderError::LengthLimit)?;
-                        let accounted_fragment_bytes = rendered_fragment
-                            .len()
-                            .checked_add(clue_bytes)
-                            .ok_or(RenderError::LengthLimit)?;
-                        if accounted_fragment_bytes > MAX_FRAGMENT_BYTES {
-                            return Err(RenderError::LengthLimit);
-                        }
-                        dependency_bytes_by_fragment[display_index] = clue_bytes;
-                        dependency_clues.push(clue);
+                }
+                if !producers.is_empty() {
+                    let clue =
+                        format_dependency_clue(&producers, &step.output_label, display_index)?;
+                    let clue_bytes = dependency_bytes_by_fragment[display_index]
+                        .checked_add(clue.len())
+                        .ok_or(RenderError::LengthLimit)?;
+                    let accounted_fragment_bytes = rendered_fragment
+                        .len()
+                        .checked_add(clue_bytes)
+                        .ok_or(RenderError::LengthLimit)?;
+                    if accounted_fragment_bytes > MAX_FRAGMENT_BYTES {
+                        return Err(RenderError::LengthLimit);
                     }
+                    dependency_bytes_by_fragment[display_index] = clue_bytes;
+                    dependency_clues.push(clue);
                 }
             }
-            push_with_limit(&mut rendered_fragment, "\n", MAX_FRAGMENT_BYTES)?;
         }
+        push_with_limit(&mut rendered_fragment, "\n", MAX_FRAGMENT_BYTES)?;
 
         let accounted_fragment_bytes = rendered_fragment
             .len()
@@ -141,6 +131,11 @@ pub(super) fn emit_question(
         }
 
         push_with_limit(&mut question, &rendered_fragment, MAX_QUESTION_BYTES)?;
+    }
+
+    if let Some(distractor) = &plan.distractor {
+        let rendered = emit_distractor(distractor, &plan.profile)?;
+        push_with_limit(&mut question, &rendered, MAX_QUESTION_BYTES)?;
     }
 
     push_dependency_clues(&mut question, &dependency_clues)?;
@@ -296,9 +291,6 @@ fn index_output_locations(
 ) -> Result<BTreeMap<NodeId, OutputLocation>, RenderError> {
     let mut locations = BTreeMap::new();
     for (display_index, fragment) in plan.fragments.iter().enumerate() {
-        if fragment.distractor {
-            continue;
-        }
         for step in &fragment.steps {
             if locations
                 .insert(
@@ -380,7 +372,27 @@ fn emit_step_assignment(
     profile: &ObfuscationProfile,
     expression: &str,
 ) -> Result<String, RenderError> {
-    let decoy_expression = match (step.template, step.guard_value) {
+    emit_assignment(
+        language,
+        step.template,
+        &step.output_label,
+        &step.local_name,
+        step.guard_value,
+        profile,
+        expression,
+    )
+}
+
+fn emit_assignment(
+    language: RenderLanguage,
+    template: TemplateFamily,
+    output_label: &str,
+    local_name: &str,
+    guard_value: Option<u8>,
+    profile: &ObfuscationProfile,
+    expression: &str,
+) -> Result<String, RenderError> {
+    let decoy_expression = match (template, guard_value) {
         (TemplateFamily::Guarded, Some(_)) => {
             let bytes_alias = profile
                 .alias(HelperSemantic::BytesAscii)
@@ -394,12 +406,67 @@ fn emit_step_assignment(
     };
     languages::emit_assignment(
         language,
+        template,
+        output_label,
+        local_name,
+        expression,
+        guard_value,
+        decoy_expression.as_deref(),
+    )
+}
+
+pub(super) fn emit_distractor(
+    distractor: &DisplayDistractor,
+    profile: &ObfuscationProfile,
+) -> Result<String, RenderError> {
+    let mut rendered = String::new();
+    push_with_limit(
+        &mut rendered,
+        &format!(
+            "[Unrelated scratch calculation — {}]\nSection identifier: {}\nThis is an unrelated scratch calculation; ignore it. It is not part of the requested result.\n",
+            language_name(distractor.language),
+            distractor.heading
+        ),
+        MAX_FRAGMENT_BYTES,
+    )?;
+    let mut previous = fragment_expression(
+        distractor.language,
+        &distractor.seed_value,
+        &distractor.literal_plan,
+        NumericStyle::Decimal,
+        profile,
+    )?;
+    for step in &distractor.steps {
+        let operation = step.operation.operation();
+        let expression = operation_expression(
+            &operation,
+            std::slice::from_ref(&previous),
+            step.numeric_style,
+            profile,
+        )?;
+        let emitted = emit_distractor_step(distractor.language, step, profile, &expression)?;
+        push_with_limit(&mut rendered, &emitted, MAX_FRAGMENT_BYTES)?;
+        push_with_limit(&mut rendered, "\n", MAX_FRAGMENT_BYTES)?;
+        previous.clone_from(&step.output_label);
+    }
+    push_with_limit(&mut rendered, "\n", MAX_FRAGMENT_BYTES)?;
+    Ok(rendered)
+}
+
+fn emit_distractor_step(
+    language: RenderLanguage,
+    step: &DisplayDistractorStep,
+    profile: &ObfuscationProfile,
+    expression: &str,
+) -> Result<String, RenderError> {
+    emit_assignment(
+        language,
         step.template,
         &step.output_label,
         &step.local_name,
-        expression,
         step.guard_value,
-        decoy_expression.as_deref(),
+        profile,
+        expression,
     )
 }
 
@@ -708,8 +775,9 @@ mod tests {
     };
     use crate::generation::render::error::RenderError;
     use crate::generation::render::model::{
-        DisplayFragment, DisplayStep, DisplayStepKind, FragmentLiteralPlan, HelperSemantic,
-        NumericStyle, ObfuscationProfile, RenderLanguage, RenderPlan, TemplateFamily,
+        DisplayDistractor, DisplayDistractorStep, DisplayFragment, DisplayStep, DisplayStepKind,
+        DistractorOperation, FragmentLiteralPlan, HelperSemantic, NumericStyle, ObfuscationProfile,
+        RenderLanguage, RenderPlan, TemplateFamily,
     };
     use crate::generation::render::names::LEGACY_HELPER_IDENTIFIERS;
     use crate::generation::{
@@ -853,7 +921,6 @@ mod tests {
                         },
                     },
                 ],
-                distractor: false,
             }],
             output: NodeId(1),
             profile: ObfuscationProfile::new(BTreeMap::from([
@@ -863,6 +930,7 @@ mod tests {
                     "turn".to_owned(),
                 ),
             ])),
+            distractor: None,
         };
 
         for language in RenderLanguage::ALL {
@@ -893,6 +961,82 @@ mod tests {
         assert_ne!(first, second);
         assert!(second.contains("forge(\"Ab\")"));
         assert!(second.contains("mirror(source)"));
+    }
+
+    #[test]
+    fn distractor_is_explicitly_irrelevant_and_emits_only_its_seed_chain_names() {
+        let plan = RenderPlan {
+            fragments: vec![DisplayFragment {
+                heading: "effective_heading".to_owned(),
+                language: RenderLanguage::Go,
+                steps: vec![DisplayStep {
+                    node: NodeId(0),
+                    output_label: "requested_output".to_owned(),
+                    local_name: "effective_local".to_owned(),
+                    template: TemplateFamily::Direct,
+                    numeric_style: NumericStyle::Decimal,
+                    literal_plan: Some(FragmentLiteralPlan::Whole),
+                    guard_value: None,
+                    kind: DisplayStepKind::Fragment { index: 0 },
+                }],
+            }],
+            output: NodeId(0),
+            profile: ObfuscationProfile::new(BTreeMap::from([
+                (HelperSemantic::BytesAscii, "bytes_alias".to_owned()),
+                (
+                    HelperSemantic::Operation(OperationKind::Reverse),
+                    "turn_alias".to_owned(),
+                ),
+                (
+                    HelperSemantic::Operation(OperationKind::Xor),
+                    "mask_alias".to_owned(),
+                ),
+            ])),
+            distractor: Some(DisplayDistractor {
+                heading: "scratch_heading".to_owned(),
+                language: RenderLanguage::Rust,
+                seed_value: b"Seed7".to_vec(),
+                literal_plan: FragmentLiteralPlan::Whole,
+                steps: vec![
+                    DisplayDistractorStep {
+                        output_label: "scratch_one".to_owned(),
+                        local_name: "scratch_local_one".to_owned(),
+                        template: TemplateFamily::Direct,
+                        numeric_style: NumericStyle::Decimal,
+                        guard_value: None,
+                        operation: DistractorOperation::Reverse,
+                    },
+                    DisplayDistractorStep {
+                        output_label: "scratch_two".to_owned(),
+                        local_name: "scratch_local_two".to_owned(),
+                        template: TemplateFamily::Direct,
+                        numeric_style: NumericStyle::Decimal,
+                        guard_value: None,
+                        operation: DistractorOperation::Xor(vec![7]),
+                    },
+                ],
+            }),
+        };
+
+        let question = emit_question(&plan, &[b"Ab".to_vec()]).unwrap();
+        let scratch_start = question.find("[Unrelated scratch calculation").unwrap();
+        let scratch_end = question[scratch_start..]
+            .find("Display order is not evaluation order.")
+            .map(|offset| scratch_start + offset)
+            .unwrap();
+        let scratch = &question[scratch_start..scratch_end];
+
+        assert!(scratch.contains("ignore it"));
+        assert!(scratch.contains("not part of the requested result"));
+        assert!(scratch.contains("turn_alias(bytes_alias(\"Seed7\"))"));
+        assert!(scratch.contains("mask_alias(scratch_one, [7])"));
+        for effective_name in ["effective_heading", "requested_output", "effective_local"] {
+            assert!(!scratch.contains(effective_name));
+        }
+        assert!(scratch.contains("scratch_one"));
+        assert!(scratch.contains("scratch_two"));
+        assert!(!scratch.contains("scratch_local_one"));
+        assert!(!scratch.contains("scratch_local_two"));
     }
 
     #[test]
@@ -1744,13 +1888,13 @@ mod tests {
                     guard_value: Some(255),
                     kind: DisplayStepKind::Fragment { index: 0 },
                 }],
-                distractor: false,
             }],
             output: NodeId(0),
             profile: ObfuscationProfile::new(BTreeMap::from([(
                 HelperSemantic::BytesAscii,
                 "mkbytes".to_owned(),
             )])),
+            distractor: None,
         };
 
         for language in RenderLanguage::ALL {

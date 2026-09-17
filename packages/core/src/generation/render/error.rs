@@ -19,8 +19,6 @@ pub(crate) enum RenderError {
     SemanticMismatch(NodeId),
     #[error("render plan output is ambiguous")]
     AmbiguousOutput,
-    #[error("render plan references a distractor")]
-    DistractorReferenced,
     #[error("render template is unsupported")]
     UnsupportedTemplate,
     #[error("rendered question exceeds the length limit")]
@@ -53,7 +51,6 @@ mod tests {
             RenderError::DuplicateReference(NodeId(2)),
             RenderError::SemanticMismatch(NodeId(3)),
             RenderError::AmbiguousOutput,
-            RenderError::DistractorReferenced,
             RenderError::UnsupportedTemplate,
             RenderError::LengthLimit,
         ];

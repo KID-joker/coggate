@@ -4,13 +4,14 @@ use super::{
     emitter::{self, common_question_bytes, declared_template_max_bytes},
     error::RenderError,
     model::{
-        DisplayFragment, DisplayStep, DisplayStepKind, FragmentLiteralPlan, HelperSemantic,
-        MAX_FRAGMENT_BYTES, MAX_QUESTION_BYTES, NumericStyle, ObfuscationProfile, RenderLanguage,
-        RenderPlan, TemplateFamily,
+        DisplayDistractor, DisplayDistractorStep, DisplayFragment, DisplayStep, DisplayStepKind,
+        DistractorOperation, FragmentLiteralPlan, HelperSemantic, MAX_FRAGMENT_BYTES,
+        MAX_QUESTION_BYTES, NumericStyle, ObfuscationProfile, RenderLanguage, RenderPlan,
+        TemplateFamily,
     },
     planner::plan_rendering,
     render_with,
-    validate::{self, COMMON_QUESTION_BUDGET, DISTRACTOR_WRAPPER_BUDGET, FRAGMENT_WRAPPER_BUDGET},
+    validate::{self, COMMON_QUESTION_BUDGET, FRAGMENT_WRAPPER_BUDGET},
 };
 use crate::generation::{
     MAX_CONCAT_INPUTS, NodeId, NodeKind, Operation, OperationKind, SemanticGraphBuilder,
@@ -118,9 +119,6 @@ fn dense_legal_dependencies_render_for_every_stream_within_fixed_bounds() {
         let plan = plan_rendering(&graph, &fragments, &mut plan_random).unwrap();
         let mut locations = BTreeMap::<NodeId, (&str, usize)>::new();
         for (display_index, fragment) in plan.fragments.iter().enumerate() {
-            if fragment.distractor {
-                continue;
-            }
             for step in &fragment.steps {
                 assert!(
                     locations
@@ -132,9 +130,6 @@ fn dense_legal_dependencies_render_for_every_stream_within_fixed_bounds() {
 
         let mut expected_clue_count = 0;
         for (display_index, fragment) in plan.fragments.iter().enumerate() {
-            if fragment.distractor {
-                continue;
-            }
             for step in &fragment.steps {
                 let DisplayStepKind::Operation { inputs, .. } = &step.kind else {
                     continue;
@@ -196,15 +191,10 @@ fn deterministic_surface_matrix_emits_all_four_visibly_distinct_template_familie
         let labels = first
             .fragments
             .iter()
-            .filter(|fragment| !fragment.distractor)
             .flat_map(|fragment| &fragment.steps)
             .map(|step| (step.node, step.output_label.clone()))
             .collect::<BTreeMap<_, _>>();
-        for fragment in first
-            .fragments
-            .iter()
-            .filter(|fragment| !fragment.distractor)
-        {
+        for fragment in &first.fragments {
             for step in &fragment.steps {
                 reached.insert(step.template);
                 let emitted = match &step.kind {
@@ -353,6 +343,40 @@ fn representative_fragment_counts_cover_all_render_stream_outcomes() {
     assert!(largest_question <= MAX_QUESTION_BYTES);
 }
 
+#[test]
+fn removing_a_distractor_leaves_the_effective_graph_output_and_answer_unchanged() {
+    let (graph, fragments) = boundary_fixture(5, 8);
+    let plan = (0_u8..=u8::MAX)
+        .find_map(|seed| {
+            let mut random = DeterministicRandom::new([seed; 32]);
+            let plan = plan_rendering(&graph, &fragments, &mut random).unwrap();
+            plan.distractor.is_some().then_some(plan)
+        })
+        .expect("seed matrix includes a distractor");
+    let mut without = plan.clone();
+    without.distractor = None;
+
+    assert_eq!(plan.fragments, without.fragments);
+    assert_eq!(plan.output, without.output);
+    assert_eq!(plan.output, graph.output());
+    assert_eq!(
+        evaluate_semantic_graph(&graph, &fragment_slices(&fragments)).unwrap(),
+        evaluate_semantic_graph(&graph, &fragment_slices(&fragments)).unwrap()
+    );
+
+    let requested_prefix = "The requested result is output label ";
+    let with_question = emitter::emit_question(&plan, &fragments).unwrap();
+    let without_question = emitter::emit_question(&without, &fragments).unwrap();
+    assert_eq!(
+        with_question
+            .lines()
+            .find(|line| line.starts_with(requested_prefix)),
+        without_question
+            .lines()
+            .find(|line| line.starts_with(requested_prefix))
+    );
+}
+
 fn longest_identifier(prefix: char, index: usize) -> String {
     let identifier = format!("{prefix}{index:015}");
     assert_eq!(identifier.len(), 16);
@@ -440,28 +464,45 @@ fn dense_exact_accounting_fixture() -> (ValidatedSemanticGraph, Vec<Vec<u8>>, Re
         RenderLanguage::Go,
     ];
     let mut steps = steps.into_iter();
-    let mut display_fragments = [5, 5, 1, 1, 1]
+    let display_fragments = [5, 5, 1, 1, 1]
         .into_iter()
         .enumerate()
         .map(|(index, size)| DisplayFragment {
             heading: longest_identifier('h', index),
             language: languages[index],
             steps: steps.by_ref().take(size).collect(),
-            distractor: false,
         })
         .collect::<Vec<_>>();
     assert!(steps.next().is_none());
-    display_fragments.push(DisplayFragment {
-        heading: longest_identifier('d', 0),
-        language: RenderLanguage::Rust,
-        steps: Vec::new(),
-        distractor: true,
-    });
     let profile = explicit_profile(&graph);
     let plan = RenderPlan {
         fragments: display_fragments,
         output: graph.output(),
         profile,
+        distractor: Some(DisplayDistractor {
+            heading: longest_identifier('d', 0),
+            language: RenderLanguage::Rust,
+            seed_value: b"Ab3Z9x7Q".to_vec(),
+            literal_plan: FragmentLiteralPlan::Whole,
+            steps: vec![
+                DisplayDistractorStep {
+                    output_label: longest_identifier('q', 0),
+                    local_name: longest_identifier('v', 0),
+                    template: TemplateFamily::Direct,
+                    numeric_style: NumericStyle::IdentityOffset { delta: 15 },
+                    guard_value: None,
+                    operation: DistractorOperation::Xor(vec![u8::MAX]),
+                },
+                DisplayDistractorStep {
+                    output_label: longest_identifier('q', 1),
+                    local_name: longest_identifier('v', 1),
+                    template: TemplateFamily::Guarded,
+                    numeric_style: NumericStyle::IdentityOffset { delta: 15 },
+                    guard_value: Some(255),
+                    operation: DistractorOperation::RotateLeft(8),
+                },
+            ],
+        }),
     };
 
     (graph, fragments, plan)
@@ -534,23 +575,16 @@ fn maximum_surface_question_fixture() -> (ValidatedSemanticGraph, Vec<Vec<u8>>, 
         RenderLanguage::Java,
         RenderLanguage::Go,
     ];
-    let mut display_fragments = [3, 3, 3, 2, 2]
+    let display_fragments = [3, 3, 3, 2, 2]
         .into_iter()
         .enumerate()
         .map(|(index, size)| DisplayFragment {
             heading: longest_identifier('h', index),
             language: languages[index],
             steps: steps.by_ref().take(size).collect(),
-            distractor: false,
         })
         .collect::<Vec<_>>();
     assert!(steps.next().is_none());
-    display_fragments.push(DisplayFragment {
-        heading: longest_identifier('d', 0),
-        language: RenderLanguage::Rust,
-        steps: Vec::new(),
-        distractor: true,
-    });
 
     let semantics = graph
         .topological_nodes()
@@ -574,6 +608,33 @@ fn maximum_surface_question_fixture() -> (ValidatedSemanticGraph, Vec<Vec<u8>>, 
         fragments: display_fragments,
         output: graph.output(),
         profile,
+        distractor: Some(DisplayDistractor {
+            heading: longest_identifier('d', 0),
+            language: RenderLanguage::Java,
+            seed_value: b"Ab3Z9x7Q".to_vec(),
+            literal_plan: FragmentLiteralPlan::ShuffledChunks {
+                chunks: vec![3..8, 1..3, 0..1],
+                restore_order: vec![2, 1, 0],
+            },
+            steps: vec![
+                DisplayDistractorStep {
+                    output_label: longest_identifier('q', 0),
+                    local_name: longest_identifier('v', 0),
+                    template: TemplateFamily::Direct,
+                    numeric_style: NumericStyle::IdentityOffset { delta: 15 },
+                    guard_value: None,
+                    operation: DistractorOperation::Xor(vec![u8::MAX]),
+                },
+                DisplayDistractorStep {
+                    output_label: longest_identifier('q', 1),
+                    local_name: longest_identifier('v', 1),
+                    template: TemplateFamily::Guarded,
+                    numeric_style: NumericStyle::IdentityOffset { delta: 15 },
+                    guard_value: Some(255),
+                    operation: DistractorOperation::RotateLeft(8),
+                },
+            ],
+        }),
     };
 
     (graph, fragments, plan)
@@ -585,7 +646,6 @@ fn maximum_surface_fixture_exercises_every_global_bound_factor() {
     let steps = plan
         .fragments
         .iter()
-        .filter(|fragment| !fragment.distractor)
         .flat_map(|fragment| &fragment.steps)
         .collect::<Vec<_>>();
 
@@ -593,14 +653,8 @@ fn maximum_surface_fixture_exercises_every_global_bound_factor() {
     assert_eq!(fragments.len(), 5);
     assert_eq!(graph.operation_count(), 8);
     assert_eq!(graph.topological_nodes().len(), 13);
-    assert_eq!(plan.fragments.len(), 6);
-    assert_eq!(
-        plan.fragments
-            .iter()
-            .filter(|fragment| fragment.distractor)
-            .count(),
-        1
-    );
+    assert_eq!(plan.fragments.len(), 5);
+    assert_eq!(plan.distractor.as_ref().unwrap().steps.len(), 2);
     assert_eq!(plan.profile.aliases().len(), 9);
     assert!(
         plan.profile
@@ -661,7 +715,8 @@ fn maximum_surface_fixture_exercises_every_global_bound_factor() {
     assert!(question.contains("(new byte[][]{"));
     assert!(question.contains(" + 15) - 15)"));
     assert!(question.contains("return "));
-    assert!(question.contains("audit/example branch"));
+    assert!(question.contains("unrelated scratch calculation"));
+    assert!(question.contains("not part of the requested result"));
     assert_eq!(
         question
             .lines()
@@ -675,11 +730,10 @@ fn maximum_surface_fixture_exercises_every_global_bound_factor() {
 fn dense_exact_accounting_question_fits_actual_fragment_and_question_limits() {
     let (graph, fragments, plan) = dense_exact_accounting_fixture();
     assert_eq!(graph.operation_count(), 8);
-    assert_eq!(plan.fragments.len(), 6);
+    assert_eq!(plan.fragments.len(), 5);
     let effective_languages = plan
         .fragments
         .iter()
-        .filter(|fragment| !fragment.distractor)
         .map(|fragment| fragment.language)
         .collect::<Vec<_>>();
     assert_eq!(
@@ -716,7 +770,6 @@ fn dense_exact_accounting_question_fits_actual_fragment_and_question_limits() {
     let effective_steps = plan
         .fragments
         .iter()
-        .filter(|fragment| !fragment.distractor)
         .flat_map(|fragment| &fragment.steps)
         .collect::<Vec<_>>();
     assert!(
@@ -770,7 +823,6 @@ fn dense_exact_accounting_question_fits_actual_fragment_and_question_limits() {
     let fragment_by_node = plan
         .fragments
         .iter()
-        .filter(|fragment| !fragment.distractor)
         .enumerate()
         .flat_map(|(fragment_index, fragment)| {
             fragment
@@ -802,8 +854,8 @@ fn dense_exact_accounting_question_fits_actual_fragment_and_question_limits() {
 
     let question = emitter::emit_question(&plan, &fragments).unwrap();
     let expected_question_bytes = match usize::BITS {
-        64 => 4_957,
-        32 => 4_937,
+        64 => 5_307,
+        32 => 5_287,
         width => panic!("unsupported usize width {width}"),
     };
     assert_eq!(question.len(), expected_question_bytes);
@@ -811,7 +863,8 @@ fn dense_exact_accounting_question_fits_actual_fragment_and_question_limits() {
         MAX_QUESTION_BYTES - question.len(),
         12_288 - expected_question_bytes
     );
-    assert!(question.contains("audit/example branch"));
+    assert!(question.contains("unrelated scratch calculation"));
+    assert!(question.contains("not part of the requested result"));
 
     let sections = question
         .match_indices("[Fragment ")
@@ -839,19 +892,20 @@ fn dense_exact_accounting_question_fits_actual_fragment_and_question_limits() {
         .unwrap();
     assert_eq!(dependency_end - dependency_start, 1_063);
 
-    assert_eq!(sections.len(), 6);
+    assert_eq!(sections.len(), 5);
+    let distractor_start = question.find("[Unrelated scratch calculation").unwrap();
     let section_lengths = sections
         .iter()
         .enumerate()
-        .map(|(index, start)| sections.get(index + 1).copied().unwrap_or(dependency_start) - start)
+        .map(|(index, start)| sections.get(index + 1).copied().unwrap_or(distractor_start) - start)
         .collect::<Vec<_>>();
     let expected_sections = match usize::BITS {
-        64 => vec![735, 896, 409, 215, 190, 94],
-        32 => vec![735, 886, 409, 205, 190, 94],
+        64 => vec![735, 896, 409, 215, 190],
+        32 => vec![735, 886, 409, 205, 190],
         _ => unreachable!(),
     };
     assert_eq!(section_lengths, expected_sections);
-    let accounted_effective = section_lengths[..5]
+    let accounted_effective = section_lengths
         .iter()
         .zip([0, 575, 239, 115, 115])
         .map(|(section, clue_bytes)| section + clue_bytes)
@@ -877,25 +931,26 @@ fn dense_exact_accounting_question_fits_actual_fragment_and_question_limits() {
         _ => unreachable!(),
     };
     assert_eq!(fragment_margins, expected_margins);
-    assert_eq!(section_lengths[5], 94);
+    assert_eq!(dependency_start - distractor_start, 444);
+    assert!(dependency_start - distractor_start <= MAX_FRAGMENT_BYTES);
 }
 
 #[test]
 fn maximum_dynamic_common_question_text_fits_the_validator_reservation() {
     let mut maximum = 0;
     for mask in 0_u32..(1_u32 << OperationKind::ALL.len()) {
-        if mask.count_ones() != 8 {
+        if mask.count_ones() != 11 {
             continue;
         }
-        let mut semantics = OperationKind::ALL
+        let semantics = OperationKind::ALL
             .into_iter()
             .enumerate()
             .filter_map(|(index, kind)| {
                 (mask & (1 << index) != 0).then_some(HelperSemantic::Operation(kind))
             })
+            .chain([HelperSemantic::BytesAscii])
             .collect::<BTreeSet<_>>();
-        semantics.insert(HelperSemantic::BytesAscii);
-        semantics.insert(HelperSemantic::Operation(OperationKind::Concat));
+        assert_eq!(semantics.len(), 12);
         let profile = ObfuscationProfile::new(
             semantics
                 .into_iter()
@@ -906,36 +961,238 @@ fn maximum_dynamic_common_question_text_fits_the_validator_reservation() {
         maximum = maximum.max(common_question_bytes(&profile));
     }
 
-    assert_eq!(maximum, 1_655);
-    assert_eq!(COMMON_QUESTION_BUDGET - maximum, 393);
+    assert_eq!(maximum, 1_805);
+    assert_eq!(COMMON_QUESTION_BUDGET - maximum, 243);
     assert!(maximum <= COMMON_QUESTION_BUDGET);
 }
 
-fn checked_compositional_question_bound(max_step_budget: usize) -> Option<usize> {
+fn maximum_source_step_bytes() -> usize {
+    let profile = ObfuscationProfile::new(BTreeMap::from([
+        (HelperSemantic::BytesAscii, longest_identifier('a', 0)),
+        (
+            HelperSemantic::Operation(OperationKind::Concat),
+            longest_identifier('a', 1),
+        ),
+    ]));
+    let value = b"ABCDEFGHIJKLMNOP";
+    let literals = [
+        FragmentLiteralPlan::Whole,
+        FragmentLiteralPlan::OrderedChunks(vec![0..1, 1..2, 2..16]),
+        FragmentLiteralPlan::ShuffledChunks {
+            chunks: vec![2..16, 1..2, 0..1],
+            restore_order: vec![2, 1, 0],
+        },
+    ];
+    let numeric_styles = [
+        NumericStyle::Decimal,
+        NumericStyle::LowerHex,
+        NumericStyle::IdentityOffset { delta: 15 },
+    ];
+    let mut maximum = 0;
+    for language in RenderLanguage::ALL {
+        for template in [
+            TemplateFamily::Direct,
+            TemplateFamily::Helper,
+            TemplateFamily::AliasChain,
+            TemplateFamily::Guarded,
+        ] {
+            for numeric_style in numeric_styles {
+                for literal_plan in &literals {
+                    let step = DisplayStep {
+                        node: NodeId(0),
+                        output_label: longest_identifier('o', 0),
+                        local_name: longest_identifier('l', 0),
+                        template,
+                        numeric_style,
+                        literal_plan: Some(literal_plan.clone()),
+                        guard_value: (template == TemplateFamily::Guarded).then_some(255),
+                        kind: DisplayStepKind::Fragment { index: 0 },
+                    };
+                    maximum = maximum.max(
+                        emitter::emit_fragment(language, &step, &profile, value)
+                            .unwrap()
+                            .len(),
+                    );
+                }
+            }
+        }
+    }
+    maximum
+}
+
+fn maximum_distractor_bytes() -> usize {
+    let profile = ObfuscationProfile::new(BTreeMap::from([
+        (HelperSemantic::BytesAscii, longest_identifier('a', 0)),
+        (
+            HelperSemantic::Operation(OperationKind::Concat),
+            longest_identifier('a', 1),
+        ),
+        (
+            HelperSemantic::Operation(OperationKind::Reverse),
+            longest_identifier('a', 2),
+        ),
+        (
+            HelperSemantic::Operation(OperationKind::RotateLeft),
+            longest_identifier('a', 3),
+        ),
+        (
+            HelperSemantic::Operation(OperationKind::Xor),
+            longest_identifier('a', 4),
+        ),
+    ]));
+    let literals = [
+        FragmentLiteralPlan::Whole,
+        FragmentLiteralPlan::OrderedChunks(vec![0..1, 1..2, 2..8]),
+        FragmentLiteralPlan::ShuffledChunks {
+            chunks: vec![2..8, 1..2, 0..1],
+            restore_order: vec![2, 1, 0],
+        },
+    ];
+    let operations = [
+        DistractorOperation::Reverse,
+        DistractorOperation::Xor(vec![u8::MAX]),
+        DistractorOperation::RotateLeft(8),
+    ];
+    let numeric_styles = [
+        NumericStyle::Decimal,
+        NumericStyle::LowerHex,
+        NumericStyle::IdentityOffset { delta: 15 },
+    ];
+    let templates = [
+        TemplateFamily::Direct,
+        TemplateFamily::Helper,
+        TemplateFamily::AliasChain,
+        TemplateFamily::Guarded,
+    ];
+    let mut maximum = 0;
+    for language in RenderLanguage::ALL {
+        for literal_plan in &literals {
+            for first_operation in &operations {
+                for first_numeric in numeric_styles {
+                    for first_template in templates {
+                        for second_operation in &operations {
+                            for second_numeric in numeric_styles {
+                                for second_template in templates {
+                                    let distractor = DisplayDistractor {
+                                        heading: longest_identifier('d', 0),
+                                        language,
+                                        seed_value: b"Ab3Z9x7Q".to_vec(),
+                                        literal_plan: literal_plan.clone(),
+                                        steps: vec![
+                                            DisplayDistractorStep {
+                                                output_label: longest_identifier('q', 0),
+                                                local_name: longest_identifier('v', 0),
+                                                template: first_template,
+                                                numeric_style: first_numeric,
+                                                guard_value: (first_template
+                                                    == TemplateFamily::Guarded)
+                                                    .then_some(255),
+                                                operation: first_operation.clone(),
+                                            },
+                                            DisplayDistractorStep {
+                                                output_label: longest_identifier('q', 1),
+                                                local_name: longest_identifier('v', 1),
+                                                template: second_template,
+                                                numeric_style: second_numeric,
+                                                guard_value: (second_template
+                                                    == TemplateFamily::Guarded)
+                                                    .then_some(255),
+                                                operation: second_operation.clone(),
+                                            },
+                                        ],
+                                    };
+                                    maximum = maximum.max(
+                                        emitter::emit_distractor(&distractor, &profile)
+                                            .unwrap()
+                                            .len(),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    maximum
+}
+
+fn checked_compositional_question_bound(
+    common_bytes: usize,
+    max_source_step_budget: usize,
+    max_operation_step_budget: usize,
+    distractor_bytes: usize,
+) -> Option<usize> {
     const MAX_SOURCE_FRAGMENTS: usize = 5;
     const MAX_OPERATIONS: usize = 8;
-    const MAX_NODES: usize = MAX_SOURCE_FRAGMENTS + MAX_OPERATIONS;
+    const MAX_IDENTIFIER: usize = 16;
+
+    let clue_bytes = maximum_dependency_clue_bytes()?;
+    let fragment_wrapper = FRAGMENT_WRAPPER_BUDGET.checked_add(MAX_IDENTIFIER)?;
+    common_bytes
+        .checked_add(MAX_IDENTIFIER)?
+        .checked_add(MAX_SOURCE_FRAGMENTS.checked_mul(fragment_wrapper)?)?
+        .checked_add(MAX_SOURCE_FRAGMENTS.checked_mul(max_source_step_budget)?)?
+        .checked_add(MAX_OPERATIONS.checked_mul(max_operation_step_budget)?)?
+        .checked_add(clue_bytes)?
+        .checked_add(distractor_bytes)
+}
+
+fn maximum_dependency_clue_bytes() -> Option<usize> {
+    const MAX_SOURCE_FRAGMENTS: usize = 5;
+    const MAX_OPERATIONS: usize = 8;
     const MAX_IDENTIFIER: usize = 16;
 
     let longest_label = "x".repeat(MAX_IDENTIFIER);
-    let clue_bytes = (0..MAX_OPERATIONS).try_fold(0_usize, |total, operation_index| {
-        let available_predecessors = MAX_SOURCE_FRAGMENTS.checked_add(operation_index)?;
-        let producer_count = available_predecessors.min(MAX_CONCAT_INPUTS);
-        let producers = vec![(longest_label.as_str(), MAX_SOURCE_FRAGMENTS - 1); producer_count];
-        let clue =
-            emitter::format_dependency_clue(&producers, &longest_label, MAX_SOURCE_FRAGMENTS - 1)
+    let mut chunk_sizes = [2, 2, 3, 3, 3];
+    let mut maximum = 0;
+    loop {
+        let mut starts = [0_usize; 5];
+        for index in 1..starts.len() {
+            starts[index] = starts[index - 1].checked_add(chunk_sizes[index - 1])?;
+        }
+        let total = (MAX_SOURCE_FRAGMENTS..MAX_SOURCE_FRAGMENTS + MAX_OPERATIONS).try_fold(
+            0_usize,
+            |total, position| {
+                let chunk_start = starts.iter().zip(chunk_sizes).find_map(|(start, size)| {
+                    (*start..start.checked_add(size)?)
+                        .contains(&position)
+                        .then_some(*start)
+                })?;
+                let producer_count = chunk_start.min(MAX_CONCAT_INPUTS);
+                let producers =
+                    vec![(longest_label.as_str(), MAX_SOURCE_FRAGMENTS - 1); producer_count];
+                let clue = emitter::format_dependency_clue(
+                    &producers,
+                    &longest_label,
+                    MAX_SOURCE_FRAGMENTS - 1,
+                )
                 .ok()?;
-        total.checked_add(clue.len())
-    })?;
-    let fragment_wrapper = FRAGMENT_WRAPPER_BUDGET.checked_add(MAX_IDENTIFIER)?;
-    let distractor = DISTRACTOR_WRAPPER_BUDGET.checked_add(MAX_IDENTIFIER)?;
+                total.checked_add(clue.len())
+            },
+        )?;
+        maximum = maximum.max(total);
+        if !next_permutation(&mut chunk_sizes) {
+            break;
+        }
+    }
+    Some(maximum)
+}
 
-    COMMON_QUESTION_BUDGET
-        .checked_add(MAX_IDENTIFIER)?
-        .checked_add(MAX_SOURCE_FRAGMENTS.checked_mul(fragment_wrapper)?)?
-        .checked_add(MAX_NODES.checked_mul(max_step_budget)?)?
-        .checked_add(clue_bytes)?
-        .checked_add(distractor)
+fn next_permutation(values: &mut [usize]) -> bool {
+    let Some(pivot) = (0..values.len().saturating_sub(1))
+        .rev()
+        .find(|index| values[*index] < values[*index + 1])
+    else {
+        return false;
+    };
+    let successor = (pivot + 1..values.len())
+        .rev()
+        .find(|index| values[pivot] < values[*index])
+        .unwrap();
+    values.swap(pivot, successor);
+    values[pivot + 1..].reverse();
+    true
 }
 
 #[test]
@@ -955,12 +1212,32 @@ fn declared_budgets_compositionally_bound_every_legal_question() {
         .unwrap();
     assert_eq!(declared_step_max, 512);
 
-    let legal_bound = checked_compositional_question_bound(declared_step_max).unwrap();
-    assert_eq!(legal_bound, 12_172);
+    let source_step_max = maximum_source_step_bytes();
+    let distractor_max = maximum_distractor_bytes();
+    assert_eq!(source_step_max, 501);
+    assert_eq!(distractor_max, 848);
+    assert_eq!(maximum_dependency_clue_bytes(), Some(2_563));
+    assert!(source_step_max <= declared_step_max);
+    assert!(distractor_max <= MAX_FRAGMENT_BYTES);
+
+    let legal_bound = checked_compositional_question_bound(
+        1_805,
+        source_step_max,
+        declared_step_max,
+        distractor_max,
+    )
+    .unwrap();
+    assert_eq!(legal_bound, 12_233);
     assert!(legal_bound <= MAX_QUESTION_BYTES);
 
     let inflated_step_budget = declared_step_max.checked_add(64).unwrap();
-    let inflated_bound = checked_compositional_question_bound(inflated_step_budget).unwrap();
+    let inflated_bound = checked_compositional_question_bound(
+        1_805,
+        source_step_max,
+        inflated_step_budget,
+        distractor_max,
+    )
+    .unwrap();
     assert!(inflated_bound > MAX_QUESTION_BYTES);
 }
 
