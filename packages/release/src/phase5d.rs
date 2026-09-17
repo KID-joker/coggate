@@ -23,10 +23,9 @@ const MANIFEST: &str = "manifest.json";
 const CHECKSUMS: &str = "SHA256SUMS";
 const MAX_FILES: usize = 256;
 const MAX_PATH_DEPTH: usize = 16;
-const METADATA_FILE_OVERHEAD: usize = 2;
-const MAX_REGULAR_FILES: usize = MAX_FILES + METADATA_FILE_OVERHEAD;
+const MAX_PAYLOAD_FILES: usize = MAX_FILES - 2;
 const MAX_DIRECTORIES: usize = MAX_FILES * (MAX_PATH_DEPTH - 1) + 1;
-const MAX_ENTRIES: usize = MAX_REGULAR_FILES + MAX_DIRECTORIES;
+const MAX_ENTRIES: usize = MAX_FILES + MAX_DIRECTORIES;
 const MAX_PAYLOAD_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_TOTAL_PAYLOAD_BYTES: u64 = 1024 * 1024 * 1024;
 const TREE_DOMAIN: &[u8] = b"agentgate-phase5d-tree-v1";
@@ -247,6 +246,35 @@ fn identity_for_path(path: &Path, metadata: &Metadata) -> Result<Identity, Phase
     }
 }
 
+fn identity_for_open_file(file: &File, metadata: &Metadata) -> Result<Identity, Phase5dError> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::{
+            Foundation::HANDLE,
+            Storage::FileSystem::{BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle},
+        };
+        let mut info = BY_HANDLE_FILE_INFORMATION::default();
+        // SAFETY: the borrowed raw handle remains owned by `file`; `info` is writable.
+        if unsafe { GetFileInformationByHandle(file.as_raw_handle() as HANDLE, &mut info) } == 0 {
+            return Err(Phase5dError::Io);
+        }
+        if (info.dwFileAttributes & 0x400) != 0 {
+            return Err(Phase5dError::Invalid);
+        }
+        let mut identity = Identity::from_metadata(metadata);
+        identity.volume_serial = info.dwVolumeSerialNumber;
+        identity.file_index =
+            (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow);
+        Ok(identity)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = file;
+        Ok(Identity::from_metadata(metadata))
+    }
+}
+
 #[cfg(windows)]
 fn windows_identity_for_path(path: &Path, metadata: &Metadata) -> Result<Identity, Phase5dError> {
     use std::os::windows::ffi::OsStrExt;
@@ -272,7 +300,7 @@ fn windows_identity_for_path(path: &Path, metadata: &Metadata) -> Result<Identit
             std::ptr::null(),
             OPEN_EXISTING,
             FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
-            0,
+            std::ptr::null_mut(),
         )
     };
     if handle == INVALID_HANDLE_VALUE {
@@ -567,7 +595,7 @@ fn walk_tree(
                 directories.push((path.clone(), identity_for_path(&path, &metadata)?));
                 pending.push((path, relative));
             } else if metadata.is_file() {
-                if files.len() >= MAX_REGULAR_FILES {
+                if files.len() >= MAX_FILES {
                     return Err(Phase5dError::FileLimit);
                 }
                 let identity = identity_for_path(&path, &metadata)?;
@@ -614,7 +642,7 @@ fn read_checked(
     let mut opened = File::open(&file.path).map_err(|_| Phase5dError::Io)?;
     let opened_metadata = opened.metadata().map_err(|_| Phase5dError::Io)?;
     if !opened_metadata.is_file()
-        || identity_for_path(&file.path, &opened_metadata)? != file.identity
+        || identity_for_open_file(&opened, &opened_metadata)? != file.identity
         || opened_metadata.len() > maximum
     {
         return Err(Phase5dError::Changed);
@@ -633,7 +661,7 @@ fn read_checked(
     let after_open = opened.metadata().map_err(|_| Phase5dError::Io)?;
     if is_link_or_reparse(&after)
         || identity_for_path(&file.path, &after)? != file.identity
-        || identity_for_path(&file.path, &after_open)? != file.identity
+        || identity_for_open_file(&opened, &after_open)? != file.identity
     {
         return Err(Phase5dError::Changed);
     }
@@ -661,7 +689,7 @@ fn hash_checked(
     let mut opened = File::open(&file.path).map_err(|_| Phase5dError::Io)?;
     let opened_metadata = opened.metadata().map_err(|_| Phase5dError::Io)?;
     if !opened_metadata.is_file()
-        || identity_for_path(&file.path, &opened_metadata)? != file.identity
+        || identity_for_open_file(&opened, &opened_metadata)? != file.identity
         || opened_metadata.len() > maximum
     {
         return Err(Phase5dError::Changed);
@@ -689,7 +717,7 @@ fn hash_checked(
     let after_open = opened.metadata().map_err(|_| Phase5dError::Io)?;
     if is_link_or_reparse(&after)
         || identity_for_path(&file.path, &after)? != file.identity
-        || identity_for_path(&file.path, &after_open)? != file.identity
+        || identity_for_open_file(&opened, &after_open)? != file.identity
     {
         return Err(Phase5dError::Changed);
     }
@@ -793,7 +821,7 @@ fn valid_version(version: &str) -> bool {
 
 fn validate_files(value: &Value, target: Target) -> Result<Vec<ManifestFile>, Phase5dError> {
     let array = value.as_array().ok_or(Phase5dError::Invalid)?;
-    if array.len() > MAX_FILES {
+    if array.len() > MAX_PAYLOAD_FILES {
         return Err(Phase5dError::Invalid);
     }
     let mut previous = None::<String>;
@@ -1033,6 +1061,7 @@ mod tests {
             let payload = root.join("include/agentgate.h");
             let replacement = root.join("include/replacement.h");
             fs::write(&replacement, b"x").unwrap();
+            fs::remove_file(&payload).unwrap();
             fs::rename(replacement, payload).unwrap();
         });
         assert_eq!(result, Err(Phase5dError::Changed));

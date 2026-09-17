@@ -465,10 +465,28 @@ fn rejects_payload_checksum_and_layout_mutations() {
 #[test]
 fn accepts_contract_valid_artifact_with_more_than_256_directories() {
     let (_tmp, root) = fixture(Target::LinuxX86_64);
-    let additions = 256 - paths_for(Target::LinuxX86_64).len();
+    let additions = 254 - paths_for(Target::LinuxX86_64).len();
     for index in 0..additions {
-        write(&root, &format!("node/lib/deep-{index}/entry.js"), b"x");
+        write(
+            &root,
+            &format!("node/lib/deep-{index}/nested/entry.js"),
+            b"x",
+        );
     }
+    let directory_count = fs::read_dir(root.join("node/lib"))
+        .expect("node lib directories")
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().expect("fixture type").is_dir())
+        .map(|entry| {
+            1 + fs::read_dir(entry.path())
+                .expect("nested fixture directory")
+                .count()
+        })
+        .sum::<usize>();
+    assert!(
+        directory_count > 256,
+        "fixture proves more than 256 directories via nested prefixes"
+    );
     write_metadata(&root, Target::LinuxX86_64);
     assert!(verify_phase5d_artifact(&root, Target::LinuxX86_64).is_ok());
 }
