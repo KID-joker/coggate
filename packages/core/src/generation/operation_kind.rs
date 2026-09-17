@@ -12,78 +12,60 @@ pub(crate) enum OperationFamily {
     Composition,
 }
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub(crate) enum OperationKind {
-    Reverse,
-    RotateLeft,
-    RotateRight,
-    EvenBytes,
-    OddBytes,
-    Permute,
-    Slice,
-    Xor,
-    AddModulo,
-    SubModulo,
-    HexEncode,
-    HexDecode,
-    Base64UrlEncode,
-    Base64UrlDecode,
-    Sha256Prefix,
-    Concat,
-    RotateLeftDerived,
-    ConditionalOrder,
-}
+macro_rules! define_operation_kind_catalog {
+    ($( $kind:ident => $family:ident, )+) => {
+        #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+        pub(crate) enum OperationKind {
+            $(
+                $kind,
+            )+
+        }
 
-impl OperationKind {
-    #[allow(
-        dead_code,
-        reason = "Operation taxonomy is consumed by diversity planning"
-    )]
-    pub(crate) const ALL: [Self; 18] = [
-        Self::Reverse,
-        Self::RotateLeft,
-        Self::RotateRight,
-        Self::EvenBytes,
-        Self::OddBytes,
-        Self::Permute,
-        Self::Slice,
-        Self::Xor,
-        Self::AddModulo,
-        Self::SubModulo,
-        Self::HexEncode,
-        Self::HexDecode,
-        Self::Base64UrlEncode,
-        Self::Base64UrlDecode,
-        Self::Sha256Prefix,
-        Self::Concat,
-        Self::RotateLeftDerived,
-        Self::ConditionalOrder,
-    ];
+        impl OperationKind {
+            #[allow(
+                dead_code,
+                reason = "Operation taxonomy is consumed by diversity planning"
+            )]
+            pub(crate) const ALL: [Self; 18] = [
+                $(
+                    Self::$kind,
+                )+
+            ];
 
-    #[allow(
-        dead_code,
-        reason = "Operation taxonomy is consumed by diversity planning"
-    )]
-    pub(crate) const fn family(self) -> OperationFamily {
-        match self {
-            Self::Reverse
-            | Self::RotateLeft
-            | Self::RotateRight
-            | Self::EvenBytes
-            | Self::OddBytes
-            | Self::Permute
-            | Self::Slice => OperationFamily::Structural,
-            Self::Xor | Self::AddModulo | Self::SubModulo => OperationFamily::ByteArithmetic,
-            Self::HexEncode
-            | Self::HexDecode
-            | Self::Base64UrlEncode
-            | Self::Base64UrlDecode
-            | Self::Sha256Prefix => OperationFamily::CodecDigest,
-            Self::Concat | Self::RotateLeftDerived | Self::ConditionalOrder => {
-                OperationFamily::Composition
+            #[allow(
+                dead_code,
+                reason = "Operation taxonomy is consumed by diversity planning"
+            )]
+            pub(crate) const fn family(self) -> OperationFamily {
+                match self {
+                    $(
+                        Self::$kind => OperationFamily::$family,
+                    )+
+                }
             }
         }
-    }
+    };
+}
+
+define_operation_kind_catalog! {
+    Reverse => Structural,
+    RotateLeft => Structural,
+    RotateRight => Structural,
+    EvenBytes => Structural,
+    OddBytes => Structural,
+    Permute => Structural,
+    Slice => Structural,
+    Xor => ByteArithmetic,
+    AddModulo => ByteArithmetic,
+    SubModulo => ByteArithmetic,
+    HexEncode => CodecDigest,
+    HexDecode => CodecDigest,
+    Base64UrlEncode => CodecDigest,
+    Base64UrlDecode => CodecDigest,
+    Sha256Prefix => CodecDigest,
+    Concat => Composition,
+    RotateLeftDerived => Composition,
+    ConditionalOrder => Composition,
 }
 
 impl From<&Operation> for OperationKind {
@@ -209,6 +191,17 @@ mod tests {
                 OperationFamily::Composition,
             ),
         ];
+
+        assert_eq!(cases.len(), OperationKind::ALL.len());
+        for kind in OperationKind::ALL {
+            assert_eq!(
+                cases
+                    .iter()
+                    .filter(|(_, expected_kind, _)| *expected_kind == kind)
+                    .count(),
+                1
+            );
+        }
 
         for (operation, expected_kind, expected_family) in cases {
             let kind = OperationKind::from(&operation);
