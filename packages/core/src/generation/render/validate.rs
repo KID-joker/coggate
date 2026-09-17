@@ -13,7 +13,7 @@ use super::{
         HelperSemantic, MAX_DISTRACTOR_SEED_BYTES, MAX_FRAGMENT_BYTES, MAX_QUESTION_BYTES,
         MIN_DISTRACTOR_SEED_BYTES, NumericStyle, RenderLanguage, RenderPlan, TemplateFamily,
     },
-    names::{MAX_IDENTIFIER_BYTES, is_valid_identifier},
+    names::{MAX_IDENTIFIER_BYTES, ascii_identifier_tokens, is_valid_identifier},
 };
 
 pub(super) const COMMON_QUESTION_BUDGET: usize = 2_048;
@@ -32,6 +32,7 @@ pub(super) fn validate_plan(
     validate_shape(plan, graph.fragment_lengths().len())?;
     validate_obfuscation(graph, fragments, plan)?;
     validate_identifiers(plan)?;
+    validate_distractor_text_isolation(plan)?;
 
     let steps = index_effective_steps(plan)?;
     for node in graph.topological_nodes() {
@@ -171,6 +172,29 @@ fn validate_identifiers(plan: &RenderPlan) -> Result<(), RenderError> {
                 return Err(RenderError::InvalidPlan);
             }
         }
+    }
+    Ok(())
+}
+
+fn validate_distractor_text_isolation(plan: &RenderPlan) -> Result<(), RenderError> {
+    let Some(distractor) = &plan.distractor else {
+        return Ok(());
+    };
+    let effective_identifiers = plan
+        .fragments
+        .iter()
+        .flat_map(|fragment| {
+            std::iter::once(fragment.heading.as_str()).chain(
+                fragment
+                    .steps
+                    .iter()
+                    .flat_map(|step| [step.output_label.as_str(), step.local_name.as_str()]),
+            )
+        })
+        .collect::<BTreeSet<_>>();
+    let rendered = emit_distractor(distractor, &plan.profile)?;
+    if ascii_identifier_tokens(&rendered).any(|token| effective_identifiers.contains(token)) {
+        return Err(RenderError::InvalidPlan);
     }
     Ok(())
 }
@@ -611,17 +635,20 @@ fn checked_add(left: usize, right: usize) -> Result<usize, RenderError> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
 
     use crate::generation::{
-        NodeId, Operation, OperationKind, SemanticGraphBuilder, ValidatedSemanticGraph,
+        NodeId, NodeKind, Operation, OperationKind, SemanticGraphBuilder, ValidatedSemanticGraph,
         render::{
+            emitter::emit_question,
             error::RenderError,
             model::{
-                DisplayFragment, DisplayStepKind, DistractorOperation, FragmentLiteralPlan,
-                HelperSemantic, NumericStyle, ObfuscationProfile, RenderLanguage, RenderPlan,
+                DisplayDistractor, DisplayDistractorStep, DisplayFragment, DisplayStep,
+                DisplayStepKind, DistractorOperation, FragmentLiteralPlan, HelperSemantic,
+                MAX_QUESTION_BYTES, NumericStyle, ObfuscationProfile, RenderLanguage, RenderPlan,
                 TemplateFamily,
             },
+            names::{MAX_ALLOCATED_NAMES, NameAllocator, ascii_identifier_tokens},
             planner::plan_rendering,
         },
         test_random::DeterministicRandom,
@@ -711,11 +738,212 @@ mod tests {
         plan.fragments.iter_mut().collect()
     }
 
+    fn boundary_name(prefix: &str, index: usize) -> String {
+        let name = format!("{prefix}{index:015}");
+        assert_eq!(name.len(), 16);
+        name
+    }
+
     #[test]
     fn accepts_an_unmodified_planner_plan() {
         let (graph, fragments, plan) = fixture_plan();
 
         assert_eq!(validate_plan(&graph, &fragments, &plan), Ok(()));
+    }
+
+    #[test]
+    fn exact_48_name_plan_validates_emits_and_exhausts_the_allocator() {
+        let fragments = vec![
+            b"A".to_vec(),
+            b"B".to_vec(),
+            b"Cdef".to_vec(),
+            b"G".to_vec(),
+            b"H".to_vec(),
+        ];
+        let mut builder = SemanticGraphBuilder::new(vec![1, 1, 4, 1, 1]);
+        let sources = (0..5)
+            .map(|index| builder.fragment(index).unwrap())
+            .collect::<Vec<_>>();
+        let rotate_left = builder.operation(Operation::RotateLeft(1), vec![sources[0]]);
+        let rotate_right = builder.operation(Operation::RotateRight(1), vec![sources[1]]);
+        let hex = builder.operation(Operation::HexEncode, vec![sources[2]]);
+        let base64 = builder.operation(Operation::Base64UrlEncode, vec![sources[3]]);
+        let slice = builder.operation(Operation::Slice { start: 0, end: 1 }, vec![sources[4]]);
+        let conditional = builder.operation(
+            Operation::ConditionalOrder,
+            vec![slice, rotate_left, rotate_right],
+        );
+        let add = builder.operation(Operation::AddModulo, vec![conditional, base64]);
+        let output = builder.operation(Operation::RotateLeftDerived, vec![add, hex]);
+        builder.output(output);
+        let graph = builder.validate().unwrap();
+        assert_eq!(graph.topological_nodes().len(), 13);
+        assert_eq!(graph.operation_count(), 8);
+        assert!(!graph.topological_nodes().iter().any(|node| {
+            matches!(
+                node.kind(),
+                NodeKind::Operation {
+                    operation: Operation::Concat,
+                    ..
+                }
+            )
+        }));
+
+        let mut steps = graph
+            .topological_nodes()
+            .iter()
+            .enumerate()
+            .map(|(index, node)| {
+                let (kind, literal_plan) = match node.kind() {
+                    NodeKind::Fragment {
+                        index: fragment_index,
+                    } => (
+                        DisplayStepKind::Fragment {
+                            index: *fragment_index,
+                        },
+                        Some(if *fragment_index == 2 {
+                            FragmentLiteralPlan::OrderedChunks(vec![0..2, 2..4])
+                        } else {
+                            FragmentLiteralPlan::Whole
+                        }),
+                    ),
+                    NodeKind::Operation { operation, inputs } => (
+                        DisplayStepKind::Operation {
+                            operation: operation.clone(),
+                            inputs: inputs.clone(),
+                        },
+                        None,
+                    ),
+                };
+                DisplayStep {
+                    node: node.id(),
+                    output_label: boundary_name("o", index),
+                    local_name: boundary_name("l", index),
+                    template: TemplateFamily::Helper,
+                    numeric_style: NumericStyle::Decimal,
+                    literal_plan,
+                    guard_value: None,
+                    kind,
+                }
+            })
+            .collect::<Vec<_>>();
+        let languages = [
+            RenderLanguage::C,
+            RenderLanguage::Cpp,
+            RenderLanguage::C,
+            RenderLanguage::Cpp,
+            RenderLanguage::C,
+        ];
+        let mut display_fragments = Vec::new();
+        for (index, step_count) in [3, 3, 3, 2, 2].into_iter().enumerate() {
+            let remaining = steps.split_off(step_count);
+            display_fragments.push(DisplayFragment {
+                heading: boundary_name("h", index),
+                language: languages[index],
+                steps,
+            });
+            steps = remaining;
+        }
+        assert!(steps.is_empty());
+
+        let expected_aliases = BTreeSet::from([
+            HelperSemantic::BytesAscii,
+            HelperSemantic::Operation(OperationKind::RotateLeft),
+            HelperSemantic::Operation(OperationKind::RotateRight),
+            HelperSemantic::Operation(OperationKind::HexEncode),
+            HelperSemantic::Operation(OperationKind::Base64UrlEncode),
+            HelperSemantic::Operation(OperationKind::Slice),
+            HelperSemantic::Operation(OperationKind::ConditionalOrder),
+            HelperSemantic::Operation(OperationKind::AddModulo),
+            HelperSemantic::Operation(OperationKind::RotateLeftDerived),
+            HelperSemantic::Operation(OperationKind::Concat),
+            HelperSemantic::Operation(OperationKind::Reverse),
+            HelperSemantic::Operation(OperationKind::Xor),
+        ]);
+        assert_eq!(expected_aliases.len(), 12);
+        let aliases = expected_aliases
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(index, semantic)| (semantic, boundary_name("a", index)))
+            .collect::<BTreeMap<_, _>>();
+        let plan = RenderPlan {
+            fragments: display_fragments,
+            output,
+            profile: ObfuscationProfile::new(aliases),
+            distractor: Some(DisplayDistractor {
+                heading: boundary_name("d", 0),
+                language: RenderLanguage::Java,
+                seed_value: b"Z9x7".to_vec(),
+                literal_plan: FragmentLiteralPlan::Whole,
+                steps: vec![
+                    DisplayDistractorStep {
+                        output_label: boundary_name("q", 0),
+                        local_name: boundary_name("v", 0),
+                        template: TemplateFamily::Helper,
+                        numeric_style: NumericStyle::Decimal,
+                        guard_value: None,
+                        operation: DistractorOperation::Reverse,
+                    },
+                    DisplayDistractorStep {
+                        output_label: boundary_name("q", 1),
+                        local_name: boundary_name("v", 1),
+                        template: TemplateFamily::Helper,
+                        numeric_style: NumericStyle::Decimal,
+                        guard_value: None,
+                        operation: DistractorOperation::Xor(vec![7]),
+                    },
+                ],
+            }),
+        };
+
+        assert_eq!(
+            plan.profile
+                .aliases()
+                .keys()
+                .copied()
+                .collect::<BTreeSet<_>>(),
+            expected_aliases
+        );
+        let mut allocated_names = BTreeSet::new();
+        for fragment in &plan.fragments {
+            assert!(allocated_names.insert(fragment.heading.as_str()));
+            for step in &fragment.steps {
+                assert!(allocated_names.insert(step.output_label.as_str()));
+                assert!(allocated_names.insert(step.local_name.as_str()));
+            }
+        }
+        let distractor = plan.distractor.as_ref().unwrap();
+        assert!(allocated_names.insert(distractor.heading.as_str()));
+        for step in &distractor.steps {
+            assert!(allocated_names.insert(step.output_label.as_str()));
+            assert!(allocated_names.insert(step.local_name.as_str()));
+        }
+        for alias in plan.profile.aliases().values() {
+            assert!(allocated_names.insert(alias));
+        }
+        assert_eq!(allocated_names.len(), MAX_ALLOCATED_NAMES);
+
+        assert_eq!(validate_plan(&graph, &fragments, &plan), Ok(()));
+        let rendered = emit_question(&plan, &fragments).unwrap();
+        assert!(rendered.len() <= MAX_QUESTION_BYTES);
+        let rendered_identifiers = ascii_identifier_tokens(&rendered).collect::<BTreeSet<_>>();
+        for name in allocated_names {
+            assert!(
+                rendered_identifiers.contains(name),
+                "missing allocated identifier {name}"
+            );
+        }
+
+        let mut random = DeterministicRandom::new([211; 32]);
+        let mut allocator = NameAllocator::new(&mut random).unwrap();
+        for _ in 0..MAX_ALLOCATED_NAMES {
+            allocator.allocate_identifier().unwrap();
+        }
+        assert_eq!(
+            allocator.allocate_identifier(),
+            Err(RenderError::NameExhausted)
+        );
     }
 
     #[test]
@@ -1395,6 +1623,57 @@ mod tests {
                 "collision category {category}"
             );
         }
+    }
+
+    #[test]
+    fn rejects_effective_identifier_tokens_that_appear_in_distractor_text() {
+        for (name, category) in [("result", 0), ("ignore", 1), ("bytes", 2)] {
+            let (graph, fragments, mut plan) = fixture_plan_with_distractor();
+            match category {
+                0 => {
+                    plan.fragments
+                        .iter_mut()
+                        .flat_map(|fragment| &mut fragment.steps)
+                        .find(|step| step.node == plan.output)
+                        .unwrap()
+                        .output_label = name.to_owned()
+                }
+                1 => plan.fragments[0].steps[0].local_name = name.to_owned(),
+                2 => {
+                    plan.fragments[0].heading = name.to_owned();
+                    let distractor = plan.distractor.as_mut().unwrap();
+                    distractor.language = RenderLanguage::C;
+                    distractor.steps[0].template = TemplateFamily::Direct;
+                    distractor.steps[0].guard_value = None;
+                }
+                _ => unreachable!(),
+            }
+
+            assert_eq!(
+                validate_plan(&graph, &fragments, &plan),
+                Err(RenderError::InvalidPlan),
+                "effective {category} identifier {name:?} leaked into distractor text"
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_identifier_substrings_that_are_not_complete_distractor_tokens() {
+        let (graph, fragments, mut plan) = fixture_plan_with_distractor();
+        plan.fragments[0].steps[0].output_label = "res".to_owned();
+
+        assert_eq!(validate_plan(&graph, &fragments, &plan), Ok(()));
+    }
+
+    #[test]
+    fn identifier_scanner_uses_exact_ascii_token_boundaries() {
+        assert_eq!(
+            ascii_identifier_tokens("res result result2 _result String bytes naïve")
+                .collect::<Vec<_>>(),
+            vec![
+                "res", "result", "result2", "_result", "String", "bytes", "na", "ve"
+            ]
+        );
     }
 
     #[test]

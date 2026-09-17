@@ -284,16 +284,28 @@ impl NameAllocator {
     }
 
     pub(super) fn allocate_identifier(&mut self) -> Result<String, RenderError> {
+        self.allocate_identifier_avoiding(&std::collections::BTreeSet::new())
+    }
+
+    pub(super) fn allocate_identifier_avoiding(
+        &mut self,
+        forbidden: &std::collections::BTreeSet<String>,
+    ) -> Result<String, RenderError> {
         if self.allocated_count >= MAX_ALLOCATED_NAMES {
             return Err(RenderError::NameExhausted);
         }
 
-        for _ in 0..=RESERVED_WORDS.len() + LEGACY_HELPER_IDENTIFIERS.len() {
+        let maximum_skips = RESERVED_WORDS
+            .len()
+            .checked_add(LEGACY_HELPER_IDENTIFIERS.len())
+            .and_then(|count| count.checked_add(forbidden.len()))
+            .ok_or(RenderError::NameExhausted)?;
+        for _ in 0..=maximum_skips {
             let ordinal = self.next_ordinal;
             let next_ordinal = ordinal.checked_add(1).ok_or(RenderError::NameExhausted)?;
             let candidate = encode_candidate(&self.profile, ordinal)?;
             self.next_ordinal = next_ordinal;
-            if is_valid_identifier(&candidate) {
+            if is_valid_identifier(&candidate) && !forbidden.contains(&candidate) {
                 self.allocated_count = self
                     .allocated_count
                     .checked_add(1)
@@ -415,6 +427,26 @@ pub(super) fn is_valid_identifier(candidate: &str) -> bool {
         && !candidate.as_bytes().windows(2).any(|pair| pair == b"__")
         && !is_reserved_word(candidate)
         && !LEGACY_HELPER_IDENTIFIERS.contains(&candidate)
+}
+
+pub(super) fn ascii_identifier_tokens(input: &str) -> impl Iterator<Item = &str> {
+    let bytes = input.as_bytes();
+    let mut index = 0;
+    std::iter::from_fn(move || {
+        while index < bytes.len() && !(bytes[index].is_ascii_alphabetic() || bytes[index] == b'_') {
+            index += 1;
+        }
+        if index == bytes.len() {
+            return None;
+        }
+        let start = index;
+        index += 1;
+        while index < bytes.len() && (bytes[index].is_ascii_alphanumeric() || bytes[index] == b'_')
+        {
+            index += 1;
+        }
+        Some(&input[start..index])
+    })
 }
 
 #[cfg(test)]

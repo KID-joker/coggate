@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::generation::{
     NodeKind, ValidatedSemanticGraph,
@@ -6,13 +6,14 @@ use crate::generation::{
 };
 
 use super::{
+    emitter::emit_distractor,
     error::RenderError,
     model::{
         DisplayDistractor, DisplayDistractorStep, DisplayFragment, DisplayStep, DisplayStepKind,
         DistractorOperation, HelperSemantic, MAX_DISTRACTOR_SEED_BYTES, MIN_DISTRACTOR_SEED_BYTES,
         ObfuscationProfile, RenderLanguage, RenderPlan, TemplateFamily,
     },
-    names::NameAllocator,
+    names::{NameAllocator, ascii_identifier_tokens},
     obfuscation::{
         plan_fragment_literal, sample_guard_value, sample_numeric_style, sample_template_family,
         used_helper_semantics,
@@ -59,15 +60,6 @@ pub(super) fn plan_rendering(
         })
         .collect::<Result<Vec<_>, RenderError>>()?;
 
-    let distractor_name_count = distractor
-        .as_ref()
-        .map_or(0, |draft| 1 + draft.steps.len() * 2);
-    let allocated_name_count =
-        graph.topological_nodes().len() * 2 + fragments.len() + distractor_name_count;
-    let mut allocator = NameAllocator::new(random)?;
-    let allocated_names = (0..allocated_name_count)
-        .map(|_| allocator.allocate_identifier())
-        .collect::<Result<Vec<_>, _>>()?;
     let mut used_semantics = used_helper_semantics(
         graph,
         obfuscation
@@ -87,6 +79,22 @@ pub(super) fn plan_rendering(
                 .map(|step| HelperSemantic::Operation(step.operation.operation_kind())),
         );
     }
+    let forbidden_effective_names = distractor
+        .as_ref()
+        .map(|draft| distractor_fixed_identifier_tokens(draft, &used_semantics))
+        .transpose()?
+        .unwrap_or_default();
+    let effective_name_count = graph.topological_nodes().len() * 2 + fragments.len();
+    let distractor_name_count = distractor
+        .as_ref()
+        .map_or(0, |draft| 1 + draft.steps.len() * 2);
+    let mut allocator = NameAllocator::new(random)?;
+    let allocated_names = (0..effective_name_count)
+        .map(|_| allocator.allocate_identifier_avoiding(&forbidden_effective_names))
+        .collect::<Result<Vec<_>, _>>()?;
+    let allocated_distractor_names = (0..distractor_name_count)
+        .map(|_| allocator.allocate_identifier())
+        .collect::<Result<Vec<_>, _>>()?;
     let aliases = used_semantics
         .into_iter()
         .map(|semantic| {
@@ -97,6 +105,7 @@ pub(super) fn plan_rendering(
         .collect::<Result<BTreeMap<_, _>, _>>()?;
     let profile = ObfuscationProfile::new(aliases);
     let mut names = allocated_names.into_iter();
+    let mut distractor_names = allocated_distractor_names.into_iter();
 
     let steps = graph
         .topological_nodes()
@@ -155,14 +164,14 @@ pub(super) fn plan_rendering(
 
     let distractor = distractor
         .map(|draft| {
-            let heading = names.next().ok_or(RenderError::InvalidPlan)?;
+            let heading = distractor_names.next().ok_or(RenderError::InvalidPlan)?;
             let steps = draft
                 .steps
                 .into_iter()
                 .map(|step| {
                     Ok(DisplayDistractorStep {
-                        output_label: names.next().ok_or(RenderError::InvalidPlan)?,
-                        local_name: names.next().ok_or(RenderError::InvalidPlan)?,
+                        output_label: distractor_names.next().ok_or(RenderError::InvalidPlan)?,
+                        local_name: distractor_names.next().ok_or(RenderError::InvalidPlan)?,
                         template: step.template,
                         numeric_style: step.numeric_style,
                         guard_value: step.guard_value,
@@ -179,7 +188,7 @@ pub(super) fn plan_rendering(
             })
         })
         .transpose()?;
-    if names.next().is_some() {
+    if names.next().is_some() || distractor_names.next().is_some() {
         return Err(RenderError::InvalidPlan);
     }
 
@@ -204,6 +213,45 @@ struct DistractorStepDraft {
     numeric_style: super::model::NumericStyle,
     guard_value: Option<u8>,
     operation: DistractorOperation,
+}
+
+fn distractor_fixed_identifier_tokens(
+    draft: &DistractorDraft,
+    used_semantics: &BTreeSet<HelperSemantic>,
+) -> Result<BTreeSet<String>, RenderError> {
+    // Double underscores make probe-only names impossible allocator outputs, so every real token
+    // can stay in the forbidden set without maintaining a separate allowlist.
+    let aliases = used_semantics
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(index, semantic)| (semantic, format!("__ProbeAlias{index}")))
+        .collect::<BTreeMap<_, _>>();
+    let steps = draft
+        .steps
+        .iter()
+        .enumerate()
+        .map(|(index, step)| DisplayDistractorStep {
+            output_label: format!("__ProbeOutput{index}"),
+            local_name: format!("__ProbeLocal{index}"),
+            template: step.template,
+            numeric_style: step.numeric_style,
+            guard_value: step.guard_value,
+            operation: step.operation.clone(),
+        })
+        .collect();
+    let probe = DisplayDistractor {
+        heading: "__ProbeHeading".to_owned(),
+        language: draft.language,
+        seed_value: draft.seed_value.clone(),
+        literal_plan: draft.literal_plan.clone(),
+        steps,
+    };
+    let profile = ObfuscationProfile::new(aliases);
+    let rendered = emit_distractor(&probe, &profile)?;
+    Ok(ascii_identifier_tokens(&rendered)
+        .map(str::to_owned)
+        .collect())
 }
 
 fn plan_distractor(random: &mut impl RandomSource) -> Result<DistractorDraft, RenderError> {
@@ -295,7 +343,8 @@ mod tests {
                 DisplayStepKind, DistractorOperation, FragmentLiteralPlan, HelperSemantic,
                 NumericStyle, RenderLanguage, RenderPlan, TemplateFamily,
             },
-            names::{MAX_ALLOCATED_NAMES, MAX_IDENTIFIER_BYTES, NameAllocator},
+            names::{MAX_ALLOCATED_NAMES, MAX_IDENTIFIER_BYTES},
+            validate::validate_plan,
         },
         test_random::DeterministicRandom,
     };
@@ -648,6 +697,47 @@ mod tests {
     }
 
     #[test]
+    fn every_boundary_plan_passes_distractor_text_isolation_validation() {
+        for (fragment_count, operation_count) in [(3, 4), (4, 4), (5, 8)] {
+            let graph = boundary_graph(fragment_count, operation_count);
+            let fragments = boundary_fragments(fragment_count);
+            for seed in 0_u8..=127 {
+                let mut random = DeterministicRandom::new([seed; 32]);
+                let plan = plan_rendering(&graph, &fragments, &mut random).unwrap();
+                assert_eq!(
+                    validate_plan(&graph, &fragments, &plan),
+                    Ok(()),
+                    "fragment count {fragment_count}, operation count {operation_count}, seed {seed}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn seed_120_avoids_the_known_distractor_prose_collision() {
+        let graph = boundary_graph(3, 4);
+        let fragments = boundary_fragments(3);
+        let mut random = DeterministicRandom::new([120; 32]);
+
+        let plan = plan_rendering(&graph, &fragments, &mut random).unwrap();
+
+        assert!(plan.distractor.is_some());
+        assert!(
+            !plan
+                .fragments
+                .iter()
+                .flat_map(|fragment| std::iter::once(fragment.heading.as_str()).chain(
+                    fragment
+                        .steps
+                        .iter()
+                        .flat_map(|step| [step.output_label.as_str(), step.local_name.as_str()]),
+                ))
+                .any(|name| name == "It")
+        );
+        assert_eq!(validate_plan(&graph, &fragments, &plan), Ok(()));
+    }
+
+    #[test]
     fn allocates_unique_bounded_names_and_contiguous_balanced_chunks() {
         let graph = valid_graph();
 
@@ -872,22 +962,6 @@ mod tests {
         );
         assert_eq!(numeric_kinds, BTreeSet::from([0, 1, 2]));
         assert_eq!(literal_kinds, BTreeSet::from([0, 1, 2]));
-    }
-
-    #[test]
-    fn exact_worst_case_allocation_uses_48_names_and_the_49th_fails_closed() {
-        let allocation_ceiling = 13 * 2 + 5 + 1 + 2 * 2 + 12;
-        assert_eq!(allocation_ceiling, MAX_ALLOCATED_NAMES);
-
-        let mut random = DeterministicRandom::new([211; 32]);
-        let mut allocator = NameAllocator::new(&mut random).unwrap();
-        for _ in 0..allocation_ceiling {
-            allocator.allocate_identifier().unwrap();
-        }
-        assert_eq!(
-            allocator.allocate_identifier(),
-            Err(RenderError::NameExhausted)
-        );
     }
 
     fn expected_semantics(
