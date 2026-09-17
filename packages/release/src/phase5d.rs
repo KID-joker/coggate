@@ -122,6 +122,8 @@ pub struct VerifiedArtifact {
     tool_versions: BTreeMap<String, String>,
     files: Vec<VerifiedFile>,
     tree_digest: String,
+    manifest: VerifiedFile,
+    checksums: VerifiedFile,
 }
 
 impl VerifiedArtifact {
@@ -142,6 +144,12 @@ impl VerifiedArtifact {
     }
     pub fn tree_digest(&self) -> &str {
         &self.tree_digest
+    }
+    pub fn manifest_file(&self) -> &VerifiedFile {
+        &self.manifest
+    }
+    pub fn checksums_file(&self) -> &VerifiedFile {
+        &self.checksums
     }
     pub fn target_os(&self) -> &'static str {
         self.target.os()
@@ -403,6 +411,12 @@ fn verify_phase5d_artifact_inner(
     let checksum_disk = disk.get(CHECKSUMS).ok_or(Phase5dError::Invalid)?;
     let manifest_bytes = read_metadata(manifest_disk)?;
     let checksum_bytes = read_metadata(checksum_disk)?;
+    let manifest_size =
+        u64::try_from(manifest_bytes.len()).map_err(|_| Phase5dError::MetadataLimit)?;
+    let manifest_digest = hex::encode(Sha256::digest(&manifest_bytes));
+    let checksum_size =
+        u64::try_from(checksum_bytes.len()).map_err(|_| Phase5dError::MetadataLimit)?;
+    let checksum_digest = hex::encode(Sha256::digest(&checksum_bytes));
     let (files, tools) = validate_manifest(&manifest_bytes, expected)?;
 
     validate_directories(&directories, &files)?;
@@ -447,8 +461,11 @@ fn verify_phase5d_artifact_inner(
             sha256: digest,
         });
     }
-    let manifest_hash =
-        hash_checked(manifest_disk, root, &directories, MAX_METADATA_BYTES as u64)?.1;
+    let (final_manifest_size, manifest_hash) =
+        hash_checked(manifest_disk, root, &directories, MAX_METADATA_BYTES as u64)?;
+    if final_manifest_size != manifest_size || manifest_hash != manifest_digest {
+        return Err(Phase5dError::Changed);
+    }
     let checksums = parse_checksums(&checksum_bytes)?;
     let wanted_checksums = actual_payload
         .into_iter()
@@ -474,12 +491,9 @@ fn verify_phase5d_artifact_inner(
 
     // SHA256SUMS is intentionally not self-hashed, so give it its own final
     // handle-identity check before accepting the parsed bytes.
-    let (checksum_size, checksum_hash) =
+    let (final_checksum_size, checksum_hash) =
         hash_checked(checksum_disk, root, &directories, MAX_METADATA_BYTES as u64)?;
-    if checksum_size
-        != u64::try_from(checksum_bytes.len()).map_err(|_| Phase5dError::MetadataLimit)?
-        || checksum_hash != hex::encode(Sha256::digest(&checksum_bytes))
-    {
+    if final_checksum_size != checksum_size || checksum_hash != checksum_digest {
         return Err(Phase5dError::Changed);
     }
     verify_directories(root, &directories)?;
@@ -491,6 +505,16 @@ fn verify_phase5d_artifact_inner(
         tool_versions: tools,
         files: verified,
         tree_digest,
+        manifest: VerifiedFile {
+            path: MANIFEST.to_owned(),
+            size: manifest_size,
+            sha256: manifest_digest,
+        },
+        checksums: VerifiedFile {
+            path: CHECKSUMS.to_owned(),
+            size: checksum_size,
+            sha256: checksum_digest,
+        },
     })
 }
 
@@ -696,7 +720,7 @@ fn hash_checked(
     }
     let mut digest = Sha256::new();
     let mut seen = 0_u64;
-    let mut buffer = [0_u8; READ_BUFFER_BYTES];
+    let mut buffer = vec![0_u8; READ_BUFFER_BYTES];
     loop {
         let count = opened.read(&mut buffer).map_err(|_| Phase5dError::Io)?;
         if count == 0 {
