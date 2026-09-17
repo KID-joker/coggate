@@ -10,6 +10,7 @@ name = "agentgate-release"
 path = "src/main.rs"
 
 [dependencies]
+getrandom.workspace = true
 hex.workspace = true
 serde.workspace = true
 serde_json.workspace = true

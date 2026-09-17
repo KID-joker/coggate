@@ -113,12 +113,21 @@ impl ReleaseDecision {
 
 impl EvidenceSet {
     pub fn load(root: &Path, commit: &str) -> Result<Self, EvidenceError> {
+        Self::load_inner(root, commit, false)
+    }
+
+    /// Bundle roots add only bundle metadata and the tracked suite beside evidence.
+    pub(crate) fn load_bundle_root(root: &Path, commit: &str) -> Result<Self, EvidenceError> {
+        Self::load_inner(root, commit, true)
+    }
+
+    fn load_inner(root: &Path, commit: &str, bundle_root: bool) -> Result<Self, EvidenceError> {
         if !valid_commit(commit) {
             return Err(EvidenceError::Invalid);
         }
         let mut watched = Vec::new();
         watch_root(root, &mut watched)?;
-        exact_tree(root, &mut watched)?;
+        exact_tree(root, &mut watched, bundle_root)?;
 
         let receipts = receipt_map(root, commit)?;
         let mut receipt_digests = BTreeMap::new();
@@ -413,12 +422,20 @@ fn watch_root(root: &Path, watched: &mut Vec<(PathBuf, DirIdentity)>) -> Result<
     watch_dir(root, watched)
 }
 
-fn exact_tree(root: &Path, watched: &mut Vec<(PathBuf, DirIdentity)>) -> Result<(), EvidenceError> {
-    exact_children(
-        root,
-        &[("receipts", true), ("phase5d", true), ("phase6a", true)],
-        watched,
-    )?;
+fn exact_tree(
+    root: &Path,
+    watched: &mut Vec<(PathBuf, DirIdentity)>,
+    bundle_root: bool,
+) -> Result<(), EvidenceError> {
+    let mut root_children = vec![("receipts", true), ("phase5d", true), ("phase6a", true)];
+    if bundle_root {
+        root_children.extend([
+            ("manifest.json", false),
+            ("SHA256SUMS", false),
+            ("suite", true),
+        ]);
+    }
+    exact_children(root, &root_children, watched)?;
     let receipts = root.join("receipts");
     exact_children(&receipts, &RECEIPT_FILES.map(|name| (name, false)), watched)?;
     let phase5d = root.join("phase5d");
