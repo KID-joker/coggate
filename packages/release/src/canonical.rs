@@ -222,19 +222,24 @@ impl<'de> Visitor<'de> for StrictJsonVisitor {
 
 fn is_windows_reserved_device_name(component: &str) -> bool {
     let basename = component.split('.').next().unwrap_or(component);
-    let bytes = basename.as_bytes();
 
     basename.eq_ignore_ascii_case("CON")
         || basename.eq_ignore_ascii_case("PRN")
         || basename.eq_ignore_ascii_case("AUX")
         || basename.eq_ignore_ascii_case("NUL")
-        || (matches!(bytes, [_, _, _, b'1'..=b'9'])
-            && ((bytes[0].eq_ignore_ascii_case(&b'C')
-                && bytes[1].eq_ignore_ascii_case(&b'O')
-                && bytes[2].eq_ignore_ascii_case(&b'M'))
-                || (bytes[0].eq_ignore_ascii_case(&b'L')
-                    && bytes[1].eq_ignore_ascii_case(&b'P')
-                    && bytes[2].eq_ignore_ascii_case(&b'T'))))
+        || is_windows_numbered_device_name(basename)
+}
+
+fn is_windows_numbered_device_name(basename: &str) -> bool {
+    let (Some(prefix), Some(suffix)) = (basename.get(..3), basename.get(3..)) else {
+        return false;
+    };
+
+    (prefix.eq_ignore_ascii_case("COM") || prefix.eq_ignore_ascii_case("LPT"))
+        && matches!(
+            suffix,
+            "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
+        )
 }
 
 #[derive(Serialize)]
