@@ -22,6 +22,7 @@ const MAX_CASE_DURATION_MS: u64 = 3_600_000;
 const RELEASE_CASES: usize = 1_000;
 const QUICK_CASES: usize = 100;
 const MAX_QUESTION_BYTES: usize = 12_288;
+const RELEASE_SCORED_NAMESPACE: &str = "phase6a-release-scored-v1";
 
 #[derive(Debug, Error, Eq, PartialEq)]
 pub enum Phase6aError {
@@ -240,7 +241,7 @@ fn tracked_suite() -> Result<Manifest, Phase6aError> {
     let quick = suite.profiles.get("quick");
     let release = suite.profiles.get("release");
     if suite.schema_version != 1
-        || suite.suite_version != "1.0"
+        || suite.suite_version != "1.1"
         || suite.generator_version != "1.0"
         || profile_names != BTreeSet::from(["quick", "release"])
         || quick.is_none_or(|profile| {
@@ -338,7 +339,7 @@ fn validate_report(report: &Report, suite: &Manifest) -> Result<(), Phase6aError
     }
     let mut solved = 0usize;
     for (index, case) in report.cases.iter().enumerate() {
-        if case.case_id != case_id(&manifest_digest, index)
+        if case.case_id != case_id(&manifest_digest, RELEASE_SCORED_NAMESPACE, index)
             || case.duration_ms > MAX_CASE_DURATION_MS
             || !matches!(
                 (case.outcome, case.reason),
@@ -397,13 +398,15 @@ fn manifest_digest(suite: &Manifest) -> Result<String, Phase6aError> {
     input.extend(canonical);
     Ok(hex::encode(Sha256::digest(input)))
 }
-fn case_id(manifest_digest: &str, index: usize) -> String {
+fn case_id(manifest_digest: &str, scored_namespace: &str, index: usize) -> String {
     let mut hash = Sha256::new();
     hash.update(CASE_DOMAIN);
     hash.update((manifest_digest.len() as u64).to_be_bytes());
     hash.update(manifest_digest.as_bytes());
     hash.update((b"scored".len() as u64).to_be_bytes());
     hash.update(b"scored");
+    hash.update((scored_namespace.len() as u64).to_be_bytes());
+    hash.update(scored_namespace.as_bytes());
     hash.update((index as u64).to_be_bytes());
     hex::encode(hash.finalize())
 }

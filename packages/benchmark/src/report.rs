@@ -342,7 +342,8 @@ pub fn verify_report(
         return Err(ReportError::InvalidSummary);
     }
     for (index, case) in report.cases.iter().enumerate() {
-        let expected_id = scored_case_id(suite, index).map_err(|_| ReportError::InvalidCase)?;
+        let expected_id = scored_case_id(suite, report.binding.profile, index)
+            .map_err(|_| ReportError::InvalidCase)?;
         if case.case_id != expected_id {
             return Err(ReportError::InvalidCase);
         }

@@ -128,7 +128,7 @@ fn rejects_path_like_subjects_control_characters_and_unbounded_durations() {
 }
 
 #[test]
-fn rejects_arbitrary_reordered_and_cross_profile_case_ids() {
+fn rejects_arbitrary_and_reordered_case_ids() {
     let suite = SuiteManifest::tracked_v1().unwrap();
 
     let mut arbitrary = cases(ProfileName::Quick, 5);
@@ -150,35 +150,27 @@ fn rejects_arbitrary_reordered_and_cross_profile_case_ids() {
         verify_report(&report.to_canonical_json().unwrap(), &suite),
         Err(ReportError::InvalidCase)
     );
+}
 
-    let quick_id = Corpus::generate(&suite, ProfileName::Quick)
+#[test]
+fn rejects_a_same_index_release_case_id_in_a_quick_report() {
+    let suite = SuiteManifest::tracked_v1().unwrap();
+    let release_id = Corpus::generate(&suite, ProfileName::Release)
         .unwrap()
         .scored()[0]
         .id()
         .to_owned();
-    let release_id = Corpus::generate(&suite, ProfileName::Release)
-        .unwrap()
-        .scored()[100]
-        .id()
-        .to_owned();
-    let mut release_cases = cases(ProfileName::Release, 0);
-    release_cases[0] = ReportCase::new(
+    let mut quick_cases = cases(ProfileName::Quick, 0);
+    quick_cases[0] = ReportCase::new(
         release_id,
         Outcome::Unsolved,
         Some(NoGuessReason::NoCandidate),
         0,
     )
     .unwrap();
-    release_cases[100] = ReportCase::new(
-        quick_id,
-        Outcome::Unsolved,
-        Some(NoGuessReason::NoCandidate),
-        0,
-    )
-    .unwrap();
     let binding =
-        ReportBinding::baseline(&suite, ProfileName::Release, "direct", tool_versions()).unwrap();
-    let report = QualificationReport::from_cases(binding, release_cases).unwrap();
+        ReportBinding::baseline(&suite, ProfileName::Quick, "direct", tool_versions()).unwrap();
+    let report = QualificationReport::from_cases(binding, quick_cases).unwrap();
     assert_eq!(
         verify_report(&report.to_canonical_json().unwrap(), &suite),
         Err(ReportError::InvalidCase)

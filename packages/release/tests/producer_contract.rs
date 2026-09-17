@@ -13,7 +13,8 @@ use tempfile::TempDir;
 const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
 // Fixed verifier-compatible value for this entirely synthetic report fixture.
 const SYNTHETIC_SUITE_DIGEST: &str =
-    "1536923168ea3f72ee14c42fcdf68cb03407cda2028823fdb81ed4deb2341e3f";
+    "6861e9789da3f7403aea0198396100581731f85e127a62c1bb526d9b50b3373a";
+const RELEASE_SCORED_NAMESPACE: &[u8] = b"phase6a-release-scored-v1";
 
 #[test]
 fn sanitizer_producer_creates_a_self_verifying_payload_free_receipt() {
@@ -191,6 +192,8 @@ fn case_id(index: usize) -> String {
     hash.update(SYNTHETIC_SUITE_DIGEST.as_bytes());
     hash.update((b"scored".len() as u64).to_be_bytes());
     hash.update(b"scored");
+    hash.update((RELEASE_SCORED_NAMESPACE.len() as u64).to_be_bytes());
+    hash.update(RELEASE_SCORED_NAMESPACE);
     hash.update((index as u64).to_be_bytes());
     hex::encode(hash.finalize())
 }
@@ -202,7 +205,7 @@ fn signed_report(subject: &str, solved: usize) -> Vec<u8> {
     }).collect::<Vec<_>>();
     let value = json!({
         "schema_version":1,
-        "binding":{"suite_version":"1.0","generator_version":"1.0","profile":"release","manifest_digest":SYNTHETIC_SUITE_DIGEST,"kind":"baseline","subject_id":subject,"subject_version":"1.0","threshold":{"comparison":"at_most","percent":5},"tool_versions":{"c":"cc 1.0","cpp":"c++ 1.0","go":"go1.23.6","java":"openjdk 21","rust":"rustc 1.85.0"}},
+        "binding":{"suite_version":"1.1","generator_version":"1.0","profile":"release","manifest_digest":SYNTHETIC_SUITE_DIGEST,"kind":"baseline","subject_id":subject,"subject_version":"1.0","threshold":{"comparison":"at_most","percent":5},"tool_versions":{"c":"cc 1.0","cpp":"c++ 1.0","go":"go1.23.6","java":"openjdk 21","rust":"rustc 1.85.0"}},
         "cases":cases,
         "summary":{"total":1000,"solved":solved,"qualified":solved <= 50,"failed_thresholds":if solved <= 50 { json!([]) } else { json!([subject]) }},
         "payload_digest":""

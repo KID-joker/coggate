@@ -150,7 +150,7 @@ fn generate_role(
             let index = u64::try_from(index).map_err(|_| CorpusError::InvalidIndex)?;
             let benchmark =
                 generate_benchmark_case(suite.generator_version(), namespace.as_bytes(), index)?;
-            let id = case_id(suite.digest(), role, index)?;
+            let id = case_id(suite.digest(), role, namespace, index)?;
             let question_digest = question_digest(benchmark.question())?;
             Ok(CorpusCase {
                 id,
@@ -161,18 +161,31 @@ fn generate_role(
         .collect()
 }
 
-fn case_id(manifest_digest: &str, role: &[u8], index: u64) -> Result<String, CorpusError> {
+fn case_id(
+    manifest_digest: &str,
+    role: &[u8],
+    namespace: &str,
+    index: u64,
+) -> Result<String, CorpusError> {
     let mut hash = Sha256::new();
     hash.update(CASE_DOMAIN);
     push_field(&mut hash, manifest_digest.as_bytes())?;
     push_field(&mut hash, role)?;
+    push_field(&mut hash, namespace.as_bytes())?;
     hash.update(index.to_be_bytes());
     Ok(hex::encode(hash.finalize()))
 }
 
-pub(crate) fn scored_case_id(suite: &SuiteManifest, index: usize) -> Result<String, CorpusError> {
+pub(crate) fn scored_case_id(
+    suite: &SuiteManifest,
+    profile_name: ProfileName,
+    index: usize,
+) -> Result<String, CorpusError> {
+    let profile = suite
+        .profile(profile_name)
+        .ok_or(CorpusError::MissingProfile)?;
     let index = u64::try_from(index).map_err(|_| CorpusError::InvalidIndex)?;
-    case_id(suite.digest(), b"scored", index)
+    case_id(suite.digest(), b"scored", profile.scored_namespace(), index)
 }
 
 fn question_digest(question: &str) -> Result<String, CorpusError> {

@@ -57,3 +57,12 @@ fn release_profile_has_exact_contract_counts() {
     assert_eq!(corpus.calibration().len(), 1_000);
     assert_eq!(corpus.scored().len(), 1_000);
 }
+
+#[test]
+fn same_index_scored_case_ids_are_profile_bound() {
+    let suite = SuiteManifest::tracked_v1().unwrap();
+    let quick = Corpus::generate(&suite, ProfileName::Quick).unwrap();
+    let release = Corpus::generate(&suite, ProfileName::Release).unwrap();
+
+    assert_ne!(quick.scored()[0].id(), release.scored()[0].id());
+}

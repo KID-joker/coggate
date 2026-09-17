@@ -189,7 +189,7 @@ impl SuiteManifest {
 
     fn validate(&self) -> Result<(), ManifestError> {
         if self.schema_version != 1
-            || self.suite_version != "1.0"
+            || self.suite_version != "1.1"
             || self.generator_version != agentgate_core::contracts::GENERATOR_VERSION_V1
         {
             return Err(ManifestError::Invalid("unsupported suite identity"));

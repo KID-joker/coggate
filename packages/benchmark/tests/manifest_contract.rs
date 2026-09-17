@@ -5,7 +5,7 @@ fn loads_the_tracked_v1_suite() {
     let suite = SuiteManifest::tracked_v1().unwrap();
 
     assert_eq!(suite.schema_version(), 1);
-    assert_eq!(suite.suite_version(), "1.0");
+    assert_eq!(suite.suite_version(), "1.1");
     assert_eq!(suite.generator_version(), "1.0");
     assert_eq!(
         suite.profile(ProfileName::Quick).unwrap().scored_cases(),

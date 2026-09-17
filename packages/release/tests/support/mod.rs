@@ -11,7 +11,8 @@ use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 
 pub const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
-const SUITE_DIGEST: &str = "1536923168ea3f72ee14c42fcdf68cb03407cda2028823fdb81ed4deb2341e3f";
+const SUITE_DIGEST: &str = "6861e9789da3f7403aea0198396100581731f85e127a62c1bb526d9b50b3373a";
+const RELEASE_SCORED_NAMESPACE: &[u8] = b"phase6a-release-scored-v1";
 
 pub fn evidence_fixture(qualified: bool, payload: Option<&[u8]>) -> TempDir {
     let temp = TempDir::new().unwrap();
@@ -135,7 +136,7 @@ pub fn signed_report(subject: &str, solved: usize) -> Vec<u8> {
     }).collect::<Vec<_>>();
     let report = json!({
         "schema_version":1,
-        "binding":{"suite_version":"1.0","generator_version":"1.0","profile":"release","manifest_digest":SUITE_DIGEST,"kind":if llm {"llm"} else {"baseline"},"subject_id":subject,"subject_version":if llm {"run-1"} else {"1.0"},"threshold":threshold,"tool_versions":tools},
+        "binding":{"suite_version":"1.1","generator_version":"1.0","profile":"release","manifest_digest":SUITE_DIGEST,"kind":if llm {"llm"} else {"baseline"},"subject_id":subject,"subject_version":if llm {"run-1"} else {"1.0"},"threshold":threshold,"tool_versions":tools},
         "cases":cases,
         "summary":{"total":1000,"solved":solved,"qualified":qualified,"failed_thresholds":if qualified {json!([])} else {json!([subject])}},
         "payload_digest":""
@@ -181,6 +182,8 @@ fn case_id(index: usize) -> String {
     hash.update(SUITE_DIGEST.as_bytes());
     hash.update((b"scored".len() as u64).to_be_bytes());
     hash.update(b"scored");
+    hash.update((RELEASE_SCORED_NAMESPACE.len() as u64).to_be_bytes());
+    hash.update(RELEASE_SCORED_NAMESPACE);
     hash.update((index as u64).to_be_bytes());
     hex::encode(hash.finalize())
 }

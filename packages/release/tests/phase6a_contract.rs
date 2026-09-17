@@ -8,6 +8,7 @@ use sha2::{Digest, Sha256};
 const REPORT_DOMAIN: &[u8] = b"agentgate-benchmark-report-v1";
 const MANIFEST_DOMAIN: &[u8] = b"agentgate-suite-manifest-v1";
 const CASE_DOMAIN: &[u8] = b"agentgate-benchmark-case-v1";
+const RELEASE_SCORED_NAMESPACE: &[u8] = b"phase6a-release-scored-v1";
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -60,6 +61,8 @@ fn case_id(index: usize) -> String {
     hash.update(digest.as_bytes());
     hash.update((b"scored".len() as u64).to_be_bytes());
     hash.update(b"scored");
+    hash.update((RELEASE_SCORED_NAMESPACE.len() as u64).to_be_bytes());
+    hash.update(RELEASE_SCORED_NAMESPACE);
     hash.update((index as u64).to_be_bytes());
     hex::encode(hash.finalize())
 }
@@ -95,7 +98,7 @@ fn valid_report(subject: &str, solved: usize) -> Value {
     } else {
         json!([subject])
     };
-    json!({"schema_version":1,"binding":{"suite_version":"1.0","generator_version":"1.0","profile":"release","manifest_digest":manifest_digest(),"kind":kind,"subject_id":subject,"subject_version":version,"threshold":threshold,"tool_versions":tools},"cases":cases,"summary":{"total":1000,"solved":solved,"qualified":qualified,"failed_thresholds":failed},"payload_digest":""})
+    json!({"schema_version":1,"binding":{"suite_version":"1.1","generator_version":"1.0","profile":"release","manifest_digest":manifest_digest(),"kind":kind,"subject_id":subject,"subject_version":version,"threshold":threshold,"tool_versions":tools},"cases":cases,"summary":{"total":1000,"solved":solved,"qualified":qualified,"failed_thresholds":failed},"payload_digest":""})
 }
 
 fn producer_json(value: &Value, digest: Option<&str>) -> Vec<u8> {
