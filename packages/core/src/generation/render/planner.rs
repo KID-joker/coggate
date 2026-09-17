@@ -41,7 +41,7 @@ pub(super) fn plan_rendering(
     let allocated_name_count =
         graph.topological_nodes().len() * 2 + fragments.len() + usize::from(has_distractor);
     let allocated_names = {
-        let mut allocator = NameAllocator::new(random);
+        let mut allocator = NameAllocator::new(random)?;
         (0..allocated_name_count)
             .map(|_| allocator.allocate_identifier())
             .collect::<Result<Vec<_>, _>>()?
@@ -161,7 +161,7 @@ mod tests {
         render::{
             error::RenderError,
             model::{DisplayStepKind, RenderPlan, TemplateFamily},
-            names::MAX_IDENTIFIER_BYTES,
+            names::{MAX_ALLOCATED_NAMES, MAX_IDENTIFIER_BYTES},
         },
         test_random::DeterministicRandom,
     };
@@ -492,7 +492,7 @@ mod tests {
     }
 
     #[test]
-    fn maximum_graph_with_a_distractor_allocates_all_thirty_two_names() {
+    fn maximum_graph_with_a_distractor_stays_within_the_name_limit() {
         let plan = (0_u8..=127)
             .map(|seed| plan_boundary(5, 8, seed))
             .find(|plan| plan.fragments.iter().any(|fragment| fragment.distractor))
@@ -508,6 +508,8 @@ mod tests {
         }
 
         assert_eq!(allocated.len(), 32);
+        assert_eq!(MAX_ALLOCATED_NAMES, 48);
+        assert!(allocated.len() <= MAX_ALLOCATED_NAMES);
         assert_eq!(
             plan.fragments
                 .iter()
