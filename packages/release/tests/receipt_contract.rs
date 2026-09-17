@@ -1,9 +1,11 @@
 use std::fs;
 
+use agentgate_release::canonical::{MAX_METADATA_BYTES, canonical_compact, sha256_hex};
 use agentgate_release::receipt::{
     EvidenceBinding, FileBinding, Phase5dBinding, Phase6aBinding, Receipt, ReceiptError,
     ReportRole, SanitizerBinding, write_receipt,
 };
+use serde_json::{Value, json};
 
 const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
 
@@ -36,9 +38,8 @@ fn phase6a() -> Receipt {
     .unwrap()
 }
 
-#[test]
-fn all_evidence_kinds_have_fixed_producers_and_exact_file_counts() {
-    let artifact = Receipt::new_phase5d_artifact(
+fn phase5d_artifact() -> Receipt {
+    Receipt::new_phase5d_artifact(
         COMMIT,
         Phase5dBinding {
             platform: "linux".into(),
@@ -50,8 +51,11 @@ fn all_evidence_kinds_have_fixed_producers_and_exact_file_counts() {
         },
         files(&["artifact-manifest.json", "artifact.bin"]),
     )
-    .unwrap();
-    let sanitizer = Receipt::new_phase5d_sanitizer(
+    .unwrap()
+}
+
+fn phase5d_sanitizer() -> Receipt {
+    Receipt::new_phase5d_sanitizer(
         COMMIT,
         SanitizerBinding {
             platform: "linux".into(),
@@ -62,12 +66,65 @@ fn all_evidence_kinds_have_fixed_producers_and_exact_file_counts() {
         },
         files(&["sanitizer-report.json"]),
     )
-    .unwrap();
+    .unwrap()
+}
+
+fn receipt_value(receipt: &Receipt) -> Value {
+    serde_json::from_slice(&receipt.to_canonical_json().unwrap()).unwrap()
+}
+
+fn digest_for_payload(payload: &Value) -> String {
+    let canonical_payload = canonical_compact(payload).unwrap();
+    let mut bytes = b"agentgate-release-receipt-v1".to_vec();
+    bytes.extend_from_slice(&canonical_payload);
+    sha256_hex(&bytes)
+}
+
+fn recanonicalize_with_recomputed_digest(mut value: Value) -> Vec<u8> {
+    let object = value.as_object_mut().unwrap();
+    object.remove("evidence_digest").unwrap();
+    let digest = digest_for_payload(&value);
+    value["evidence_digest"] = Value::String(digest);
+    canonical_compact(&value).unwrap()
+}
+
+fn assert_authenticated_mutation_rejected(receipt: &Receipt, mutate: impl FnOnce(&mut Value)) {
+    let mut value = receipt_value(receipt);
+    mutate(&mut value);
+    let encoded = recanonicalize_with_recomputed_digest(value);
+    assert!(Receipt::parse_and_verify(&encoded).is_err());
+}
+
+fn kind_name(evidence: &EvidenceBinding) -> &'static str {
+    match evidence {
+        EvidenceBinding::Phase5dArtifact(_) => "phase5d_artifact",
+        EvidenceBinding::Phase5dSanitizer(_) => "phase5d_sanitizer",
+        EvidenceBinding::Phase6aReport(_) => "phase6a_report",
+    }
+}
+
+#[test]
+fn all_evidence_kinds_have_fixed_producers_and_exact_file_counts() {
+    let artifact = phase5d_artifact();
+    let sanitizer = phase5d_sanitizer();
     let report = phase6a();
 
-    assert_eq!(artifact.producer_id(), "phase5d");
-    assert_eq!(sanitizer.producer_id(), "phase5d");
-    assert_eq!(report.producer_id(), "phase6a");
+    for (receipt, expected_producer, expected_count, expected_kind) in [
+        (&artifact, "phase5d", 2, "phase5d_artifact"),
+        (&sanitizer, "phase5d", 1, "phase5d_sanitizer"),
+        (&report, "phase6a", 2, "phase6a_report"),
+    ] {
+        let encoded = receipt.to_canonical_json().unwrap();
+        let parsed = Receipt::parse_and_verify(&encoded).unwrap();
+        assert_eq!(parsed.producer_id(), expected_producer);
+        assert_eq!(parsed.producer().verifier(), "phase6b-receipt-v1");
+        assert_eq!(parsed.files().len(), expected_count);
+        assert_eq!(
+            kind_name(parsed.evidence()),
+            expected_kind,
+            "round trip changed evidence kind"
+        );
+    }
     assert!(
         Receipt::new_phase5d_artifact(
             COMMIT,
@@ -90,10 +147,17 @@ fn phase6a_receipt_is_canonical_and_domain_separated() {
         Receipt::parse_and_verify(&encoded).unwrap().digest(),
         receipt.digest()
     );
-    assert_ne!(
-        receipt.digest(),
-        agentgate_release::canonical::sha256_hex(&encoded)
-    );
+    let mut payload = receipt_value(&receipt);
+    let supplied_digest = payload
+        .as_object_mut()
+        .unwrap()
+        .remove("evidence_digest")
+        .unwrap()
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(digest_for_payload(&payload), supplied_digest);
+    assert_eq!(receipt.digest(), supplied_digest);
 }
 
 #[test]
@@ -128,58 +192,79 @@ fn receipt_rejects_invalid_ordering_and_constructor_inputs() {
 }
 
 #[test]
-fn parser_revalidates_each_authenticated_field_and_rejects_ambiguous_json() {
+fn parser_revalidates_authenticated_invariants_after_digest_recomputation() {
     let receipt = phase6a();
-    let encoded = String::from_utf8(receipt.to_canonical_json().unwrap()).unwrap();
-    let digest = receipt.digest().to_owned();
-    for (needle, replacement) in [
-        ("\"schema_version\":1", "\"schema_version\":2"),
-        ("phase6a_report", "unknown_report"),
-        (COMMIT, "1123456789abcdef0123456789abcdef01234567"),
-        ("\"id\":\"phase6a\"", "\"id\":\"other\""),
-        ("report.json", "zzz.json"),
-        ("\"size\":12", "\"size\":13"),
-        (&"c".repeat(64), &"e".repeat(64)),
-        ("\"suite_version\":\"1.0\"", "\"suite_version\":\"2.0\""),
-        (&digest, &"0".repeat(64)),
+    for mutate in [
+        |value: &mut Value| value["files"][0]["size"] = json!(0),
+        |value: &mut Value| value["files"][0]["hash"] = json!("a".repeat(63)),
+        |value: &mut Value| value["files"][0]["hash"] = json!("A".repeat(64)),
+        |value: &mut Value| value["evidence"]["binding"]["subject_id"] = json!("x\u{1}"),
+        |value: &mut Value| value["evidence"]["binding"]["suite_version"] = json!("x".repeat(129)),
+        |value: &mut Value| value["producer"]["id"] = json!("phase5d"),
+        |value: &mut Value| value["producer"]["verifier"] = json!("other"),
+        |value: &mut Value| value["files"].as_array_mut().unwrap().swap(0, 1),
+        |value: &mut Value| value["files"][1]["path"] = json!("report.json"),
+        |value: &mut Value| {
+            value["files"].as_array_mut().unwrap().pop();
+        },
     ] {
-        let mutated = encoded.replacen(needle, replacement, 1);
-        assert!(
-            Receipt::parse_and_verify(mutated.as_bytes()).is_err(),
-            "{needle}"
-        );
+        assert_authenticated_mutation_rejected(&receipt, mutate);
     }
+}
 
-    for invalid in [
-        encoded.replacen("report.md", "report.json", 1),
-        encoded.replacen("\"files\":[{\"hash\":\"c", "\"files\":[{\"hash\":\"d", 1),
-        encoded.replacen(
-            "\"schema_version\":1",
-            "\"schema_version\":1,\"extra\":true",
-            1,
-        ),
-        encoded.replacen(
-            "\"profile\":\"release\"",
-            "\"profile\":\"release\",\"extra\":true",
-            1,
-        ),
-        encoded.replacen(
-            "\"kind\":\"phase6a_report\"",
-            "\"kind\":\"phase6a_report\",\"extra\":true",
-            1,
-        ),
-        encoded.replacen(
-            "\"schema_version\":1",
-            "\"schema_version\":1,\"schema_version\":1",
-            1,
-        ),
-        encoded.replacen(
-            "\"profile\":\"release\"",
-            "\"profile\":\"release\",\"profile\":\"release\"",
-            1,
-        ),
+#[test]
+fn parser_rejects_noncanonical_and_ambiguous_inputs() {
+    let receipt = phase6a();
+    let encoded = receipt.to_canonical_json().unwrap();
+    let encoded_text = String::from_utf8(encoded.clone()).unwrap();
+    assert!(Receipt::parse_and_verify(&vec![b' '; MAX_METADATA_BYTES + 1]).is_err());
+    assert!(Receipt::parse_and_verify(b"{").is_err());
+    assert!(Receipt::parse_and_verify(format!("{encoded_text} null").as_bytes()).is_err());
+    assert!(Receipt::parse_and_verify(format!(" {encoded_text}").as_bytes()).is_err());
+
+    let value = receipt_value(&receipt);
+    let object = value.as_object().unwrap();
+    let key_reordered = format!(
+        "{{\"schema_version\":{},\"commit\":{},\"producer\":{},\"evidence\":{},\"files\":{},\"evidence_digest\":{}}}",
+        canonical_compact(&object["schema_version"])
+            .unwrap()
+            .escape_ascii(),
+        canonical_compact(&object["commit"]).unwrap().escape_ascii(),
+        canonical_compact(&object["producer"])
+            .unwrap()
+            .escape_ascii(),
+        canonical_compact(&object["evidence"])
+            .unwrap()
+            .escape_ascii(),
+        canonical_compact(&object["files"]).unwrap().escape_ascii(),
+        canonical_compact(&object["evidence_digest"])
+            .unwrap()
+            .escape_ascii(),
+    );
+    assert!(Receipt::parse_and_verify(key_reordered.as_bytes()).is_err());
+
+    let duplicate = format!("{{\"schema_version\":1,{}", &encoded_text[1..]);
+    assert!(Receipt::parse_and_verify(duplicate.as_bytes()).is_err());
+
+    for mutate in [
+        |value: &mut Value| {
+            value
+                .as_object_mut()
+                .unwrap()
+                .insert("extra".into(), json!(true));
+        },
+        |value: &mut Value| {
+            value["evidence"]["binding"]
+                .as_object_mut()
+                .unwrap()
+                .insert("extra".into(), json!(true));
+        },
     ] {
-        assert!(Receipt::parse_and_verify(invalid.as_bytes()).is_err());
+        let encoded = recanonicalize_with_recomputed_digest(receipt_value(&receipt));
+        let mut value: Value = serde_json::from_slice(&encoded).unwrap();
+        mutate(&mut value);
+        let encoded = recanonicalize_with_recomputed_digest(value);
+        assert!(Receipt::parse_and_verify(&encoded).is_err());
     }
 }
 
