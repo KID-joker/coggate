@@ -556,8 +556,6 @@ fn rejects_file_count_and_sparse_size_limits_before_reading_payloads() {
         256
     );
     write(&root, "node/lib/one-too-many.js", b"x");
-    write(&root, "node/lib/two-too-many.js", b"x");
-    write(&root, "node/lib/three-too-many.js", b"x");
     assert_eq!(
         verify_phase5d_artifact(&root, Target::LinuxX86_64),
         Err(Phase5dError::FileLimit)
