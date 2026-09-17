@@ -7,6 +7,8 @@ mod operation;
 mod operation_kind;
 mod partition;
 mod planner;
+#[cfg(test)]
+mod properties;
 #[allow(
     dead_code,
     reason = "OsRandom is constructed by the Phase 4 challenge service"
@@ -33,10 +35,6 @@ pub(crate) use candidate::{
 pub use error::GenerationError;
 pub use graph::{NodeId, NodeKind, SemanticGraphBuilder, SemanticNode, ValidatedSemanticGraph};
 pub use operation::{MAX_CONCAT_INPUTS, MAX_PERMUTATION_LENGTH, MAX_XOR_KEY_LENGTH, Operation};
-#[allow(
-    unused_imports,
-    reason = "Operation taxonomy is consumed by diversity planning"
-)]
 pub(crate) use operation_kind::{OperationFamily, OperationKind};
 pub(crate) use random::{OsRandom, RandomSource};
 pub use render::{MAX_QUESTION_BYTES, RenderLanguage, RenderMetadata, RenderedQuestion};

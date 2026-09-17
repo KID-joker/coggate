@@ -1,10 +1,6 @@
 use super::Operation;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-#[allow(
-    dead_code,
-    reason = "Operation taxonomy is consumed by diversity planning"
-)]
 pub(crate) enum OperationFamily {
     Structural,
     ByteArithmetic,
@@ -22,20 +18,13 @@ macro_rules! define_operation_kind_catalog {
         }
 
         impl OperationKind {
-            #[allow(
-                dead_code,
-                reason = "Operation taxonomy is consumed by diversity planning"
-            )]
+            #[cfg(test)]
             pub(crate) const ALL: [Self; 18] = [
                 $(
                     Self::$kind,
                 )+
             ];
 
-            #[allow(
-                dead_code,
-                reason = "Operation taxonomy is consumed by diversity planning"
-            )]
             pub(crate) const fn family(self) -> OperationFamily {
                 match self {
                     $(

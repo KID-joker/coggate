@@ -1,10 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::{
-    GenerationError, NodeId, NodeKind, Operation, SemanticGraphBuilder, ValidatedSemanticGraph,
-    evaluate_semantic_graph,
+    GenerationError, NodeId, NodeKind, OperationFamily, OperationKind, SemanticGraphBuilder,
+    ValidatedSemanticGraph, evaluate_semantic_graph,
+    motifs::{build_motif, sample_motif},
     partition::partition_with,
-    random::{RandomSource, sample_below, shuffle},
+    random::RandomSource,
     secret::Secret,
 };
 
@@ -42,63 +43,85 @@ pub(crate) fn plan_with(
     let fragment_nodes = (0..fragments.len())
         .map(|index| builder.fragment(index))
         .collect::<Result<Vec<_>, _>>()?;
-
-    let transformed_nodes = fragment_nodes
-        .into_iter()
-        .map(|fragment| {
-            let operation = match sample_below(random, 4)? {
-                0 => Operation::Reverse,
-                1 => Operation::RotateLeft(1),
-                2 => Operation::RotateRight(1),
-                3 => Operation::Xor(vec![sample_below(random, 256)? as u8]),
-                _ => return Err(GenerationError::ExecutionFailed),
-            };
-            Ok(builder.operation(operation, vec![fragment]))
-        })
-        .collect::<Result<Vec<_>, GenerationError>>()?;
-
-    let mut concat_inputs = transformed_nodes.clone();
-    shuffle(random, &mut concat_inputs)?;
-    let concat = builder.operation(Operation::Concat, concat_inputs);
-    let first_transformed = *transformed_nodes
-        .first()
-        .ok_or(GenerationError::ExecutionFailed)?;
-    let mut output = builder.operation(
-        Operation::RotateLeftDerived,
-        vec![concat, first_transformed],
-    );
-
-    if fragments.len() == 3 || fragments.len() == 4 {
-        output = builder.operation(Operation::Sha256Prefix(secret.len()), vec![output]);
-    }
+    let fragment_lengths = fragments.iter().map(Vec::len).collect::<Vec<_>>();
+    let motif = sample_motif(random)?;
+    let output = build_motif(
+        &mut builder,
+        &fragment_nodes,
+        &fragment_lengths,
+        motif,
+        random,
+    )?;
     builder.output(output);
 
     let graph = builder.validate()?;
+    let shape = validate_v1_shape(&graph)?;
     let fragment_slices = fragments.iter().map(Vec::as_slice).collect::<Vec<_>>();
     let answer = evaluate_semantic_graph(&graph, &fragment_slices)?;
-    let cross_fragment_dependency_count = cross_fragment_dependency_count(&graph)?;
-    if cross_fragment_dependency_count < 2 {
-        return Err(GenerationError::ExecutionFailed);
-    }
 
     Ok(PlannedSemantics {
         graph,
         fragments,
         answer,
-        cross_fragment_dependency_count,
+        cross_fragment_dependency_count: shape.cross_fragment_dependency_count,
     })
 }
 
-fn cross_fragment_dependency_count(
+#[derive(Debug, Eq, PartialEq)]
+pub(super) struct V1Shape {
+    pub(super) operation_count: usize,
+    pub(super) operation_families: BTreeSet<OperationFamily>,
+    pub(super) cross_fragment_dependency_count: usize,
+    pub(super) has_nonlegacy_operation: bool,
+    pub(super) directly_transformed_fragments: BTreeSet<usize>,
+}
+
+pub(super) fn validate_v1_shape(
     graph: &ValidatedSemanticGraph,
-) -> Result<usize, GenerationError> {
+) -> Result<V1Shape, GenerationError> {
+    let shape = analyze_v1_shape(graph)?;
+    let all_fragments = (0..graph.fragment_lengths().len()).collect::<BTreeSet<_>>();
+    if !(4..=8).contains(&shape.operation_count)
+        || shape.operation_families.len() < 3
+        || shape.cross_fragment_dependency_count < 2
+        || !shape.has_nonlegacy_operation
+        || shape.directly_transformed_fragments != all_fragments
+    {
+        return Err(GenerationError::ExecutionFailed);
+    }
+
+    Ok(shape)
+}
+
+fn analyze_v1_shape(graph: &ValidatedSemanticGraph) -> Result<V1Shape, GenerationError> {
     let mut provenance = BTreeMap::<NodeId, BTreeSet<usize>>::new();
-    let mut cross_fragment_dependencies = 0;
+    let mut shape = V1Shape {
+        operation_count: 0,
+        operation_families: BTreeSet::new(),
+        cross_fragment_dependency_count: 0,
+        has_nonlegacy_operation: false,
+        directly_transformed_fragments: BTreeSet::new(),
+    };
 
     for node in graph.topological_nodes() {
         let origins = match node.kind() {
             NodeKind::Fragment { index } => BTreeSet::from([*index]),
-            NodeKind::Operation { inputs, .. } => {
+            NodeKind::Operation { operation, inputs } => {
+                shape.operation_count += 1;
+                let kind = OperationKind::from(operation);
+                shape.operation_families.insert(kind.family());
+                shape.has_nonlegacy_operation |= is_nonlegacy(kind);
+
+                if kind.family() != OperationFamily::Composition {
+                    for input in inputs {
+                        if let Some(NodeKind::Fragment { index }) =
+                            graph.node(*input).map(|input_node| input_node.kind())
+                        {
+                            shape.directly_transformed_fragments.insert(*index);
+                        }
+                    }
+                }
+
                 let mut origins = BTreeSet::new();
                 for input in inputs {
                     let input_origins = provenance
@@ -107,7 +130,7 @@ fn cross_fragment_dependency_count(
                     origins.extend(input_origins.iter().copied());
                 }
                 if origins.len() >= 2 {
-                    cross_fragment_dependencies += 1;
+                    shape.cross_fragment_dependency_count += 1;
                 }
                 origins
             }
@@ -115,19 +138,32 @@ fn cross_fragment_dependency_count(
         provenance.insert(node.id(), origins);
     }
 
-    Ok(cross_fragment_dependencies)
+    Ok(shape)
+}
+
+fn is_nonlegacy(kind: OperationKind) -> bool {
+    !matches!(
+        kind,
+        OperationKind::Reverse
+            | OperationKind::RotateLeft
+            | OperationKind::RotateRight
+            | OperationKind::Xor
+            | OperationKind::Sha256Prefix
+            | OperationKind::Concat
+            | OperationKind::RotateLeftDerived
+    )
 }
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::collections::BTreeSet;
 
     use agentgate_contracts::fragment_count_for_secret_length;
 
-    use super::{PlannedSemantics, plan_with};
+    use super::{PlannedSemantics, analyze_v1_shape, plan_with, validate_v1_shape};
     use crate::generation::{
-        NodeId, NodeKind, Operation, evaluate_semantic_graph, secret::Secret,
-        test_random::DeterministicRandom,
+        GenerationError, NodeId, NodeKind, Operation, SemanticGraphBuilder, ValidatedSemanticGraph,
+        evaluate_semantic_graph, secret::Secret, test_random::DeterministicRandom,
     };
 
     fn ascii_secret(length: usize) -> Secret {
@@ -146,21 +182,20 @@ mod tests {
             plan.fragments.len(),
             usize::from(fragment_count_for_secret_length(secret.len() as u8).unwrap())
         );
-        assert!((4..=8).contains(&plan.graph.operation_count()));
-        let expected_operation_count = match plan.fragments.len() {
-            3 => 6,
-            4 => 7,
-            5 => 7,
-            _ => unreachable!(),
-        };
-        assert_eq!(plan.graph.operation_count(), expected_operation_count);
-        let recomputed_cross_fragment_dependency_count =
-            recompute_cross_fragment_dependencies(plan);
-        assert!(recomputed_cross_fragment_dependency_count >= 2);
+        let shape = validate_v1_shape(&plan.graph).unwrap();
+        assert!((4..=8).contains(&shape.operation_count));
+        assert!(shape.operation_families.len() >= 3);
+        assert!(shape.cross_fragment_dependency_count >= 2);
         assert_eq!(
             plan.cross_fragment_dependency_count,
-            recomputed_cross_fragment_dependency_count
+            shape.cross_fragment_dependency_count
         );
+        assert!(shape.has_nonlegacy_operation);
+        assert_eq!(
+            shape.directly_transformed_fragments,
+            (0..plan.fragments.len()).collect()
+        );
+
         let fragments: Vec<&[u8]> = plan.fragments.iter().map(Vec::as_slice).collect();
         assert_eq!(
             evaluate_semantic_graph(&plan.graph, &fragments).unwrap(),
@@ -174,75 +209,11 @@ mod tests {
         }));
     }
 
-    fn recompute_cross_fragment_dependencies(plan: &PlannedSemantics) -> usize {
-        let mut provenance = BTreeMap::<NodeId, BTreeSet<usize>>::new();
-        let mut count = 0;
-
-        for node in plan.graph.topological_nodes() {
-            let origins = match node.kind() {
-                NodeKind::Fragment { index } => BTreeSet::from([*index]),
-                NodeKind::Operation { inputs, .. } => {
-                    let origins = inputs
-                        .iter()
-                        .flat_map(|input| {
-                            provenance
-                                .get(input)
-                                .expect("topological input provenance exists")
-                                .iter()
-                                .copied()
-                        })
-                        .collect::<BTreeSet<_>>();
-                    if origins.len() >= 2 {
-                        count += 1;
-                    }
-                    origins
-                }
-            };
-            provenance.insert(node.id(), origins);
-        }
-
-        count
-    }
-
-    fn operation_pattern(plan: &PlannedSemantics) -> Vec<(Operation, Vec<NodeId>)> {
-        plan.graph
-            .topological_nodes()
-            .iter()
-            .filter_map(|node| match node.kind() {
-                NodeKind::Fragment { .. } => None,
-                NodeKind::Operation { operation, inputs } => {
-                    Some((operation.clone(), inputs.clone()))
-                }
-            })
-            .collect()
-    }
-
-    fn randomized_structure_pattern(plan: &PlannedSemantics) -> (Vec<&'static str>, Vec<NodeId>) {
-        let mut unary_sequence = Vec::new();
-        let mut concat_inputs = Vec::new();
-
-        for node in plan.graph.topological_nodes() {
-            let NodeKind::Operation { operation, inputs } = node.kind() else {
-                continue;
-            };
-            match operation {
-                Operation::Reverse => unary_sequence.push("reverse"),
-                Operation::RotateLeft(1) => unary_sequence.push("rotate-left-one"),
-                Operation::RotateRight(1) => unary_sequence.push("rotate-right-one"),
-                Operation::Xor(_) => unary_sequence.push("xor"),
-                Operation::Concat => concat_inputs.clone_from(inputs),
-                _ => {}
-            }
-        }
-
-        (unary_sequence, concat_inputs)
-    }
-
     #[test]
     fn plans_every_supported_ascii_secret_for_many_random_streams() {
         for length in 8..=16 {
             let secret = ascii_secret(length);
-            for seed in 0_u8..=127 {
+            for seed in 0_u8..=u8::MAX {
                 let mut random = DeterministicRandom::new([seed; 32]);
                 let plan = plan_with(&secret, &mut random).unwrap();
                 assert_plan_contracts(&plan, &secret);
@@ -268,23 +239,125 @@ mod tests {
         );
     }
 
+    fn three_fragment_builder() -> (SemanticGraphBuilder, [NodeId; 3]) {
+        let builder = SemanticGraphBuilder::new(vec![2, 2, 2]);
+        let fragments = [
+            builder.fragment(0).unwrap(),
+            builder.fragment(1).unwrap(),
+            builder.fragment(2).unwrap(),
+        ];
+        (builder, fragments)
+    }
+
+    fn graph_with_insufficient_families() -> ValidatedSemanticGraph {
+        let (mut builder, [first, second, third]) = three_fragment_builder();
+        let first = builder.operation(Operation::Slice { start: 0, end: 1 }, vec![first]);
+        let second = builder.operation(Operation::Reverse, vec![second]);
+        let third = builder.operation(Operation::Reverse, vec![third]);
+        let joined = builder.operation(Operation::Concat, vec![first, second, third]);
+        let output = builder.operation(Operation::RotateLeftDerived, vec![joined, first]);
+        builder.output(output);
+        builder.validate().unwrap()
+    }
+
+    fn graph_without_nonlegacy_kind() -> ValidatedSemanticGraph {
+        let (mut builder, [first, second, third]) = three_fragment_builder();
+        let first = builder.operation(Operation::Reverse, vec![first]);
+        let second = builder.operation(Operation::Xor(vec![0xA5]), vec![second]);
+        let third = builder.operation(Operation::Sha256Prefix(2), vec![third]);
+        let joined = builder.operation(Operation::Concat, vec![first, second, third]);
+        let output = builder.operation(Operation::RotateLeftDerived, vec![joined, first]);
+        builder.output(output);
+        builder.validate().unwrap()
+    }
+
+    fn graph_with_untransformed_fragment() -> ValidatedSemanticGraph {
+        let (mut builder, [first, second, third]) = three_fragment_builder();
+        let first = builder.operation(Operation::Slice { start: 0, end: 1 }, vec![first]);
+        let second = builder.operation(Operation::Xor(vec![0xA5]), vec![second]);
+        let joined = builder.operation(Operation::Concat, vec![first, second, third]);
+        let digest = builder.operation(Operation::Sha256Prefix(2), vec![joined]);
+        let output = builder.operation(Operation::RotateLeftDerived, vec![digest, first]);
+        builder.output(output);
+        builder.validate().unwrap()
+    }
+
+    fn graph_with_one_cross_fragment_node() -> ValidatedSemanticGraph {
+        let (mut builder, [first, second, third]) = three_fragment_builder();
+        let first = builder.operation(Operation::Slice { start: 0, end: 1 }, vec![first]);
+        let second = builder.operation(Operation::Xor(vec![0xA5]), vec![second]);
+        let third = builder.operation(Operation::Sha256Prefix(2), vec![third]);
+        let output = builder.operation(Operation::Concat, vec![first, second, third]);
+        builder.output(output);
+        builder.validate().unwrap()
+    }
+
     #[test]
-    fn planning_varies_the_unary_operations_or_concat_order_across_streams() {
-        let secret = Secret::from_test_bytes(b"AbCdEf12Gh".to_vec());
-        let mut operation_patterns = Vec::new();
-        let mut randomized_structure_patterns = BTreeSet::new();
+    fn v1_shape_rejects_insufficient_operation_families() {
+        let graph = graph_with_insufficient_families();
+        let shape = analyze_v1_shape(&graph).unwrap();
+        assert!((4..=8).contains(&shape.operation_count));
+        assert!(shape.operation_families.len() < 3);
+        assert!(shape.cross_fragment_dependency_count >= 2);
+        assert!(shape.has_nonlegacy_operation);
+        assert_eq!(
+            shape.directly_transformed_fragments,
+            BTreeSet::from([0, 1, 2])
+        );
+        assert_eq!(
+            validate_v1_shape(&graph),
+            Err(GenerationError::ExecutionFailed)
+        );
+    }
 
-        for seed in 0_u8..=127 {
-            let mut random = DeterministicRandom::new([seed; 32]);
-            let plan = plan_with(&secret, &mut random).unwrap();
-            let operation_pattern = operation_pattern(&plan);
-            if !operation_patterns.contains(&operation_pattern) {
-                operation_patterns.push(operation_pattern);
-            }
-            randomized_structure_patterns.insert(randomized_structure_pattern(&plan));
-        }
+    #[test]
+    fn v1_shape_rejects_missing_nonlegacy_operation() {
+        let graph = graph_without_nonlegacy_kind();
+        let shape = analyze_v1_shape(&graph).unwrap();
+        assert!((4..=8).contains(&shape.operation_count));
+        assert!(shape.operation_families.len() >= 3);
+        assert!(shape.cross_fragment_dependency_count >= 2);
+        assert!(!shape.has_nonlegacy_operation);
+        assert_eq!(
+            shape.directly_transformed_fragments,
+            BTreeSet::from([0, 1, 2])
+        );
+        assert_eq!(
+            validate_v1_shape(&graph),
+            Err(GenerationError::ExecutionFailed)
+        );
+    }
 
-        assert!(operation_patterns.len() > 1);
-        assert!(randomized_structure_patterns.len() > 1);
+    #[test]
+    fn v1_shape_rejects_a_source_fragment_without_direct_transformation() {
+        let graph = graph_with_untransformed_fragment();
+        let shape = analyze_v1_shape(&graph).unwrap();
+        assert!((4..=8).contains(&shape.operation_count));
+        assert!(shape.operation_families.len() >= 3);
+        assert!(shape.cross_fragment_dependency_count >= 2);
+        assert!(shape.has_nonlegacy_operation);
+        assert_eq!(shape.directly_transformed_fragments, BTreeSet::from([0, 1]));
+        assert_eq!(
+            validate_v1_shape(&graph),
+            Err(GenerationError::ExecutionFailed)
+        );
+    }
+
+    #[test]
+    fn v1_shape_rejects_insufficient_cross_fragment_nodes() {
+        let graph = graph_with_one_cross_fragment_node();
+        let shape = analyze_v1_shape(&graph).unwrap();
+        assert!((4..=8).contains(&shape.operation_count));
+        assert!(shape.operation_families.len() >= 3);
+        assert_eq!(shape.cross_fragment_dependency_count, 1);
+        assert!(shape.has_nonlegacy_operation);
+        assert_eq!(
+            shape.directly_transformed_fragments,
+            BTreeSet::from([0, 1, 2])
+        );
+        assert_eq!(
+            validate_v1_shape(&graph),
+            Err(GenerationError::ExecutionFailed)
+        );
     }
 }

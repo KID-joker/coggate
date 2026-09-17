@@ -23,22 +23,14 @@ impl PlanMotif {
     ];
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "used by the Task 3 planner integration")
-)]
 pub(crate) fn sample_motif(random: &mut impl RandomSource) -> Result<PlanMotif, GenerationError> {
     let index = sample_below(random, PlanMotif::ALL.len())?;
     Ok(PlanMotif::ALL[index])
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "used by the Task 3 planner integration")
-)]
 /// `fragment_nodes[index]` and `fragment_lengths[index]` must describe the same
-/// builder fragment. Task 3 derives both arrays from one fragment source, while
-/// graph validation remains defense in depth for incorrect caller metadata.
+/// builder fragment. The planner derives both arrays from one fragment source,
+/// while graph validation remains defense in depth for incorrect caller metadata.
 pub(crate) fn build_motif(
     builder: &mut SemanticGraphBuilder,
     fragment_nodes: &[NodeId],
