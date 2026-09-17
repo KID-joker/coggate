@@ -69,6 +69,7 @@ const RESERVED_WORDS: &[&str] = &[
     "constexpr",
     "constinit",
     "continue",
+    "contract_assert",
     "crate",
     "decltype",
     "default",
@@ -389,12 +390,297 @@ mod tests {
 
     use super::{
         CONTINUATION_ALPHABET, FIRST_ALPHABET, IdentifierProfile, MAX_ALLOCATED_NAMES,
-        MAX_IDENTIFIER_BYTES, NameAllocator, body_capacity, encode_candidate, is_reserved_word,
+        MAX_IDENTIFIER_BYTES, NameAllocator, RESERVED_WORDS, body_capacity, encode_candidate,
+        is_reserved_word,
     };
     use crate::generation::{
         GenerationError, random::RandomSource, render::error::RenderError,
         test_random::DeterministicRandom,
     };
+
+    const C_RESERVED_WORDS: &[&str] = &[
+        "_Alignas",
+        "_Alignof",
+        "_Atomic",
+        "_BitInt",
+        "_Bool",
+        "_Complex",
+        "_Decimal128",
+        "_Decimal32",
+        "_Decimal64",
+        "_Generic",
+        "_Imaginary",
+        "_Noreturn",
+        "_Static_assert",
+        "_Thread_local",
+        "alignas",
+        "alignof",
+        "auto",
+        "bool",
+        "break",
+        "case",
+        "char",
+        "const",
+        "constexpr",
+        "continue",
+        "default",
+        "do",
+        "double",
+        "else",
+        "enum",
+        "extern",
+        "false",
+        "float",
+        "for",
+        "goto",
+        "if",
+        "inline",
+        "int",
+        "long",
+        "nullptr",
+        "register",
+        "restrict",
+        "return",
+        "short",
+        "signed",
+        "sizeof",
+        "static",
+        "static_assert",
+        "struct",
+        "switch",
+        "thread_local",
+        "true",
+        "typedef",
+        "typeof",
+        "typeof_unqual",
+        "union",
+        "unsigned",
+        "void",
+        "volatile",
+        "while",
+    ];
+
+    const CPP_RESERVED_ADDITIONS: &[&str] = &[
+        "and",
+        "and_eq",
+        "asm",
+        "atomic_cancel",
+        "atomic_commit",
+        "atomic_noexcept",
+        "bitand",
+        "bitor",
+        "catch",
+        "char16_t",
+        "char32_t",
+        "char8_t",
+        "class",
+        "co_await",
+        "co_return",
+        "co_yield",
+        "compl",
+        "concept",
+        "const_cast",
+        "consteval",
+        "constinit",
+        "contract_assert",
+        "decltype",
+        "delete",
+        "dynamic_cast",
+        "explicit",
+        "export",
+        "final",
+        "friend",
+        "import",
+        "module",
+        "mutable",
+        "namespace",
+        "new",
+        "noexcept",
+        "not",
+        "not_eq",
+        "operator",
+        "or",
+        "or_eq",
+        "override",
+        "private",
+        "protected",
+        "public",
+        "reflexpr",
+        "reinterpret_cast",
+        "requires",
+        "static_cast",
+        "synchronized",
+        "template",
+        "this",
+        "throw",
+        "try",
+        "typeid",
+        "typename",
+        "using",
+        "virtual",
+        "wchar_t",
+        "xor",
+        "xor_eq",
+    ];
+
+    const RUST_RESERVED_WORDS: &[&str] = &[
+        "Self",
+        "abstract",
+        "as",
+        "async",
+        "await",
+        "become",
+        "box",
+        "break",
+        "const",
+        "continue",
+        "crate",
+        "do",
+        "dyn",
+        "else",
+        "enum",
+        "extern",
+        "false",
+        "final",
+        "fn",
+        "for",
+        "gen",
+        "if",
+        "impl",
+        "in",
+        "let",
+        "loop",
+        "macro",
+        "macro_rules",
+        "match",
+        "mod",
+        "move",
+        "mut",
+        "override",
+        "priv",
+        "pub",
+        "raw",
+        "ref",
+        "return",
+        "safe",
+        "self",
+        "static",
+        "struct",
+        "super",
+        "trait",
+        "true",
+        "try",
+        "type",
+        "typeof",
+        "union",
+        "unsafe",
+        "unsized",
+        "use",
+        "virtual",
+        "where",
+        "while",
+        "yield",
+    ];
+
+    const GO_RESERVED_WORDS: &[&str] = &[
+        "break",
+        "case",
+        "chan",
+        "const",
+        "continue",
+        "default",
+        "defer",
+        "else",
+        "fallthrough",
+        "for",
+        "func",
+        "go",
+        "goto",
+        "if",
+        "import",
+        "interface",
+        "map",
+        "package",
+        "range",
+        "return",
+        "select",
+        "struct",
+        "switch",
+        "type",
+        "var",
+    ];
+
+    const JAVA_RESERVED_WORDS: &[&str] = &[
+        "abstract",
+        "assert",
+        "boolean",
+        "break",
+        "byte",
+        "case",
+        "catch",
+        "char",
+        "class",
+        "const",
+        "continue",
+        "default",
+        "do",
+        "double",
+        "else",
+        "enum",
+        "exports",
+        "extends",
+        "false",
+        "final",
+        "finally",
+        "float",
+        "for",
+        "goto",
+        "if",
+        "implements",
+        "import",
+        "instanceof",
+        "int",
+        "interface",
+        "long",
+        "module",
+        "native",
+        "new",
+        "null",
+        "open",
+        "opens",
+        "package",
+        "permits",
+        "private",
+        "protected",
+        "provides",
+        "public",
+        "record",
+        "requires",
+        "return",
+        "sealed",
+        "short",
+        "static",
+        "strictfp",
+        "super",
+        "switch",
+        "synchronized",
+        "this",
+        "throw",
+        "throws",
+        "to",
+        "transient",
+        "transitive",
+        "true",
+        "try",
+        "uses",
+        "var",
+        "void",
+        "volatile",
+        "when",
+        "while",
+        "with",
+        "yield",
+    ];
 
     #[derive(Default)]
     struct CountingRandom {
@@ -439,6 +725,47 @@ mod tests {
     fn equal_seeds_produce_the_same_forty_eight_name_sequence() {
         assert_eq!(MAX_ALLOCATED_NAMES, 48);
         assert_eq!(sequence_for(0xA5), sequence_for(0xA5));
+    }
+
+    #[test]
+    fn checked_in_reserved_union_matches_authoritative_language_tables() {
+        let authoritative = [
+            C_RESERVED_WORDS,
+            CPP_RESERVED_ADDITIONS,
+            RUST_RESERVED_WORDS,
+            GO_RESERVED_WORDS,
+            JAVA_RESERVED_WORDS,
+        ]
+        .into_iter()
+        .flatten()
+        .copied()
+        .collect::<BTreeSet<_>>();
+        let production = RESERVED_WORDS.iter().copied().collect::<BTreeSet<_>>();
+
+        assert!(CPP_RESERVED_ADDITIONS.contains(&"contract_assert"));
+        assert_eq!(production.len(), RESERVED_WORDS.len());
+        assert_eq!(production, authoritative);
+    }
+
+    #[test]
+    fn current_cpp_contract_keyword_is_reserved_and_skipped() {
+        assert!(is_reserved_word("contract_assert"));
+
+        let mut profile = identity_profile();
+        profile.salt = b"contract_as".to_vec();
+        profile.start_offset = 65;
+        profile.minimum_body_width = 4;
+        move_to_front(&mut profile.first_alphabet, b's');
+        move_to_index(&mut profile.continuation_alphabet, b'e', 0);
+        move_to_index(&mut profile.continuation_alphabet, b'r', 1);
+        move_to_index(&mut profile.continuation_alphabet, b't', 2);
+        assert_eq!(encode_candidate(&profile, 0).unwrap(), "contract_assert");
+
+        let expected = encode_candidate(&profile, 1).unwrap();
+        let mut allocator = NameAllocator::from_profile(profile);
+
+        assert_eq!(allocator.allocate_identifier().unwrap(), expected);
+        assert_eq!(allocator.next_ordinal, 2);
     }
 
     #[test]
@@ -612,5 +939,10 @@ mod tests {
     fn move_to_front<const N: usize>(values: &mut [u8; N], target: u8) {
         let index = values.iter().position(|value| *value == target).unwrap();
         values.swap(0, index);
+    }
+
+    fn move_to_index<const N: usize>(values: &mut [u8; N], target: u8, target_index: usize) {
+        let current_index = values.iter().position(|value| *value == target).unwrap();
+        values.swap(target_index, current_index);
     }
 }
