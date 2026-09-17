@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 
 use agentgate_benchmark::{
     baseline::{
-        NoGuessReason, Prediction,
+        BaselineError, NoGuessReason, Prediction,
         direct::{DirectBaseline, FragmentLanguage, extract_fragments},
     },
     process::{ProcessRunner, ToolId},
@@ -103,7 +103,10 @@ fn unspawnable_program_is_infrastructure_failure() {
         1024,
     );
 
-    assert!(baseline.predict_text(go_question()).is_err());
+    assert!(matches!(
+        baseline.predict_text(go_question()),
+        Err(BaselineError::Infrastructure)
+    ));
 }
 
 #[cfg(unix)]
@@ -123,9 +126,12 @@ fn script(root: &tempfile::TempDir, body: &str) -> PathBuf {
 fn output_limit_is_infrastructure_failure() {
     let root = tempfile::tempdir().unwrap();
     let program = script(&root, "printf 'AAAAAAAAAAAAAAAA'");
-    let baseline = baseline_with_program(&root, program, Duration::from_secs(1), 4);
+    let baseline = baseline_with_program(&root, program, Duration::from_secs(5), 4);
 
-    assert!(baseline.predict_text(go_question()).is_err());
+    assert!(matches!(
+        baseline.predict_text(go_question()),
+        Err(BaselineError::Infrastructure)
+    ));
 }
 
 #[cfg(unix)]

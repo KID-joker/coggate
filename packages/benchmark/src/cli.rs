@@ -256,7 +256,7 @@ fn cli_error_for_qualification(error: QualificationError) -> CliError {
     }
 }
 
-pub const fn qualification_error_exit_code(error: QualificationError) -> u8 {
+const fn qualification_error_exit_code(error: QualificationError) -> u8 {
     match error {
         QualificationError::Baseline(_) => EXIT_INPUT_OR_INFRASTRUCTURE,
         QualificationError::InvalidCorpus | QualificationError::Composition => EXIT_INTERNAL,
@@ -387,5 +387,29 @@ fn qualification(qualified: bool, message: String) -> CommandOutcome {
             EXIT_QUALIFICATION_FAILED
         },
         message,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::baseline::BaselineError;
+
+    #[test]
+    fn qualification_errors_map_infrastructure_separately_from_internal_failures() {
+        assert_eq!(
+            qualification_error_exit_code(QualificationError::Baseline(
+                BaselineError::Infrastructure
+            )),
+            EXIT_INPUT_OR_INFRASTRUCTURE
+        );
+        assert_eq!(
+            qualification_error_exit_code(QualificationError::Composition),
+            EXIT_INTERNAL
+        );
+        assert_eq!(
+            qualification_error_exit_code(QualificationError::InvalidCorpus),
+            EXIT_INTERNAL
+        );
     }
 }
