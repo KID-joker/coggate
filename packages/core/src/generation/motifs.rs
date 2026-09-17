@@ -328,9 +328,9 @@ mod tests {
 
     use super::{PlanMotif, build_motif, sample_motif};
     use crate::generation::{
-        GenerationError, NodeId, NodeKind, Operation, OperationFamily, OperationKind, RandomSource,
-        SemanticGraphBuilder, ValidatedSemanticGraph, evaluate_semantic_graph,
-        test_random::DeterministicRandom,
+        GenerationError, MAX_XOR_KEY_LENGTH, NodeId, NodeKind, Operation, OperationFamily,
+        OperationKind, RandomSource, SemanticGraphBuilder, SemanticNode, ValidatedSemanticGraph,
+        evaluate_semantic_graph, test_random::DeterministicRandom,
     };
 
     const MOTIFS: [PlanMotif; 5] = [
@@ -366,7 +366,15 @@ mod tests {
         count: usize,
         seed: u8,
     ) -> (ValidatedSemanticGraph, Vec<Vec<u8>>) {
-        let fragments = fragments(count);
+        build_graph_with_fragments(motif, fragments(count), seed)
+    }
+
+    fn build_graph_with_fragments(
+        motif: PlanMotif,
+        fragments: Vec<Vec<u8>>,
+        seed: u8,
+    ) -> (ValidatedSemanticGraph, Vec<Vec<u8>>) {
+        let count = fragments.len();
         let lengths = fragments.iter().map(Vec::len).collect::<Vec<_>>();
         let mut builder = SemanticGraphBuilder::new(lengths.clone());
         let fragment_nodes = (0..count)
@@ -421,6 +429,217 @@ mod tests {
         }
 
         count
+    }
+
+    fn operation_nodes_by_id(graph: &ValidatedSemanticGraph) -> Vec<&SemanticNode> {
+        let mut operations = graph
+            .topological_nodes()
+            .iter()
+            .filter(|node| matches!(node.kind(), NodeKind::Operation { .. }))
+            .collect::<Vec<_>>();
+        operations.sort_unstable_by_key(|node| node.id());
+        operations
+    }
+
+    fn direct_source_index(graph: &ValidatedSemanticGraph, node: &SemanticNode) -> Option<usize> {
+        let NodeKind::Operation { inputs, .. } = node.kind() else {
+            return None;
+        };
+        let [input] = inputs.as_slice() else {
+            return None;
+        };
+        match graph.node(*input)?.kind() {
+            NodeKind::Fragment { index } => Some(*index),
+            NodeKind::Operation { .. } => None,
+        }
+    }
+
+    fn propagated_lengths(graph: &ValidatedSemanticGraph) -> BTreeMap<NodeId, usize> {
+        let mut lengths = BTreeMap::new();
+
+        for node in graph.topological_nodes() {
+            let length = match node.kind() {
+                NodeKind::Fragment { index } => graph.fragment_lengths()[*index],
+                NodeKind::Operation { operation, inputs } => {
+                    let input_lengths = inputs
+                        .iter()
+                        .map(|input| {
+                            lengths
+                                .get(input)
+                                .copied()
+                                .expect("input length was propagated")
+                        })
+                        .collect::<Vec<_>>();
+                    assert_leaf_policy(operation, &input_lengths);
+                    operation
+                        .output_length(&input_lengths)
+                        .expect("validated operation has an output length")
+                }
+            };
+            assert!(length > 0, "node {:?} produced an empty value", node.id());
+            lengths.insert(node.id(), length);
+        }
+
+        lengths
+    }
+
+    fn assert_leaf_policy(operation: &Operation, input_lengths: &[usize]) {
+        match operation {
+            Operation::RotateLeft(amount) | Operation::RotateRight(amount) => {
+                let input_length = input_lengths[0];
+                assert!(input_length > 1, "length-one rotations must fall back");
+                assert!(
+                    (1..input_length).contains(amount),
+                    "rotation must be nonidentity and inside the input"
+                );
+            }
+            Operation::OddBytes => {
+                assert!(input_lengths[0] >= 2, "OddBytes must stay nonempty");
+            }
+            Operation::Permute(permutation) => {
+                let input_length = input_lengths[0];
+                assert!(input_length > 1, "length-one permutations must fall back");
+                assert_eq!(permutation.len(), input_length);
+                let mut sorted = permutation.clone();
+                sorted.sort_unstable();
+                assert_eq!(sorted, (0..input_length).collect::<Vec<_>>());
+                assert_ne!(permutation, &(0..input_length).collect::<Vec<_>>());
+            }
+            Operation::Slice { start, end } => {
+                assert!(start < end, "slice must be nonempty");
+                assert!(*end <= input_lengths[0], "slice must stay inside input");
+            }
+            Operation::Xor(key) => {
+                assert!(!key.is_empty());
+                assert!(key.len() <= input_lengths[0].min(MAX_XOR_KEY_LENGTH));
+            }
+            Operation::Sha256Prefix(prefix_length) => {
+                assert!((1..=16).contains(prefix_length));
+            }
+            Operation::Reverse
+            | Operation::EvenBytes
+            | Operation::Concat
+            | Operation::AddModulo
+            | Operation::SubModulo
+            | Operation::HexEncode
+            | Operation::HexDecode
+            | Operation::Base64UrlEncode
+            | Operation::Base64UrlDecode
+            | Operation::RotateLeftDerived
+            | Operation::ConditionalOrder => {}
+        }
+    }
+
+    fn special_role_sources(graph: &ValidatedSemanticGraph, motif: PlanMotif) -> (usize, usize) {
+        let operations = operation_nodes_by_id(graph);
+        let first = operations[0];
+        let second = operations[1];
+
+        let (first_source, second_source) = match motif {
+            PlanMotif::General => {
+                let NodeKind::Operation {
+                    operation: first_operation,
+                    ..
+                } = first.kind()
+                else {
+                    unreachable!();
+                };
+                assert!(matches!(
+                    first_operation,
+                    Operation::EvenBytes
+                        | Operation::OddBytes
+                        | Operation::Permute(_)
+                        | Operation::Slice { .. }
+                ));
+                assert!(matches!(
+                    second.kind(),
+                    NodeKind::Operation {
+                        operation: Operation::Xor(_),
+                        ..
+                    }
+                ));
+                (
+                    direct_source_index(graph, first)
+                        .expect("general structural role consumes a source directly"),
+                    direct_source_index(graph, second)
+                        .expect("general XOR role consumes a source directly"),
+                )
+            }
+            PlanMotif::AddModulo | PlanMotif::SubModulo => {
+                for slice in [first, second] {
+                    assert!(matches!(
+                        slice.kind(),
+                        NodeKind::Operation {
+                            operation: Operation::Slice { .. },
+                            ..
+                        }
+                    ));
+                }
+                let arithmetic = operations[2];
+                let expected_arithmetic = match motif {
+                    PlanMotif::AddModulo => OperationKind::AddModulo,
+                    PlanMotif::SubModulo => OperationKind::SubModulo,
+                    _ => unreachable!(),
+                };
+                let NodeKind::Operation { operation, inputs } = arithmetic.kind() else {
+                    unreachable!();
+                };
+                assert_eq!(OperationKind::from(operation), expected_arithmetic);
+                assert_eq!(inputs, &[first.id(), second.id()]);
+                let lengths = propagated_lengths(graph);
+                assert!(lengths[&first.id()] > 0);
+                assert_eq!(lengths[&first.id()], lengths[&second.id()]);
+                (
+                    direct_source_index(graph, first)
+                        .expect("first arithmetic slice consumes a source directly"),
+                    direct_source_index(graph, second)
+                        .expect("second arithmetic slice consumes a source directly"),
+                )
+            }
+            PlanMotif::HexRoundTrip | PlanMotif::Base64UrlRoundTrip => {
+                let (expected_encode, expected_decode) = match motif {
+                    PlanMotif::HexRoundTrip => (OperationKind::HexEncode, OperationKind::HexDecode),
+                    PlanMotif::Base64UrlRoundTrip => (
+                        OperationKind::Base64UrlEncode,
+                        OperationKind::Base64UrlDecode,
+                    ),
+                    _ => unreachable!(),
+                };
+                let NodeKind::Operation {
+                    operation: encode, ..
+                } = first.kind()
+                else {
+                    unreachable!();
+                };
+                let NodeKind::Operation {
+                    operation: decode,
+                    inputs: decode_inputs,
+                } = second.kind()
+                else {
+                    unreachable!();
+                };
+                assert_eq!(OperationKind::from(encode), expected_encode);
+                assert_eq!(OperationKind::from(decode), expected_decode);
+                assert_eq!(decode_inputs, &[first.id()]);
+                let xor = operations[2];
+                assert!(matches!(
+                    xor.kind(),
+                    NodeKind::Operation {
+                        operation: Operation::Xor(_),
+                        ..
+                    }
+                ));
+                (
+                    direct_source_index(graph, first)
+                        .expect("codec encoder consumes a source directly"),
+                    direct_source_index(graph, xor)
+                        .expect("codec XOR role consumes a source directly"),
+                )
+            }
+        };
+
+        assert_ne!(first_source, second_source);
+        (first_source, second_source)
     }
 
     fn directly_transformed_fragments(graph: &ValidatedSemanticGraph) -> BTreeSet<usize> {
@@ -483,6 +702,13 @@ mod tests {
                     assert_eq!(graph.operation_count(), expected_operations);
                     assert!((4..=8).contains(&graph.operation_count()));
                     assert!(families.len() >= 3);
+                    assert_eq!(
+                        kinds
+                            .iter()
+                            .filter(|kind| kind.family() == OperationFamily::Composition)
+                            .count(),
+                        2
+                    );
                     assert!(cross_fragment_operation_count(&graph) >= 2);
                     assert!(kinds.iter().copied().any(is_nonlegacy));
                     assert_eq!(directly_transformed_fragments(&graph).len(), count);
@@ -494,6 +720,77 @@ mod tests {
                     assert_eq!(answer.len(), graph.output_length());
                 }
             }
+        }
+    }
+
+    #[test]
+    fn named_motifs_pin_their_direct_special_role_topologies() {
+        for motif in MOTIFS {
+            for count in 3..=5 {
+                for seed in 0_u8..=31 {
+                    let (graph, _) = build_graph(motif, count, seed);
+
+                    special_role_sources(&graph, motif);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_generated_operation_obeys_leaf_policies_and_stays_nonempty() {
+        for motif in MOTIFS {
+            for count in 3..=5 {
+                for seed in 0_u8..=u8::MAX {
+                    let (graph, _) = build_graph(motif, count, seed);
+
+                    propagated_lengths(&graph);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn paired_role_assignments_keep_nodes_and_distinct_lengths_aligned() {
+        let distinct_fragments = [1, 2, 4, 7, 11].map(|length| vec![b'x'; length]).to_vec();
+
+        for motif in MOTIFS {
+            let mut first_role_sources = BTreeSet::new();
+            let mut second_role_sources = BTreeSet::new();
+
+            for seed in 0_u8..=u8::MAX {
+                let (graph, _) =
+                    build_graph_with_fragments(motif, distinct_fragments.clone(), seed);
+                let lengths = propagated_lengths(&graph);
+
+                for node in graph.topological_nodes() {
+                    let NodeKind::Operation { operation, inputs } = node.kind() else {
+                        continue;
+                    };
+                    let [input] = inputs.as_slice() else {
+                        continue;
+                    };
+                    let Some(NodeKind::Fragment { index }) =
+                        graph.node(*input).map(|input_node| input_node.kind())
+                    else {
+                        continue;
+                    };
+                    let actual_source_length = graph.fragment_lengths()[*index];
+                    assert_leaf_policy(operation, &[actual_source_length]);
+                    assert_eq!(
+                        lengths[&node.id()],
+                        operation
+                            .output_length(&[actual_source_length])
+                            .expect("direct leaf length is valid")
+                    );
+                }
+
+                let (first_source, second_source) = special_role_sources(&graph, motif);
+                first_role_sources.insert(first_source);
+                second_role_sources.insert(second_source);
+            }
+
+            assert!(first_role_sources.len() > 1);
+            assert!(second_role_sources.len() > 1);
         }
     }
 
