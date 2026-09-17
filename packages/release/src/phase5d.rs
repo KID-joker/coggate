@@ -422,7 +422,6 @@ fn verify_phase5d_artifact_inner(
     let root_identity = require_directory(root)?;
     let mut directories = vec![(root.to_path_buf(), root_identity)];
     let disk = walk_tree(root, &mut directories)?;
-    after_snapshot(root);
 
     let manifest_disk = disk.get(MANIFEST).ok_or(Phase5dError::Invalid)?;
     let checksum_disk = disk.get(CHECKSUMS).ok_or(Phase5dError::Invalid)?;
@@ -434,6 +433,7 @@ fn verify_phase5d_artifact_inner(
     let checksum_size =
         u64::try_from(checksum_bytes.len()).map_err(|_| Phase5dError::MetadataLimit)?;
     let checksum_digest = hex::encode(Sha256::digest(&checksum_bytes));
+    after_snapshot(root);
     let (files, tools) = validate_manifest(&manifest_bytes, expected)?;
 
     validate_directories(&directories, &files)?;
@@ -480,9 +480,12 @@ fn verify_phase5d_artifact_inner(
     }
     let (final_manifest_size, manifest_hash) =
         hash_checked(manifest_disk, root, &directories, MAX_METADATA_BYTES as u64)?;
-    if final_manifest_size != manifest_size || manifest_hash != manifest_digest {
-        return Err(Phase5dError::Changed);
-    }
+    ensure_same_snapshot(
+        manifest_size,
+        &manifest_digest,
+        final_manifest_size,
+        &manifest_hash,
+    )?;
     let checksums = parse_checksums(&checksum_bytes)?;
     let wanted_checksums = actual_payload
         .into_iter()
@@ -533,6 +536,19 @@ fn verify_phase5d_artifact_inner(
             sha256: checksum_digest,
         },
     })
+}
+
+fn ensure_same_snapshot(
+    initial_size: u64,
+    initial_digest: &str,
+    final_size: u64,
+    final_digest: &str,
+) -> Result<(), Phase5dError> {
+    if initial_size == final_size && initial_digest == final_digest {
+        Ok(())
+    } else {
+        Err(Phase5dError::Changed)
+    }
 }
 
 fn require_directory(path: &Path) -> Result<Identity, Phase5dError> {
@@ -1132,6 +1148,27 @@ mod tests {
             fs::rename(replacement, payload).unwrap();
         });
         assert_eq!(result, Err(Phase5dError::Changed));
+    }
+
+    #[test]
+    fn post_manifest_snapshot_mutation_is_changed() {
+        let root = minimal_linux_artifact();
+        let result = verify_phase5d_artifact_inner(&root, Target::LinuxX86_64, |root| {
+            let path = root.join(MANIFEST);
+            let original = fs::read_to_string(&path).unwrap();
+            let changed = original.replace("0.1.0", "0.1.1");
+            assert_eq!(changed.len(), original.len());
+            fs::write(path, changed).unwrap();
+        });
+        assert_eq!(result, Err(Phase5dError::Changed));
+    }
+
+    #[test]
+    fn snapshot_digest_mismatch_is_changed() {
+        assert_eq!(
+            ensure_same_snapshot(10, "a", 10, "b"),
+            Err(Phase5dError::Changed)
+        );
     }
 
     fn minimal_linux_artifact() -> std::path::PathBuf {
