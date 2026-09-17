@@ -293,10 +293,7 @@ impl NameAllocator {
             let next_ordinal = ordinal.checked_add(1).ok_or(RenderError::NameExhausted)?;
             let candidate = encode_candidate(&self.profile, ordinal)?;
             self.next_ordinal = next_ordinal;
-            if !is_reserved_word(&candidate)
-                && !is_legacy_helper_identifier(&candidate)
-                && !is_structurally_reserved(&candidate)
-            {
+            if is_valid_identifier(&candidate) {
                 self.allocated_count = self
                     .allocated_count
                     .checked_add(1)
@@ -405,12 +402,19 @@ fn is_reserved_word(candidate: &str) -> bool {
     RESERVED_WORDS.contains(&candidate)
 }
 
-fn is_legacy_helper_identifier(candidate: &str) -> bool {
-    LEGACY_HELPER_IDENTIFIERS.contains(&candidate)
-}
+pub(super) fn is_valid_identifier(candidate: &str) -> bool {
+    let Some((first, remaining)) = candidate.as_bytes().split_first() else {
+        return false;
+    };
 
-fn is_structurally_reserved(candidate: &str) -> bool {
-    candidate.starts_with('_') || candidate.as_bytes().windows(2).any(|pair| pair == b"__")
+    candidate.len() <= MAX_IDENTIFIER_BYTES
+        && first.is_ascii_alphabetic()
+        && remaining
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+        && !candidate.as_bytes().windows(2).any(|pair| pair == b"__")
+        && !is_reserved_word(candidate)
+        && !LEGACY_HELPER_IDENTIFIERS.contains(&candidate)
 }
 
 #[cfg(test)]
@@ -418,9 +422,9 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::{
-        CONTINUATION_ALPHABET, FIRST_ALPHABET, IdentifierProfile, MAX_ALLOCATED_NAMES,
-        MAX_IDENTIFIER_BYTES, NameAllocator, RESERVED_WORDS, body_capacity, encode_candidate,
-        is_reserved_word,
+        CONTINUATION_ALPHABET, FIRST_ALPHABET, IdentifierProfile, LEGACY_HELPER_IDENTIFIERS,
+        MAX_ALLOCATED_NAMES, MAX_IDENTIFIER_BYTES, NameAllocator, RESERVED_WORDS, body_capacity,
+        encode_candidate, is_reserved_word, is_valid_identifier,
     };
     use crate::generation::{
         GenerationError, random::RandomSource, render::error::RenderError,
@@ -795,6 +799,21 @@ mod tests {
 
         assert_eq!(allocator.allocate_identifier().unwrap(), expected);
         assert_eq!(allocator.next_ordinal, 2);
+    }
+
+    #[test]
+    fn shared_identifier_policy_covers_every_reserved_form() {
+        assert!(is_valid_identifier("portable_name9"));
+        for reserved in RESERVED_WORDS
+            .iter()
+            .chain(LEGACY_HELPER_IDENTIFIERS)
+            .chain(["_implementation", "A__B"].iter())
+        {
+            assert!(!is_valid_identifier(reserved), "accepted {reserved:?}");
+        }
+        for malformed in ["", "9name", "not-portable", "abcdefghijklmnopq"] {
+            assert!(!is_valid_identifier(malformed), "accepted {malformed:?}");
+        }
     }
 
     #[test]

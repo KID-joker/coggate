@@ -12,12 +12,12 @@ use super::{
         DisplayStep, DisplayStepKind, FragmentLiteralPlan, HelperSemantic, MAX_FRAGMENT_BYTES,
         MAX_QUESTION_BYTES, NumericStyle, RenderLanguage, RenderPlan, TemplateFamily,
     },
-    names::MAX_IDENTIFIER_BYTES,
+    names::{MAX_IDENTIFIER_BYTES, is_valid_identifier},
 };
 
 pub(super) const COMMON_QUESTION_BUDGET: usize = 2_048;
-const FRAGMENT_WRAPPER_BUDGET: usize = 64;
-const DISTRACTOR_WRAPPER_BUDGET: usize = 256;
+pub(super) const FRAGMENT_WRAPPER_BUDGET: usize = 64;
+pub(super) const DISTRACTOR_WRAPPER_BUDGET: usize = 256;
 
 pub(super) fn validate_plan(
     graph: &ValidatedSemanticGraph,
@@ -315,15 +315,7 @@ fn validate_identifier(identifier: &str) -> Result<(), RenderError> {
     if identifier.len() > MAX_IDENTIFIER_BYTES {
         return Err(RenderError::LengthLimit);
     }
-    let Some((first, remaining)) = identifier.as_bytes().split_first() else {
-        return Err(RenderError::InvalidPlan);
-    };
-    if identifier == "_"
-        || !(first.is_ascii_alphabetic() || *first == b'_')
-        || !remaining
-            .iter()
-            .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
-    {
+    if !is_valid_identifier(identifier) {
         return Err(RenderError::InvalidPlan);
     }
     Ok(())
@@ -1372,6 +1364,55 @@ mod tests {
             validate_plan(&graph, &fragments, &plan),
             Err(RenderError::InvalidPlan)
         );
+    }
+
+    #[test]
+    fn rejects_allocator_reserved_identifiers_in_every_rendered_category() {
+        for forbidden in ["if", "contract_assert", "reverse", "_reserved", "A__B"] {
+            for category in 0..5 {
+                let (graph, fragments, mut plan) = fixture_plan();
+                match category {
+                    0 => effective_fragments(&mut plan)[0].heading = forbidden.to_owned(),
+                    1 => {
+                        effective_fragments(&mut plan)[0].steps[0].output_label =
+                            forbidden.to_owned();
+                    }
+                    2 => {
+                        effective_fragments(&mut plan)[0].steps[0].local_name =
+                            forbidden.to_owned();
+                    }
+                    3 => {
+                        let semantic = *plan.profile.aliases().keys().next().unwrap();
+                        let mut aliases = plan.profile.aliases().clone();
+                        aliases.insert(semantic, forbidden.to_owned());
+                        plan.profile = ObfuscationProfile::new(aliases);
+                    }
+                    4 => {
+                        if let Some(distractor) = plan
+                            .fragments
+                            .iter_mut()
+                            .find(|fragment| fragment.distractor)
+                        {
+                            distractor.heading = forbidden.to_owned();
+                        } else {
+                            plan.fragments.push(DisplayFragment {
+                                heading: forbidden.to_owned(),
+                                language: RenderLanguage::Java,
+                                steps: Vec::new(),
+                                distractor: true,
+                            });
+                        }
+                    }
+                    _ => unreachable!(),
+                }
+
+                assert_eq!(
+                    validate_plan(&graph, &fragments, &plan),
+                    Err(RenderError::InvalidPlan),
+                    "category {category} accepted {forbidden:?}"
+                );
+            }
+        }
     }
 
     #[test]

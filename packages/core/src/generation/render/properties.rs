@@ -10,7 +10,7 @@ use super::{
     },
     planner::plan_rendering,
     render_with,
-    validate::{self, COMMON_QUESTION_BUDGET},
+    validate::{self, COMMON_QUESTION_BUDGET, DISTRACTOR_WRAPPER_BUDGET, FRAGMENT_WRAPPER_BUDGET},
 };
 use crate::generation::{
     MAX_CONCAT_INPUTS, NodeId, NodeKind, Operation, OperationKind, SemanticGraphBuilder,
@@ -284,7 +284,7 @@ fn explicit_profile(graph: &ValidatedSemanticGraph) -> ObfuscationProfile {
     )
 }
 
-fn worst_case_question_fixture() -> (ValidatedSemanticGraph, Vec<Vec<u8>>, RenderPlan) {
+fn dense_exact_accounting_fixture() -> (ValidatedSemanticGraph, Vec<Vec<u8>>, RenderPlan) {
     let fragments = (0..5)
         .map(|index| {
             (0..16)
@@ -371,9 +371,213 @@ fn worst_case_question_fixture() -> (ValidatedSemanticGraph, Vec<Vec<u8>>, Rende
     (graph, fragments, plan)
 }
 
+fn maximum_surface_question_fixture() -> (ValidatedSemanticGraph, Vec<Vec<u8>>, RenderPlan) {
+    let fragments = vec![
+        b"A0a".to_vec(),
+        b"B1b".to_vec(),
+        b"C2c".to_vec(),
+        b"D3d".to_vec(),
+        b"E4eF".to_vec(),
+    ];
+    let mut builder = SemanticGraphBuilder::new(vec![3, 3, 3, 3, 4]);
+    let source = (0..5)
+        .map(|index| builder.fragment(index).unwrap())
+        .collect::<Vec<_>>();
+    let reversed = builder.operation(Operation::Reverse, vec![source[0]]);
+    let left = builder.operation(Operation::RotateLeft(usize::MAX), vec![source[1]]);
+    let xored = builder.operation(Operation::Xor(vec![u8::MAX; 16]), vec![source[2]]);
+    let permuted = builder.operation(Operation::Permute(vec![2, 0, 1]), vec![source[3]]);
+    let sliced = builder.operation(Operation::Slice { start: 0, end: 4 }, vec![source[4]]);
+    let concatenated = builder.operation(
+        Operation::Concat,
+        vec![
+            reversed, left, xored, permuted, sliced, reversed, left, xored, permuted, sliced,
+            reversed, left, xored,
+        ],
+    );
+    let hashed = builder.operation(Operation::Sha256Prefix(16), vec![concatenated]);
+    let output = builder.operation(Operation::RotateRight(usize::MAX), vec![hashed]);
+    builder.output(output);
+    let graph = builder.validate().unwrap();
+
+    let steps = graph
+        .topological_nodes()
+        .iter()
+        .enumerate()
+        .map(|(index, node)| DisplayStep {
+            node: node.id(),
+            output_label: longest_identifier('o', index),
+            local_name: longest_identifier('l', index),
+            template: TemplateFamily::Helper,
+            numeric_style: NumericStyle::IdentityOffset { delta: 15 },
+            literal_plan: match node.kind() {
+                NodeKind::Fragment { index } => {
+                    let length = fragments[*index].len();
+                    Some(FragmentLiteralPlan::ShuffledChunks {
+                        chunks: vec![1..2, 2..length, 0..1],
+                        restore_order: vec![2, 0, 1],
+                    })
+                }
+                NodeKind::Operation { .. } => None,
+            },
+            guard_value: None,
+            kind: match node.kind() {
+                NodeKind::Fragment { index } => DisplayStepKind::Fragment { index: *index },
+                NodeKind::Operation { operation, inputs } => DisplayStepKind::Operation {
+                    operation: operation.clone(),
+                    inputs: inputs.clone(),
+                },
+            },
+        })
+        .collect::<Vec<_>>();
+    let mut steps = steps.into_iter();
+    let languages = [
+        RenderLanguage::Java,
+        RenderLanguage::Java,
+        RenderLanguage::Java,
+        RenderLanguage::Java,
+        RenderLanguage::Go,
+    ];
+    let mut display_fragments = [3, 3, 3, 2, 2]
+        .into_iter()
+        .enumerate()
+        .map(|(index, size)| DisplayFragment {
+            heading: longest_identifier('h', index),
+            language: languages[index],
+            steps: steps.by_ref().take(size).collect(),
+            distractor: false,
+        })
+        .collect::<Vec<_>>();
+    assert!(steps.next().is_none());
+    display_fragments.push(DisplayFragment {
+        heading: longest_identifier('d', 0),
+        language: RenderLanguage::Rust,
+        steps: Vec::new(),
+        distractor: true,
+    });
+
+    let semantics = graph
+        .topological_nodes()
+        .iter()
+        .filter_map(|node| match node.kind() {
+            NodeKind::Fragment { .. } => None,
+            NodeKind::Operation { operation, .. } => {
+                Some(HelperSemantic::Operation(OperationKind::from(operation)))
+            }
+        })
+        .chain([HelperSemantic::BytesAscii])
+        .collect::<BTreeSet<_>>();
+    let profile = ObfuscationProfile::new(
+        semantics
+            .into_iter()
+            .enumerate()
+            .map(|(index, semantic)| (semantic, longest_identifier('a', index)))
+            .collect(),
+    );
+    let plan = RenderPlan {
+        fragments: display_fragments,
+        output: graph.output(),
+        profile,
+    };
+
+    (graph, fragments, plan)
+}
+
 #[test]
-fn worst_case_assembled_question_fits_actual_fragment_and_question_limits() {
-    let (graph, fragments, plan) = worst_case_question_fixture();
+fn maximum_surface_fixture_exercises_every_global_bound_factor() {
+    let (graph, fragments, plan) = maximum_surface_question_fixture();
+    let steps = plan
+        .fragments
+        .iter()
+        .filter(|fragment| !fragment.distractor)
+        .flat_map(|fragment| &fragment.steps)
+        .collect::<Vec<_>>();
+
+    assert_eq!(fragments.iter().map(Vec::len).sum::<usize>(), 16);
+    assert_eq!(fragments.len(), 5);
+    assert_eq!(graph.operation_count(), 8);
+    assert_eq!(graph.topological_nodes().len(), 13);
+    assert_eq!(plan.fragments.len(), 6);
+    assert_eq!(
+        plan.fragments
+            .iter()
+            .filter(|fragment| fragment.distractor)
+            .count(),
+        1
+    );
+    assert_eq!(plan.profile.aliases().len(), 9);
+    assert!(
+        plan.profile
+            .aliases()
+            .values()
+            .all(|alias| alias.len() == 16)
+    );
+    assert!(
+        plan.fragments
+            .iter()
+            .all(|fragment| fragment.heading.len() == 16)
+    );
+    assert!(steps.iter().all(|step| {
+        step.output_label.len() == 16
+            && step.local_name.len() == 16
+            && step.template == TemplateFamily::Helper
+    }));
+    assert!(
+        steps
+            .iter()
+            .all(|step| { step.numeric_style == NumericStyle::IdentityOffset { delta: 15 } })
+    );
+    let literal_plans = steps
+        .iter()
+        .filter_map(|step| step.literal_plan.as_ref())
+        .collect::<Vec<_>>();
+    assert_eq!(literal_plans.len(), 5);
+    assert!(literal_plans.iter().all(
+        |literal| matches!(literal, FragmentLiteralPlan::ShuffledChunks { chunks, .. } if chunks.len() == 3)
+    ));
+    let operation_kinds = steps
+        .iter()
+        .filter_map(|step| match &step.kind {
+            DisplayStepKind::Fragment { .. } => None,
+            DisplayStepKind::Operation { operation, .. } => Some(OperationKind::from(operation)),
+        })
+        .collect::<BTreeSet<_>>();
+    assert_eq!(operation_kinds.len(), 8);
+    let concat_inputs = steps
+        .iter()
+        .find_map(|step| match &step.kind {
+            DisplayStepKind::Operation {
+                operation: Operation::Concat,
+                inputs,
+            } => Some(inputs),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(concat_inputs.len(), MAX_CONCAT_INPUTS);
+    assert_eq!(
+        concat_inputs.iter().copied().collect::<BTreeSet<_>>().len(),
+        5
+    );
+
+    validate::validate_plan(&graph, &fragments, &plan).unwrap();
+    let question = emitter::emit_question(&plan, &fragments).unwrap();
+    assert!(question.len() <= MAX_QUESTION_BYTES);
+    assert!(question.contains("(new byte[][]{"));
+    assert!(question.contains(" + 15) - 15)"));
+    assert!(question.contains("return "));
+    assert!(question.contains("audit/example branch"));
+    assert_eq!(
+        question
+            .lines()
+            .filter(|line| line.starts_with("Dependency: "))
+            .count(),
+        7
+    );
+}
+
+#[test]
+fn dense_exact_accounting_question_fits_actual_fragment_and_question_limits() {
+    let (graph, fragments, plan) = dense_exact_accounting_fixture();
     assert_eq!(graph.operation_count(), 8);
     assert_eq!(plan.fragments.len(), 6);
     let effective_languages = plan
@@ -609,6 +813,59 @@ fn maximum_dynamic_common_question_text_fits_the_validator_reservation() {
     assert_eq!(maximum, 1_528);
     assert_eq!(COMMON_QUESTION_BUDGET - maximum, 520);
     assert!(maximum <= COMMON_QUESTION_BUDGET);
+}
+
+fn checked_compositional_question_bound(max_step_budget: usize) -> Option<usize> {
+    const MAX_SOURCE_FRAGMENTS: usize = 5;
+    const MAX_OPERATIONS: usize = 8;
+    const MAX_NODES: usize = MAX_SOURCE_FRAGMENTS + MAX_OPERATIONS;
+    const MAX_IDENTIFIER: usize = 16;
+
+    let longest_label = "x".repeat(MAX_IDENTIFIER);
+    let clue_bytes = (0..MAX_OPERATIONS).try_fold(0_usize, |total, operation_index| {
+        let available_predecessors = MAX_SOURCE_FRAGMENTS.checked_add(operation_index)?;
+        let producer_count = available_predecessors.min(MAX_CONCAT_INPUTS);
+        let producers = vec![(longest_label.as_str(), MAX_SOURCE_FRAGMENTS - 1); producer_count];
+        let clue =
+            emitter::format_dependency_clue(&producers, &longest_label, MAX_SOURCE_FRAGMENTS - 1)
+                .ok()?;
+        total.checked_add(clue.len())
+    })?;
+    let fragment_wrapper = FRAGMENT_WRAPPER_BUDGET.checked_add(MAX_IDENTIFIER)?;
+    let distractor = DISTRACTOR_WRAPPER_BUDGET.checked_add(MAX_IDENTIFIER)?;
+
+    COMMON_QUESTION_BUDGET
+        .checked_add(MAX_IDENTIFIER)?
+        .checked_add(MAX_SOURCE_FRAGMENTS.checked_mul(fragment_wrapper)?)?
+        .checked_add(MAX_NODES.checked_mul(max_step_budget)?)?
+        .checked_add(clue_bytes)?
+        .checked_add(distractor)
+}
+
+#[test]
+fn declared_budgets_compositionally_bound_every_legal_question() {
+    let declared_step_max = RenderLanguage::ALL
+        .into_iter()
+        .flat_map(|language| {
+            [
+                TemplateFamily::Direct,
+                TemplateFamily::Helper,
+                TemplateFamily::AliasChain,
+                TemplateFamily::Guarded,
+            ]
+            .map(move |family| declared_template_max_bytes(language, family))
+        })
+        .max()
+        .unwrap();
+    assert_eq!(declared_step_max, 480);
+
+    let legal_bound = checked_compositional_question_bound(declared_step_max).unwrap();
+    assert_eq!(legal_bound, 11_756);
+    assert!(legal_bound <= MAX_QUESTION_BYTES);
+
+    let inflated_step_budget = declared_step_max.checked_add(64).unwrap();
+    let inflated_bound = checked_compositional_question_bound(inflated_step_budget).unwrap();
+    assert!(inflated_bound > MAX_QUESTION_BYTES);
 }
 
 #[test]
