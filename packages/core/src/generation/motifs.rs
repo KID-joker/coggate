@@ -13,25 +13,32 @@ pub(crate) enum PlanMotif {
     Base64UrlRoundTrip,
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "used by the Task 3 planner integration")
-)]
-pub(crate) fn sample_motif(random: &mut impl RandomSource) -> Result<PlanMotif, GenerationError> {
-    match sample_below(random, 5)? {
-        0 => Ok(PlanMotif::General),
-        1 => Ok(PlanMotif::AddModulo),
-        2 => Ok(PlanMotif::SubModulo),
-        3 => Ok(PlanMotif::HexRoundTrip),
-        4 => Ok(PlanMotif::Base64UrlRoundTrip),
-        _ => Err(GenerationError::ExecutionFailed),
-    }
+impl PlanMotif {
+    pub(crate) const ALL: [Self; 5] = [
+        Self::General,
+        Self::AddModulo,
+        Self::SubModulo,
+        Self::HexRoundTrip,
+        Self::Base64UrlRoundTrip,
+    ];
 }
 
 #[cfg_attr(
     not(test),
     expect(dead_code, reason = "used by the Task 3 planner integration")
 )]
+pub(crate) fn sample_motif(random: &mut impl RandomSource) -> Result<PlanMotif, GenerationError> {
+    let index = sample_below(random, PlanMotif::ALL.len())?;
+    Ok(PlanMotif::ALL[index])
+}
+
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "used by the Task 3 planner integration")
+)]
+/// `fragment_nodes[index]` and `fragment_lengths[index]` must describe the same
+/// builder fragment. Task 3 derives both arrays from one fragment source, while
+/// graph validation remains defense in depth for incorrect caller metadata.
 pub(crate) fn build_motif(
     builder: &mut SemanticGraphBuilder,
     fragment_nodes: &[NodeId],
@@ -41,13 +48,7 @@ pub(crate) fn build_motif(
 ) -> Result<NodeId, GenerationError> {
     validate_fragments(fragment_nodes, fragment_lengths)?;
 
-    let mut roles = fragment_nodes
-        .iter()
-        .copied()
-        .zip(fragment_lengths.iter().copied())
-        .map(|(node, length)| FragmentRole { node, length })
-        .collect::<Vec<_>>();
-    shuffle(random, &mut roles)?;
+    let roles = shuffled_fragment_roles(fragment_nodes, fragment_lengths, random)?;
 
     let transformed = match motif {
         PlanMotif::General => build_general(builder, &roles, random)?,
@@ -78,6 +79,21 @@ struct FragmentRole {
     length: usize,
 }
 
+fn shuffled_fragment_roles(
+    fragment_nodes: &[NodeId],
+    fragment_lengths: &[usize],
+    random: &mut impl RandomSource,
+) -> Result<Vec<FragmentRole>, GenerationError> {
+    let mut roles = fragment_nodes
+        .iter()
+        .copied()
+        .zip(fragment_lengths.iter().copied())
+        .map(|(node, length)| FragmentRole { node, length })
+        .collect::<Vec<_>>();
+    shuffle(random, &mut roles)?;
+    Ok(roles)
+}
+
 fn validate_fragments(
     fragment_nodes: &[NodeId],
     fragment_lengths: &[usize],
@@ -88,8 +104,16 @@ fn validate_fragments(
     if !(3..=5).contains(&fragment_nodes.len()) {
         return Err(GenerationError::InvalidFragment(fragment_nodes.len()));
     }
-    if fragment_lengths.contains(&0) {
+    if fragment_lengths
+        .iter()
+        .any(|length| !(1..=MAX_PERMUTATION_LENGTH).contains(length))
+    {
         return Err(GenerationError::InvalidLength);
+    }
+    for (index, node) in fragment_nodes.iter().enumerate() {
+        if fragment_nodes[..index].contains(node) {
+            return Err(GenerationError::DuplicateNode(node.0));
+        }
     }
     Ok(())
 }
@@ -121,7 +145,7 @@ fn build_arithmetic(
     random: &mut impl RandomSource,
 ) -> Result<Vec<NodeId>, GenerationError> {
     let maximum_common_length = roles[0].length.min(roles[1].length);
-    let common_length = 1 + sample_index(random, maximum_common_length)?;
+    let common_length = 1 + sample_below(random, maximum_common_length)?;
     let first_slice = slice_with_length(roles[0].length, common_length, random)?;
     let second_slice = slice_with_length(roles[1].length, common_length, random)?;
     let first = builder.operation(first_slice, vec![roles[0].node]);
@@ -165,7 +189,7 @@ fn finalize(
     values: &[NodeId],
     random: &mut impl RandomSource,
 ) -> Result<NodeId, GenerationError> {
-    let control = values[sample_index(random, values.len())?];
+    let control = values[sample_below(random, values.len())?];
 
     match sample_below(random, 2)? {
         0 => {
@@ -202,7 +226,7 @@ fn nonlegacy_structural_operation(
         choices.push(StructuralChoice::Permute);
     }
 
-    match choices[sample_index(random, choices.len())?] {
+    match choices[sample_below(random, choices.len())?] {
         StructuralChoice::EvenBytes => Ok(Operation::EvenBytes),
         StructuralChoice::OddBytes => Ok(Operation::OddBytes),
         StructuralChoice::Permute => permutation_operation(input_length, random),
@@ -247,7 +271,7 @@ fn rotate_operation(
     if input_length == 1 {
         return Ok(Operation::Reverse);
     }
-    let amount = 1 + sample_index(random, input_length - 1)?;
+    let amount = 1 + sample_below(random, input_length - 1)?;
     if left {
         Ok(Operation::RotateLeft(amount))
     } else {
@@ -264,9 +288,9 @@ fn permutation_operation(
     }
 
     let mut permutation = (0..input_length).collect::<Vec<_>>();
-    shuffle(random, &mut permutation)?;
-    if permutation.iter().copied().eq(0..input_length) {
-        permutation.swap(0, 1);
+    for index in (1..input_length).rev() {
+        let other = sample_below(random, index)?;
+        permutation.swap(index, other);
     }
     Ok(Operation::Permute(permutation))
 }
@@ -275,8 +299,8 @@ fn slice_operation(
     input_length: usize,
     random: &mut impl RandomSource,
 ) -> Result<Operation, GenerationError> {
-    let start = sample_index(random, input_length)?;
-    let end = start + 1 + sample_index(random, input_length - start)?;
+    let start = sample_below(random, input_length)?;
+    let end = start + 1 + sample_below(random, input_length - start)?;
     Ok(Operation::Slice { start, end })
 }
 
@@ -285,7 +309,7 @@ fn slice_with_length(
     output_length: usize,
     random: &mut impl RandomSource,
 ) -> Result<Operation, GenerationError> {
-    let start = sample_index(random, input_length - output_length + 1)?;
+    let start = sample_below(random, input_length - output_length + 1)?;
     Ok(Operation::Slice {
         start,
         end: start + output_length,
@@ -297,49 +321,24 @@ fn xor_operation(
     random: &mut impl RandomSource,
 ) -> Result<Operation, GenerationError> {
     let maximum_key_length = input_length.min(MAX_XOR_KEY_LENGTH);
-    let key_length = 1 + sample_index(random, maximum_key_length)?;
+    let key_length = 1 + sample_below(random, maximum_key_length)?;
     let mut key = vec![0_u8; key_length];
     random.fill(&mut key)?;
     Ok(Operation::Xor(key))
-}
-
-fn sample_index(random: &mut impl RandomSource, upper: usize) -> Result<usize, GenerationError> {
-    if upper == 0 {
-        return Err(GenerationError::InvalidOperation);
-    }
-    if upper <= 256 {
-        return sample_below(random, upper);
-    }
-
-    let threshold = upper.wrapping_neg() % upper;
-    loop {
-        let mut bytes = [0_u8; size_of::<usize>()];
-        random.fill(&mut bytes)?;
-        let value = usize::from_le_bytes(bytes);
-        if value >= threshold {
-            return Ok(value % upper);
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
 
-    use super::{PlanMotif, build_motif, sample_motif};
-    use crate::generation::{
-        GenerationError, MAX_XOR_KEY_LENGTH, NodeId, NodeKind, Operation, OperationFamily,
-        OperationKind, RandomSource, SemanticGraphBuilder, SemanticNode, ValidatedSemanticGraph,
-        evaluate_semantic_graph, test_random::DeterministicRandom,
+    use super::{
+        PlanMotif, build_motif, permutation_operation, sample_motif, shuffled_fragment_roles,
     };
-
-    const MOTIFS: [PlanMotif; 5] = [
-        PlanMotif::General,
-        PlanMotif::AddModulo,
-        PlanMotif::SubModulo,
-        PlanMotif::HexRoundTrip,
-        PlanMotif::Base64UrlRoundTrip,
-    ];
+    use crate::generation::{
+        GenerationError, MAX_PERMUTATION_LENGTH, MAX_XOR_KEY_LENGTH, NodeId, NodeKind, Operation,
+        OperationFamily, OperationKind, RandomSource, SemanticGraphBuilder, SemanticNode,
+        ValidatedSemanticGraph, evaluate_semantic_graph, test_random::DeterministicRandom,
+    };
 
     struct PatternRandom(u8);
 
@@ -348,6 +347,56 @@ mod tests {
             destination.fill(self.0);
             Ok(())
         }
+    }
+
+    #[derive(Default)]
+    struct CountingPatternRandom {
+        fills: usize,
+    }
+
+    impl RandomSource for CountingPatternRandom {
+        fn fill(&mut self, destination: &mut [u8]) -> Result<(), GenerationError> {
+            self.fills += 1;
+            destination.fill(0);
+            Ok(())
+        }
+    }
+
+    struct ScriptedRandom {
+        bytes: Vec<u8>,
+        offset: usize,
+    }
+
+    impl ScriptedRandom {
+        fn new(bytes: Vec<u8>) -> Self {
+            Self { bytes, offset: 0 }
+        }
+    }
+
+    impl RandomSource for ScriptedRandom {
+        fn fill(&mut self, destination: &mut [u8]) -> Result<(), GenerationError> {
+            let end = self.offset + destination.len();
+            let source = self
+                .bytes
+                .get(self.offset..end)
+                .ok_or(GenerationError::RandomnessUnavailable)?;
+            destination.copy_from_slice(source);
+            self.offset = end;
+            Ok(())
+        }
+    }
+
+    fn is_single_cycle(permutation: &[usize]) -> bool {
+        let mut visited = vec![false; permutation.len()];
+        let mut current = 0;
+        for _ in 0..permutation.len() {
+            if visited[current] {
+                return false;
+            }
+            visited[current] = true;
+            current = permutation[current];
+        }
+        current == 0 && visited.into_iter().all(|seen| seen)
     }
 
     fn fragments(count: usize) -> Vec<Vec<u8>> {
@@ -390,6 +439,14 @@ mod tests {
         (graph, fragments)
     }
 
+    fn builder_and_nodes(lengths: &[usize]) -> (SemanticGraphBuilder, Vec<NodeId>) {
+        let builder = SemanticGraphBuilder::new(lengths.to_vec());
+        let nodes = (0..lengths.len())
+            .map(|index| builder.fragment(index).unwrap())
+            .collect();
+        (builder, nodes)
+    }
+
     fn operation_kinds(graph: &ValidatedSemanticGraph) -> Vec<OperationKind> {
         graph
             .topological_nodes()
@@ -399,6 +456,117 @@ mod tests {
                 NodeKind::Operation { operation, .. } => Some(OperationKind::from(operation)),
             })
             .collect()
+    }
+
+    #[test]
+    fn permutation_sampling_is_uniform_over_nonidentity_single_cycles() {
+        let mut counts = BTreeMap::<Vec<usize>, usize>::new();
+
+        for first_choice in 0_u8..=u8::MAX {
+            for second_choice in 0_u8..=1 {
+                let mut random = ScriptedRandom::new(vec![first_choice, second_choice, 0]);
+                let operation = permutation_operation(3, &mut random).unwrap();
+                let Operation::Permute(permutation) = operation else {
+                    panic!("length-three permutation does not fall back");
+                };
+
+                assert_ne!(permutation, vec![0, 1, 2]);
+                assert!(is_single_cycle(&permutation));
+                *counts.entry(permutation).or_default() += 1;
+            }
+        }
+
+        assert_eq!(counts.len(), 2);
+        assert!(counts.values().all(|count| *count == 256));
+    }
+
+    #[test]
+    fn plan_motif_catalog_is_complete() {
+        assert_eq!(
+            PlanMotif::ALL,
+            [
+                PlanMotif::General,
+                PlanMotif::AddModulo,
+                PlanMotif::SubModulo,
+                PlanMotif::HexRoundTrip,
+                PlanMotif::Base64UrlRoundTrip,
+            ]
+        );
+    }
+
+    #[test]
+    fn motif_fragment_lengths_accept_v1_maximum_and_reject_the_next_length_before_sampling() {
+        let accepted_lengths = [MAX_PERMUTATION_LENGTH, 1, 1];
+        let (mut builder, nodes) = builder_and_nodes(&accepted_lengths);
+        let mut random = PatternRandom(0);
+        let output = build_motif(
+            &mut builder,
+            &nodes,
+            &accepted_lengths,
+            PlanMotif::General,
+            &mut random,
+        )
+        .expect("v1 maximum fragment length is accepted");
+        builder.output(output);
+        builder.validate().expect("maximum-length graph validates");
+
+        let rejected_lengths = [MAX_PERMUTATION_LENGTH + 1, 1, 1];
+        let (mut builder, nodes) = builder_and_nodes(&rejected_lengths);
+        let mut random = CountingPatternRandom::default();
+        assert_eq!(
+            build_motif(
+                &mut builder,
+                &nodes,
+                &rejected_lengths,
+                PlanMotif::General,
+                &mut random,
+            ),
+            Err(GenerationError::InvalidLength)
+        );
+        assert_eq!(random.fills, 0);
+    }
+
+    #[test]
+    fn duplicate_fragment_nodes_are_rejected_before_sampling() {
+        let lengths = [1, 1, 1];
+        let (mut builder, mut nodes) = builder_and_nodes(&lengths);
+        nodes[1] = nodes[0];
+        let mut random = CountingPatternRandom::default();
+
+        assert_eq!(
+            build_motif(
+                &mut builder,
+                &nodes,
+                &lengths,
+                PlanMotif::General,
+                &mut random,
+            ),
+            Err(GenerationError::DuplicateNode(nodes[0].0))
+        );
+        assert_eq!(random.fills, 0);
+    }
+
+    #[test]
+    fn role_shuffling_preserves_each_nodes_original_distinct_length() {
+        let nodes = [NodeId(11), NodeId(22), NodeId(33), NodeId(44), NodeId(55)];
+        let lengths = [2, 3, 5, 7, 11];
+        let expected = nodes.into_iter().zip(lengths).collect::<BTreeMap<_, _>>();
+        let mut first_roles = BTreeSet::new();
+        let mut second_roles = BTreeSet::new();
+
+        for seed in 0_u8..=u8::MAX {
+            let mut random = DeterministicRandom::new([seed; 32]);
+            let roles = shuffled_fragment_roles(&nodes, &lengths, &mut random).unwrap();
+
+            for role in &roles {
+                assert_eq!(role.length, expected[&role.node]);
+            }
+            first_roles.insert(roles[0].node);
+            second_roles.insert(roles[1].node);
+        }
+
+        assert!(first_roles.len() > 1);
+        assert!(second_roles.len() > 1);
     }
 
     fn cross_fragment_operation_count(graph: &ValidatedSemanticGraph) -> usize {
@@ -682,7 +850,7 @@ mod tests {
 
     #[test]
     fn every_named_motif_satisfies_the_graph_contract_for_supported_fragment_counts() {
-        for motif in MOTIFS {
+        for motif in PlanMotif::ALL {
             for count in 3..=5 {
                 for seed in 0_u8..=31 {
                     let (graph, fragments) = build_graph(motif, count, seed);
@@ -725,7 +893,7 @@ mod tests {
 
     #[test]
     fn named_motifs_pin_their_direct_special_role_topologies() {
-        for motif in MOTIFS {
+        for motif in PlanMotif::ALL {
             for count in 3..=5 {
                 for seed in 0_u8..=31 {
                     let (graph, _) = build_graph(motif, count, seed);
@@ -738,7 +906,7 @@ mod tests {
 
     #[test]
     fn every_generated_operation_obeys_leaf_policies_and_stays_nonempty() {
-        for motif in MOTIFS {
+        for motif in PlanMotif::ALL {
             for count in 3..=5 {
                 for seed in 0_u8..=u8::MAX {
                     let (graph, _) = build_graph(motif, count, seed);
@@ -753,7 +921,7 @@ mod tests {
     fn paired_role_assignments_keep_nodes_and_distinct_lengths_aligned() {
         let distinct_fragments = [1, 2, 4, 7, 11].map(|length| vec![b'x'; length]).to_vec();
 
-        for motif in MOTIFS {
+        for motif in PlanMotif::ALL {
             let mut first_role_sources = BTreeSet::new();
             let mut second_role_sources = BTreeSet::new();
 
@@ -845,7 +1013,7 @@ mod tests {
     fn operation_catalog_is_reachable_across_bounded_motifs_and_seeds() {
         let mut reached = BTreeSet::new();
 
-        for motif in MOTIFS {
+        for motif in PlanMotif::ALL {
             for seed in 0_u8..=u8::MAX {
                 let (graph, _) = build_graph(motif, 5, seed);
                 reached.extend(operation_kinds(&graph));
@@ -857,17 +1025,15 @@ mod tests {
 
     #[test]
     fn sample_motif_reaches_all_variants_over_deterministic_seeds() {
-        let mut seen = [false; MOTIFS.len()];
+        let mut seen = [false; PlanMotif::ALL.len()];
 
         for seed in 0_u8..=u8::MAX {
             let mut random = DeterministicRandom::new([seed; 32]);
-            let index = match sample_motif(&mut random).expect("motif sample succeeds") {
-                PlanMotif::General => 0,
-                PlanMotif::AddModulo => 1,
-                PlanMotif::SubModulo => 2,
-                PlanMotif::HexRoundTrip => 3,
-                PlanMotif::Base64UrlRoundTrip => 4,
-            };
+            let sampled = sample_motif(&mut random).expect("motif sample succeeds");
+            let index = PlanMotif::ALL
+                .iter()
+                .position(|motif| *motif == sampled)
+                .expect("sampled motif belongs to the catalog");
             seen[index] = true;
         }
 
