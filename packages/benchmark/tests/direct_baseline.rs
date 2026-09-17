@@ -136,6 +136,32 @@ fn output_limit_is_infrastructure_failure() {
 
 #[cfg(unix)]
 #[test]
+fn output_decoding_distinguishes_infrastructure_from_solver_no_guess() {
+    let invalid_root = tempfile::tempdir().unwrap();
+    let invalid_program = script(&invalid_root, "printf '\\377'");
+    let invalid_baseline =
+        baseline_with_program(&invalid_root, invalid_program, Duration::from_secs(5), 1024);
+    assert!(matches!(
+        invalid_baseline.predict_text(go_question()),
+        Err(BaselineError::Infrastructure)
+    ));
+
+    let noncanonical_root = tempfile::tempdir().unwrap();
+    let noncanonical_program = script(&noncanonical_root, "printf 'not-base64!'");
+    let noncanonical_baseline = baseline_with_program(
+        &noncanonical_root,
+        noncanonical_program,
+        Duration::from_secs(5),
+        1024,
+    );
+    assert!(matches!(
+        noncanonical_baseline.predict_text(go_question()),
+        Ok(Prediction::NoGuess(NoGuessReason::ToolRejected))
+    ));
+}
+
+#[cfg(unix)]
+#[test]
 fn nonzero_exit_and_reaped_timeout_are_solver_no_guess() {
     for (body, timeout) in [
         ("exit 7", Duration::from_secs(1)),
