@@ -222,9 +222,13 @@ impl ProcessWorkspace<'_> {
         let stderr_reader = match spawn_reader(stderr, Arc::clone(&budget)) {
             Ok(reader) => reader,
             Err(error) => {
-                let _ = kill_and_wait(&mut child);
-                let _ = stdout_reader.join();
-                return Err(error);
+                return match kill_and_wait(&mut child) {
+                    Ok(_) => match stdout_reader.join() {
+                        Ok(Ok(_)) => Err(error),
+                        _ => Err(ProcessError::Output),
+                    },
+                    Err(cleanup) => Err(cleanup),
+                };
             }
         };
 
@@ -260,8 +264,13 @@ impl ProcessWorkspace<'_> {
                 Termination::AlreadyExited(status) => Completion::Exited(status),
             }),
             Err(error) => {
-                let _ = kill_and_wait(&mut child);
-                Err(error)
+                return match kill_and_wait(&mut child) {
+                    Ok(_) => match join_readers(stdout_reader, stderr_reader) {
+                        Ok(_) => Err(error),
+                        Err(output) => Err(output),
+                    },
+                    Err(cleanup) => Err(cleanup),
+                };
             }
         };
         let completion = completion?;
