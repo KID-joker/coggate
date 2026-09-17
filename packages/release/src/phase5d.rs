@@ -22,6 +22,8 @@ const ABI_VERSION: u32 = 1;
 const MANIFEST: &str = "manifest.json";
 const CHECKSUMS: &str = "SHA256SUMS";
 const MAX_FILES: usize = 256;
+const MAX_DIRECTORIES: usize = 256;
+const MAX_ENTRIES: usize = 512;
 const MAX_PAYLOAD_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_TOTAL_PAYLOAD_BYTES: u64 = 1024 * 1024 * 1024;
 const TREE_DOMAIN: &[u8] = b"agentgate-phase5d-tree-v1";
@@ -147,7 +149,7 @@ impl VerifiedArtifact {
     }
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug, Error, PartialEq, Eq)]
 pub enum Phase5dError {
     #[error("Phase 5D artifact is invalid")]
     Invalid,
@@ -155,6 +157,18 @@ pub enum Phase5dError {
     Io,
     #[error("Phase 5D artifact changed while being verified")]
     Changed,
+    #[error("Phase 5D artifact has too many regular files")]
+    FileLimit,
+    #[error("Phase 5D artifact has too many directories")]
+    DirectoryLimit,
+    #[error("Phase 5D artifact has too many entries")]
+    EntryLimit,
+    #[error("Phase 5D artifact metadata exceeds its limit")]
+    MetadataLimit,
+    #[error("Phase 5D artifact payload sizes exceed their limit")]
+    SizeLimit,
+    #[error("Phase 5D artifact has an unlisted directory")]
+    UnexpectedDirectory,
 }
 
 #[derive(Clone)]
@@ -167,6 +181,12 @@ struct Identity {
     inode: u64,
     #[cfg(unix)]
     change_ns: i128,
+    #[cfg(windows)]
+    attributes: u32,
+    #[cfg(windows)]
+    creation_time: u64,
+    #[cfg(windows)]
+    last_write_time: u64,
 }
 
 impl Identity {
@@ -183,7 +203,18 @@ impl Identity {
                     + i128::from(metadata.ctime_nsec()),
             }
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::MetadataExt;
+            Self {
+                len: metadata.len(),
+                modified: metadata.modified().ok(),
+                attributes: metadata.file_attributes(),
+                creation_time: metadata.creation_time(),
+                last_write_time: metadata.last_write_time(),
+            }
+        }
+        #[cfg(all(not(unix), not(windows)))]
         {
             Self {
                 len: metadata.len(),
@@ -202,11 +233,34 @@ impl PartialEq for Identity {
                     && self.inode == other.inode
                     && self.change_ns == other.change_ns
             }
-            #[cfg(not(unix))]
+            #[cfg(all(not(unix), not(windows)))]
             {
                 true
             }
+            #[cfg(windows)]
+            {
+                self.attributes == other.attributes
+                    && self.creation_time == other.creation_time
+                    && self.last_write_time == other.last_write_time
+            }
         }
+    }
+}
+
+fn is_link_or_reparse(metadata: &Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        // Rust 1.85 exposes file attributes but not a stable volume-serial/file-index pair.
+        // Reparse points must nevertheless be rejected before any handle is opened.
+        (metadata.file_attributes() & 0x400) != 0
+    }
+    #[cfg(not(windows))]
+    {
+        false
     }
 }
 
@@ -230,15 +284,14 @@ pub fn verify_phase5d_artifact(
     let root_identity = require_directory(root)?;
     let mut directories = vec![(root.to_path_buf(), root_identity)];
     let disk = walk_tree(root, &mut directories)?;
-    if disk.len() > MAX_FILES {
-        return Err(Phase5dError::Invalid);
-    }
 
     let manifest_disk = disk.get(MANIFEST).ok_or(Phase5dError::Invalid)?;
     let checksum_disk = disk.get(CHECKSUMS).ok_or(Phase5dError::Invalid)?;
     let manifest_bytes = read_metadata(manifest_disk)?;
     let checksum_bytes = read_metadata(checksum_disk)?;
     let (files, tools) = validate_manifest(&manifest_bytes, expected)?;
+
+    validate_directories(&directories, &files)?;
 
     let expected_paths = files
         .iter()
@@ -253,17 +306,13 @@ pub fn verify_phase5d_artifact(
         return Err(Phase5dError::Invalid);
     }
 
-    let mut total = 0_u64;
+    validate_size_limits(files.iter().map(|file| file.size))?;
     for file in &files {
-        if file.size > MAX_PAYLOAD_BYTES {
-            return Err(Phase5dError::Invalid);
-        }
-        total = total.checked_add(file.size).ok_or(Phase5dError::Invalid)?;
-        if total > MAX_TOTAL_PAYLOAD_BYTES {
-            return Err(Phase5dError::Invalid);
-        }
         let disk_file = disk.get(&file.path).ok_or(Phase5dError::Invalid)?;
-        if disk_file.identity.len > MAX_PAYLOAD_BYTES || disk_file.identity.len != file.size {
+        if disk_file.identity.len > MAX_PAYLOAD_BYTES {
+            return Err(Phase5dError::SizeLimit);
+        }
+        if disk_file.identity.len != file.size {
             return Err(Phase5dError::Invalid);
         }
     }
@@ -308,7 +357,14 @@ pub fn verify_phase5d_artifact(
 
     // SHA256SUMS is intentionally not self-hashed, so give it its own final
     // handle-identity check before accepting the parsed bytes.
-    let _ = hash_checked(checksum_disk, root, &directories, MAX_METADATA_BYTES as u64)?;
+    let (checksum_size, checksum_hash) =
+        hash_checked(checksum_disk, root, &directories, MAX_METADATA_BYTES as u64)?;
+    if checksum_size
+        != u64::try_from(checksum_bytes.len()).map_err(|_| Phase5dError::MetadataLimit)?
+        || checksum_hash != hex::encode(Sha256::digest(&checksum_bytes))
+    {
+        return Err(Phase5dError::Changed);
+    }
     verify_directories(root, &directories)?;
     let tree_digest = tree_digest(&verified)?;
     Ok(VerifiedArtifact {
@@ -323,10 +379,67 @@ pub fn verify_phase5d_artifact(
 
 fn require_directory(path: &Path) -> Result<Identity, Phase5dError> {
     let metadata = fs::symlink_metadata(path).map_err(|_| Phase5dError::Io)?;
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+    if is_link_or_reparse(&metadata) || !metadata.is_dir() {
         return Err(Phase5dError::Invalid);
     }
     Ok(Identity::from_metadata(&metadata))
+}
+
+fn validate_size_limits(sizes: impl IntoIterator<Item = u64>) -> Result<(), Phase5dError> {
+    let mut total = 0_u64;
+    for size in sizes {
+        if size > MAX_PAYLOAD_BYTES {
+            return Err(Phase5dError::SizeLimit);
+        }
+        total = total.checked_add(size).ok_or(Phase5dError::SizeLimit)?;
+        if total > MAX_TOTAL_PAYLOAD_BYTES {
+            return Err(Phase5dError::SizeLimit);
+        }
+    }
+    Ok(())
+}
+
+fn validate_directories(
+    directories: &[(PathBuf, Identity)],
+    files: &[ManifestFile],
+) -> Result<(), Phase5dError> {
+    let mut expected = BTreeSet::from([String::new()]);
+    for file in files {
+        let mut current = String::new();
+        for part in file
+            .path
+            .split('/')
+            .take(file.path.split('/').count().saturating_sub(1))
+        {
+            if !current.is_empty() {
+                current.push('/');
+            }
+            current.push_str(part);
+            expected.insert(current.clone());
+        }
+    }
+    let root = directories
+        .first()
+        .map(|(path, _)| path)
+        .ok_or(Phase5dError::Invalid)?;
+    let actual = directories
+        .iter()
+        .map(|(path, _)| {
+            if path == root {
+                Ok(String::new())
+            } else {
+                path.strip_prefix(root)
+                    .ok()
+                    .and_then(|relative| relative.to_str())
+                    .map(|value| value.replace(std::path::MAIN_SEPARATOR, "/"))
+                    .ok_or(Phase5dError::UnexpectedDirectory)
+            }
+        })
+        .collect::<Result<BTreeSet<_>, _>>()?;
+    if actual != expected {
+        return Err(Phase5dError::UnexpectedDirectory);
+    }
+    Ok(())
 }
 
 fn walk_tree(
@@ -335,13 +448,14 @@ fn walk_tree(
 ) -> Result<BTreeMap<String, DiskFile>, Phase5dError> {
     let mut files = BTreeMap::new();
     let mut pending = vec![(root.to_path_buf(), String::new())];
+    let mut entries = 0_usize;
     while let Some((directory, prefix)) = pending.pop() {
-        let mut entries = fs::read_dir(&directory)
-            .map_err(|_| Phase5dError::Io)?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|_| Phase5dError::Io)?;
-        entries.sort_by_key(|entry| entry.file_name());
-        for entry in entries {
+        for entry in fs::read_dir(&directory).map_err(|_| Phase5dError::Io)? {
+            entries = entries.checked_add(1).ok_or(Phase5dError::EntryLimit)?;
+            if entries > MAX_ENTRIES {
+                return Err(Phase5dError::EntryLimit);
+            }
+            let entry = entry.map_err(|_| Phase5dError::Io)?;
             let name = entry
                 .file_name()
                 .into_string()
@@ -354,13 +468,19 @@ fn walk_tree(
             safe_relative_path(&relative).map_err(|_| Phase5dError::Invalid)?;
             let path = entry.path();
             let metadata = fs::symlink_metadata(&path).map_err(|_| Phase5dError::Io)?;
-            if metadata.file_type().is_symlink() {
+            if is_link_or_reparse(&metadata) {
                 return Err(Phase5dError::Invalid);
             }
             if metadata.is_dir() {
+                if directories.len() >= MAX_DIRECTORIES {
+                    return Err(Phase5dError::DirectoryLimit);
+                }
                 directories.push((path.clone(), Identity::from_metadata(&metadata)));
                 pending.push((path, relative));
             } else if metadata.is_file() {
+                if files.len() >= MAX_FILES {
+                    return Err(Phase5dError::FileLimit);
+                }
                 if files
                     .insert(
                         relative,
@@ -382,11 +502,17 @@ fn walk_tree(
 }
 
 fn read_metadata(file: &DiskFile) -> Result<Vec<u8>, Phase5dError> {
-    if file.identity.len > MAX_METADATA_BYTES as u64 {
-        return Err(Phase5dError::Invalid);
-    }
+    validate_metadata_size(file.identity.len)?;
     let (bytes, _) = read_checked(file, None, MAX_METADATA_BYTES as u64)?;
     Ok(bytes)
+}
+
+fn validate_metadata_size(size: u64) -> Result<(), Phase5dError> {
+    if size > MAX_METADATA_BYTES as u64 {
+        Err(Phase5dError::MetadataLimit)
+    } else {
+        Ok(())
+    }
 }
 
 fn read_checked(
@@ -395,7 +521,7 @@ fn read_checked(
     maximum: u64,
 ) -> Result<(Vec<u8>, String), Phase5dError> {
     let before = fs::symlink_metadata(&file.path).map_err(|_| Phase5dError::Io)?;
-    if before.file_type().is_symlink()
+    if is_link_or_reparse(&before)
         || !before.is_file()
         || Identity::from_metadata(&before) != file.identity
     {
@@ -421,7 +547,7 @@ fn read_checked(
     }
     let after = fs::symlink_metadata(&file.path).map_err(|_| Phase5dError::Io)?;
     let after_open = opened.metadata().map_err(|_| Phase5dError::Io)?;
-    if after.file_type().is_symlink()
+    if is_link_or_reparse(&after)
         || Identity::from_metadata(&after) != file.identity
         || Identity::from_metadata(&after_open) != file.identity
     {
@@ -441,7 +567,7 @@ fn hash_checked(
     maximum: u64,
 ) -> Result<(u64, String), Phase5dError> {
     let before = fs::symlink_metadata(&file.path).map_err(|_| Phase5dError::Io)?;
-    if before.file_type().is_symlink()
+    if is_link_or_reparse(&before)
         || !before.is_file()
         || Identity::from_metadata(&before) != file.identity
         || before.len() > maximum
@@ -477,7 +603,7 @@ fn hash_checked(
     }
     let after = fs::symlink_metadata(&file.path).map_err(|_| Phase5dError::Io)?;
     let after_open = opened.metadata().map_err(|_| Phase5dError::Io)?;
-    if after.file_type().is_symlink()
+    if is_link_or_reparse(&after)
         || Identity::from_metadata(&after) != file.identity
         || Identity::from_metadata(&after_open) != file.identity
     {
@@ -493,7 +619,7 @@ fn verify_directories(
 ) -> Result<(), Phase5dError> {
     for (path, identity) in directories {
         let metadata = fs::symlink_metadata(path).map_err(|_| Phase5dError::Io)?;
-        if metadata.file_type().is_symlink()
+        if is_link_or_reparse(&metadata)
             || !metadata.is_dir()
             || Identity::from_metadata(&metadata) != *identity
         {
@@ -600,15 +726,7 @@ fn validate_files(value: &Value, target: Target) -> Result<Vec<ManifestFile>, Ph
             .get("path")
             .and_then(Value::as_str)
             .ok_or(Phase5dError::Invalid)?;
-        if path == MANIFEST
-            || path == CHECKSUMS
-            || path
-                .split('/')
-                .any(|part| part == MANIFEST || part == CHECKSUMS)
-        {
-            return Err(Phase5dError::Invalid);
-        }
-        safe_relative_path(path).map_err(|_| Phase5dError::Invalid)?;
+        validate_payload_path(path)?;
         if previous.as_deref().is_some_and(|last| path <= last) {
             return Err(Phase5dError::Invalid);
         }
@@ -637,6 +755,19 @@ fn validate_files(value: &Value, target: Target) -> Result<Vec<ManifestFile>, Ph
     }
     validate_layout(&files, target)?;
     Ok(files)
+}
+
+fn validate_payload_path(path: &str) -> Result<(), Phase5dError> {
+    if path == MANIFEST
+        || path == CHECKSUMS
+        || path
+            .split('/')
+            .any(|part| part == MANIFEST || part == CHECKSUMS)
+    {
+        return Err(Phase5dError::Invalid);
+    }
+    safe_relative_path(path).map_err(|_| Phase5dError::Invalid)?;
+    Ok(())
 }
 
 fn artifact_kind(path: &str) -> &'static str {
@@ -766,4 +897,46 @@ fn tree_digest(files: &[VerifiedFile]) -> Result<String, Phase5dError> {
     let mut bytes = TREE_DOMAIN.to_vec();
     bytes.extend(canonical_compact(&Value::Array(tuples)).map_err(|_| Phase5dError::Invalid)?);
     Ok(hex::encode(Sha256::digest(bytes)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exact_limits_and_path_depth_are_enforced_before_payload_reads() {
+        assert_eq!(validate_size_limits([MAX_PAYLOAD_BYTES]), Ok(()));
+        assert_eq!(
+            validate_size_limits([MAX_PAYLOAD_BYTES + 1]),
+            Err(Phase5dError::SizeLimit)
+        );
+        assert_eq!(validate_size_limits([MAX_PAYLOAD_BYTES; 4]), Ok(()));
+        assert_eq!(
+            validate_size_limits([
+                MAX_PAYLOAD_BYTES,
+                MAX_PAYLOAD_BYTES,
+                MAX_PAYLOAD_BYTES,
+                MAX_PAYLOAD_BYTES,
+                1
+            ]),
+            Err(Phase5dError::SizeLimit)
+        );
+        assert_eq!(
+            validate_size_limits([u64::MAX, 1]),
+            Err(Phase5dError::SizeLimit)
+        );
+        assert_eq!(validate_metadata_size(MAX_METADATA_BYTES as u64), Ok(()));
+        assert_eq!(
+            validate_metadata_size((MAX_METADATA_BYTES as u64) + 1),
+            Err(Phase5dError::MetadataLimit)
+        );
+        assert_eq!(
+            validate_payload_path(&std::iter::repeat_n("a", 16).collect::<Vec<_>>().join("/")),
+            Ok(())
+        );
+        assert_eq!(
+            validate_payload_path(&std::iter::repeat_n("a", 17).collect::<Vec<_>>().join("/")),
+            Err(Phase5dError::Invalid)
+        );
+    }
 }

@@ -5,7 +5,7 @@ use std::{
 };
 
 use agentgate_release::{
-    Target,
+    Phase5dError, Target,
     canonical::{canonical_compact, canonical_pretty_sorted, sha256_hex},
     verify_phase5d_artifact,
 };
@@ -195,6 +195,40 @@ fn write_metadata(root: &Path, target: Target) {
     write(root, "SHA256SUMS", checksums.as_bytes());
 }
 
+fn rewrite_manifest_sizes_and_checksums(root: &Path, target: Target) {
+    let _ = target;
+    let mut manifest: Value =
+        serde_json::from_slice(&fs::read(root.join("manifest.json")).expect("fixture manifest"))
+            .expect("parse fixture manifest");
+    for entry in manifest["files"].as_array_mut().expect("fixture files") {
+        let path = entry["path"].as_str().expect("fixture path");
+        entry["size"] = json!(
+            fs::metadata(root.join(path))
+                .expect("fixture payload metadata")
+                .len()
+        );
+        entry["sha256"] = json!("0".repeat(64));
+    }
+    let bytes = canonical_pretty_sorted(&manifest).expect("canonical size fixture manifest");
+    write(root, "manifest.json", &bytes);
+    let mut paths = payload_paths(root);
+    paths.push("manifest.json".to_owned());
+    paths.sort();
+    let mut text = String::new();
+    for path in paths {
+        let digest = if path == "manifest.json" {
+            sha256_hex(&bytes)
+        } else {
+            "0".repeat(64)
+        };
+        text.push_str(&digest);
+        text.push_str("  ");
+        text.push_str(&path);
+        text.push('\n');
+    }
+    write(root, "SHA256SUMS", text.as_bytes());
+}
+
 fn fixture(target: Target) -> (TempDir, PathBuf) {
     let directory = TempDir::new().expect("temporary artifact root");
     let root = directory.path().join("artifact");
@@ -263,7 +297,15 @@ fn rejects_manifest_schema_and_canonicality_mutations() {
         let (_tmp, root) = fixture(Target::LinuxX86_64);
         let original = fs::read_to_string(root.join("manifest.json")).expect("manifest text");
         let changed = match mutation {
-            "unknown" => original.replacen("{\n", "{\n  \"unknown\": true,\n", 1),
+            "unknown" => {
+                let mut value: Value =
+                    serde_json::from_str(&original).expect("parse fixture manifest");
+                value["unknown"] = json!(true);
+                String::from_utf8(
+                    canonical_pretty_sorted(&value).expect("canonical unknown fixture"),
+                )
+                .expect("UTF-8 canonical manifest")
+            }
             "duplicate" => original.replacen(
                 "  \"abi_version\": 1,\n",
                 "  \"abi_version\": 1,\n  \"abi_version\": 1,\n",
@@ -445,9 +487,10 @@ fn rejects_missing_or_extra_tool_versions_and_windows_import_layout_mismatches()
             "windows_import_wrong" => {
                 fs::rename(
                     root.join("native/agentgate_ffi.dll.lib"),
-                    root.join("native/agentgate_ffi.lib"),
+                    root.join("native/agentgate_ffi.import.lib"),
                 )
                 .expect("rename import library");
+                write_metadata(&root, target);
             }
             _ => unreachable!(),
         }
@@ -472,7 +515,27 @@ fn rejects_file_count_and_sparse_size_limits_before_reading_payloads() {
         256
     );
     write(&root, "node/lib/one-too-many.js", b"x");
-    assert_rejected(&root, Target::LinuxX86_64);
+    assert_eq!(
+        verify_phase5d_artifact(&root, Target::LinuxX86_64),
+        Err(Phase5dError::FileLimit)
+    );
+
+    let (_tmp, root) = fixture(Target::LinuxX86_64);
+    for index in 0..257 {
+        fs::create_dir(root.join(format!("empty-{index}"))).expect("create empty directory");
+    }
+    assert_eq!(
+        verify_phase5d_artifact(&root, Target::LinuxX86_64),
+        Err(Phase5dError::DirectoryLimit)
+    );
+
+    let (_tmp, root) = fixture(Target::LinuxX86_64);
+    fs::create_dir_all(root.join("go/agentgate/unlisted-empty"))
+        .expect("create extra empty directory");
+    assert_eq!(
+        verify_phase5d_artifact(&root, Target::LinuxX86_64),
+        Err(Phase5dError::UnexpectedDirectory)
+    );
 
     let (_tmp, root) = fixture(Target::LinuxX86_64);
     fs::OpenOptions::new()
@@ -481,7 +544,11 @@ fn rejects_file_count_and_sparse_size_limits_before_reading_payloads() {
         .expect("open sparse payload")
         .set_len(MAX_PAYLOAD_BYTES + 1)
         .expect("make sparse payload");
-    assert_rejected(&root, Target::LinuxX86_64);
+    rewrite_manifest_sizes_and_checksums(&root, Target::LinuxX86_64);
+    assert_eq!(
+        verify_phase5d_artifact(&root, Target::LinuxX86_64),
+        Err(Phase5dError::SizeLimit)
+    );
 
     let (_tmp, root) = fixture(Target::LinuxX86_64);
     let payloads = paths_for(Target::LinuxX86_64);
@@ -498,7 +565,23 @@ fn rejects_file_count_and_sparse_size_limits_before_reading_payloads() {
         .len();
     assert!(sparse_size <= MAX_PAYLOAD_BYTES);
     assert!(sparse_size.saturating_mul(5) > MAX_TOTAL_PAYLOAD_BYTES);
-    assert_rejected(&root, Target::LinuxX86_64);
+    rewrite_manifest_sizes_and_checksums(&root, Target::LinuxX86_64);
+    assert_eq!(
+        verify_phase5d_artifact(&root, Target::LinuxX86_64),
+        Err(Phase5dError::SizeLimit)
+    );
+
+    let (_tmp, root) = fixture(Target::LinuxX86_64);
+    fs::OpenOptions::new()
+        .write(true)
+        .open(root.join("manifest.json"))
+        .expect("open metadata")
+        .set_len((8 * 1024 * 1024) + 1)
+        .expect("make oversized metadata");
+    assert_eq!(
+        verify_phase5d_artifact(&root, Target::LinuxX86_64),
+        Err(Phase5dError::MetadataLimit)
+    );
 }
 
 #[cfg(unix)]
@@ -540,18 +623,35 @@ fn rejects_symlinked_root_directories_and_files() {
 #[test]
 #[ignore = "requires AGENTGATE_PHASE5D_ARTIFACT containing a compatible Phase 5D artifact"]
 fn real_phase5d_artifact() {
-    let Ok(root) = std::env::var("AGENTGATE_PHASE5D_ARTIFACT") else {
-        return;
-    };
-    let root = PathBuf::from(root);
-    let target = [
-        Target::LinuxX86_64,
-        Target::MacosX86_64,
-        Target::WindowsX86_64,
-    ]
-    .into_iter()
-    .find(|target| verify_phase5d_artifact(&root, *target).is_ok());
-    if let Some(target) = target {
-        verify_phase5d_artifact(&root, target).expect("compatible real artifact");
+    let mut candidates = std::env::var("AGENTGATE_PHASE5D_ARTIFACT")
+        .ok()
+        .map(PathBuf::from)
+        .into_iter()
+        .collect::<Vec<_>>();
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .expect("workspace root");
+    if let Ok(entries) = fs::read_dir(repo.join("target/phase5d")) {
+        for entry in entries.flatten() {
+            let artifact = entry.path().join("artifact");
+            if artifact.join("manifest.json").is_file() {
+                candidates.push(artifact);
+            }
+        }
     }
+    for root in candidates {
+        for target in [
+            Target::LinuxX86_64,
+            Target::MacosX86_64,
+            Target::WindowsX86_64,
+        ] {
+            if verify_phase5d_artifact(&root, target).is_ok() {
+                return;
+            }
+        }
+    }
+    panic!(
+        "no compatible local Phase 5D artifact found; set AGENTGATE_PHASE5D_ARTIFACT or build target/phase5d/*/artifact"
+    );
 }
