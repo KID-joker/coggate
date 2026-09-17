@@ -356,9 +356,16 @@ fn logical_name(path: &Path) -> Result<String, ProducerError> {
 pub(crate) fn validate_summary(bytes: &[u8]) -> Result<(), ProducerError> {
     let text = std::str::from_utf8(bytes).map_err(|_| ProducerError::Invalid)?;
     let lower = text.to_ascii_lowercase();
-    if ["answer", "question", "prompt", "response", "environment"]
-        .iter()
-        .any(|sentinel| lower.contains(sentinel))
+    if [
+        "answer",
+        "question",
+        "prompt",
+        "response",
+        "environment",
+        "source_path",
+    ]
+    .iter()
+    .any(|sentinel| lower.contains(sentinel))
         || bytes
             .iter()
             .any(|byte| *byte == 0 || (*byte).is_ascii_control() && *byte != b'\n')
