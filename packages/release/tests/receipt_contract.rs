@@ -213,6 +213,33 @@ fn parser_revalidates_authenticated_invariants_after_digest_recomputation() {
 }
 
 #[test]
+fn parser_rejects_identity_mutations() {
+    let receipt = phase6a();
+
+    assert_authenticated_mutation_rejected(&receipt, |value| {
+        value["schema_version"] = json!(2);
+        assert_eq!(value["schema_version"], json!(2));
+    });
+    assert_authenticated_mutation_rejected(&receipt, |value| {
+        value["commit"] = json!("0123456789abcdef0123456789abcdef0123456A");
+        assert_eq!(
+            value["commit"],
+            json!("0123456789abcdef0123456789abcdef0123456A")
+        );
+    });
+    assert_authenticated_mutation_rejected(&receipt, |value| {
+        value["evidence"]["kind"] = json!("unsupported_report");
+        assert_eq!(value["evidence"]["kind"], json!("unsupported_report"));
+    });
+
+    let mut value = receipt_value(&receipt);
+    value["evidence_digest"] = json!("0".repeat(64));
+    assert_eq!(value["evidence_digest"], json!("0".repeat(64)));
+    let encoded = canonical_compact(&value).unwrap();
+    assert!(Receipt::parse_and_verify(&encoded).is_err());
+}
+
+#[test]
 fn parser_rejects_noncanonical_and_ambiguous_inputs() {
     let receipt = phase6a();
     let encoded = receipt.to_canonical_json().unwrap();
