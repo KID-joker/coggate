@@ -11,6 +11,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     baseline::{NoGuessReason, Outcome},
+    corpus::scored_case_id,
     manifest::{ProfileName, SuiteManifest, Threshold},
     strict_json::parse_strict_value,
 };
@@ -130,6 +131,11 @@ impl ReportBinding {
             || suite.profile(self.profile).is_none()
             || (self.kind == ReportKind::Baseline
                 && suite.baseline_version(&self.subject_id) != Some(self.subject_version.as_str()))
+            || if self.kind == ReportKind::Baseline && self.subject_id == "direct" {
+                !self.tool_versions.keys().eq(suite.tools().keys())
+            } else {
+                !self.tool_versions.is_empty()
+            }
         {
             return Err(ReportError::InvalidBinding);
         }
@@ -332,6 +338,15 @@ pub fn verify_report(
         .profile(report.binding.profile)
         .ok_or(ReportError::InvalidBinding)?
         .scored_cases();
+    if report.cases.len() != expected_total {
+        return Err(ReportError::InvalidSummary);
+    }
+    for (index, case) in report.cases.iter().enumerate() {
+        let expected_id = scored_case_id(suite, index).map_err(|_| ReportError::InvalidCase)?;
+        if case.case_id != expected_id {
+            return Err(ReportError::InvalidCase);
+        }
+    }
     let solved = report
         .cases
         .iter()
@@ -347,8 +362,7 @@ pub fn verify_report(
     } else {
         vec![report.binding.subject_id.clone()]
     };
-    if report.cases.len() != expected_total
-        || report.summary.total != report.cases.len()
+    if report.summary.total != report.cases.len()
         || report.summary.solved != solved
         || report.summary.qualified != qualified
         || report.summary.failed_thresholds != failed

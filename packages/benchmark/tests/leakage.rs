@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, path::PathBuf, time::Duration};
+use std::{path::PathBuf, time::Duration};
 
 use agentgate_benchmark::{
     baseline::direct::DirectBaseline,
@@ -103,7 +103,10 @@ fn secrets_never_enter_public_artifacts_debug_or_cli_diagnostics() {
         ProfileName::Quick,
         &corpus,
         &rejecting_direct(),
-        BTreeMap::from([("runner".to_owned(), "fixed-rejection".to_owned())]),
+        ["c", "cpp", "go", "java", "rust"]
+            .into_iter()
+            .map(|tool| (tool.to_owned(), "fixed-rejection".to_owned()))
+            .collect(),
     )
     .unwrap();
     for report in reports {

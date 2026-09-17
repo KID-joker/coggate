@@ -2,21 +2,34 @@ use std::collections::BTreeMap;
 
 use agentgate_benchmark::{
     baseline::{NoGuessReason, Outcome},
+    corpus::Corpus,
     manifest::{ProfileName, SuiteManifest},
     report::ReportError,
     report::{QualificationReport, ReportBinding, ReportCase, verify_report, write_report_bundle},
 };
 
-fn cases(solved: usize) -> Vec<ReportCase> {
-    (0..100)
-        .map(|index| {
+fn tool_versions() -> BTreeMap<String, String> {
+    ["c", "cpp", "go", "java", "rust"]
+        .into_iter()
+        .map(|tool| (tool.to_owned(), "test-version".to_owned()))
+        .collect()
+}
+
+fn cases(profile: ProfileName, solved: usize) -> Vec<ReportCase> {
+    let suite = SuiteManifest::tracked_v1().unwrap();
+    Corpus::generate(&suite, profile)
+        .unwrap()
+        .scored()
+        .iter()
+        .enumerate()
+        .map(|(index, case)| {
             let outcome = if index < solved {
                 Outcome::Solved
             } else {
                 Outcome::Unsolved
             };
             ReportCase::new(
-                format!("{index:064x}"),
+                case.id().to_owned(),
                 outcome,
                 (outcome == Outcome::Unsolved).then_some(NoGuessReason::NoCandidate),
                 index as u64,
@@ -28,14 +41,19 @@ fn cases(solved: usize) -> Vec<ReportCase> {
 
 fn direct_report(solved: usize) -> QualificationReport {
     let suite = SuiteManifest::tracked_v1().unwrap();
-    let binding = ReportBinding::baseline(
-        &suite,
-        ProfileName::Quick,
-        "direct",
-        BTreeMap::from([("rustc".to_owned(), "1.85.0".to_owned())]),
-    )
-    .unwrap();
-    QualificationReport::from_cases(binding, cases(solved)).unwrap()
+    let binding =
+        ReportBinding::baseline(&suite, ProfileName::Quick, "direct", tool_versions()).unwrap();
+    QualificationReport::from_cases(binding, cases(ProfileName::Quick, solved)).unwrap()
+}
+
+fn baseline_report(
+    profile: ProfileName,
+    subject: &str,
+    tool_versions: BTreeMap<String, String>,
+) -> QualificationReport {
+    let suite = SuiteManifest::tracked_v1().unwrap();
+    let binding = ReportBinding::baseline(&suite, profile, subject, tool_versions).unwrap();
+    QualificationReport::from_cases(binding, cases(profile, 0)).unwrap()
 }
 
 #[test]
@@ -110,6 +128,117 @@ fn rejects_path_like_subjects_control_characters_and_unbounded_durations() {
 }
 
 #[test]
+fn rejects_arbitrary_reordered_and_cross_profile_case_ids() {
+    let suite = SuiteManifest::tracked_v1().unwrap();
+
+    let mut arbitrary = cases(ProfileName::Quick, 5);
+    arbitrary[0] = ReportCase::new("0".repeat(64), Outcome::Solved, None, 0).unwrap();
+    let binding =
+        ReportBinding::baseline(&suite, ProfileName::Quick, "direct", tool_versions()).unwrap();
+    let report = QualificationReport::from_cases(binding, arbitrary).unwrap();
+    assert_eq!(
+        verify_report(&report.to_canonical_json().unwrap(), &suite),
+        Err(ReportError::InvalidCase)
+    );
+
+    let mut reordered = cases(ProfileName::Quick, 5);
+    reordered.swap(0, 1);
+    let binding =
+        ReportBinding::baseline(&suite, ProfileName::Quick, "direct", tool_versions()).unwrap();
+    let report = QualificationReport::from_cases(binding, reordered).unwrap();
+    assert_eq!(
+        verify_report(&report.to_canonical_json().unwrap(), &suite),
+        Err(ReportError::InvalidCase)
+    );
+
+    let quick_id = Corpus::generate(&suite, ProfileName::Quick)
+        .unwrap()
+        .scored()[0]
+        .id()
+        .to_owned();
+    let release_id = Corpus::generate(&suite, ProfileName::Release)
+        .unwrap()
+        .scored()[100]
+        .id()
+        .to_owned();
+    let mut release_cases = cases(ProfileName::Release, 0);
+    release_cases[0] = ReportCase::new(
+        release_id,
+        Outcome::Unsolved,
+        Some(NoGuessReason::NoCandidate),
+        0,
+    )
+    .unwrap();
+    release_cases[100] = ReportCase::new(
+        quick_id,
+        Outcome::Unsolved,
+        Some(NoGuessReason::NoCandidate),
+        0,
+    )
+    .unwrap();
+    let binding =
+        ReportBinding::baseline(&suite, ProfileName::Release, "direct", tool_versions()).unwrap();
+    let report = QualificationReport::from_cases(binding, release_cases).unwrap();
+    assert_eq!(
+        verify_report(&report.to_canonical_json().unwrap(), &suite),
+        Err(ReportError::InvalidCase)
+    );
+}
+
+#[test]
+fn binds_tool_versions_exactly_to_the_direct_subject() {
+    let suite = SuiteManifest::tracked_v1().unwrap();
+
+    let mut missing = tool_versions();
+    missing.remove("java");
+    assert_eq!(
+        ReportBinding::baseline(&suite, ProfileName::Quick, "direct", missing),
+        Err(ReportError::InvalidBinding)
+    );
+
+    let mut wrong = tool_versions();
+    wrong.remove("java");
+    wrong.insert("python".to_owned(), "test-version".to_owned());
+    assert_eq!(
+        ReportBinding::baseline(&suite, ProfileName::Quick, "direct", wrong),
+        Err(ReportError::InvalidBinding)
+    );
+
+    let mut extra = tool_versions();
+    extra.insert("python".to_owned(), "test-version".to_owned());
+    assert_eq!(
+        ReportBinding::baseline(&suite, ProfileName::Quick, "direct", extra),
+        Err(ReportError::InvalidBinding)
+    );
+
+    for subject in ["fingerprint", "regex", "simple_parser"] {
+        assert_eq!(
+            ReportBinding::baseline(
+                &suite,
+                ProfileName::Quick,
+                subject,
+                BTreeMap::from([("rust".to_owned(), "test-version".to_owned())]),
+            ),
+            Err(ReportError::InvalidBinding),
+            "subject: {subject}"
+        );
+    }
+
+    let report = baseline_report(ProfileName::Quick, "fingerprint", BTreeMap::new());
+    let mut llm: serde_json::Value =
+        serde_json::from_str(&report.to_canonical_json().unwrap()).unwrap();
+    llm["binding"]["kind"] = serde_json::json!("llm");
+    llm["binding"]["subject_id"] = serde_json::json!("model");
+    llm["binding"]["subject_version"] = serde_json::json!("run-1");
+    llm["binding"]["threshold"] = serde_json::json!({"comparison":"at_least","percent":80});
+    llm["binding"]["tool_versions"] = serde_json::json!({"rust":"test-version"});
+    assert_eq!(
+        verify_report(&serde_json::to_string(&llm).unwrap(), &suite),
+        Err(ReportError::InvalidBinding)
+    );
+}
+
+#[test]
 fn rejects_duplicate_summary_and_nested_binding_keys() {
     let suite = SuiteManifest::tracked_v1().unwrap();
     let json = direct_report(5).to_canonical_json().unwrap();
@@ -121,8 +250,8 @@ fn rejects_duplicate_summary_and_nested_binding_keys() {
     );
 
     let duplicate_tool_version = json.replacen(
-        "\"tool_versions\":{\"rustc\":\"1.85.0\"}",
-        "\"tool_versions\":{\"rustc\":\"1.85.0\",\"rustc\":\"1.85.0\"}",
+        "\"tool_versions\":{\"c\":\"test-version\"",
+        "\"tool_versions\":{\"c\":\"test-version\",\"c\":\"test-version\"",
         1,
     );
     assert_ne!(duplicate_tool_version, json);

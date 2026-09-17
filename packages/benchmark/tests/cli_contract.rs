@@ -1,8 +1,9 @@
-use std::{collections::BTreeMap, io, process::Command};
+use std::{io, process::Command};
 
 use agentgate_benchmark::{
     baseline::{NoGuessReason, Outcome},
     cli::{EXIT_INTERNAL, run_with_io},
+    corpus::Corpus,
     manifest::{ProfileName, SuiteManifest},
     report::{QualificationReport, ReportBinding, ReportCase, write_report_bundle},
 };
@@ -20,18 +21,25 @@ fn direct_report(solved: usize) -> QualificationReport {
         &suite,
         ProfileName::Quick,
         "direct",
-        BTreeMap::from([("rustc".to_owned(), "test".to_owned())]),
+        ["c", "cpp", "go", "java", "rust"]
+            .into_iter()
+            .map(|tool| (tool.to_owned(), "test-version".to_owned()))
+            .collect(),
     )
     .unwrap();
-    let cases = (0..100)
-        .map(|index| {
+    let corpus = Corpus::generate(&suite, ProfileName::Quick).unwrap();
+    let cases = corpus
+        .scored()
+        .iter()
+        .enumerate()
+        .map(|(index, case)| {
             let outcome = if index < solved {
                 Outcome::Solved
             } else {
                 Outcome::Unsolved
             };
             ReportCase::new(
-                format!("{index:064x}"),
+                case.id().to_owned(),
                 outcome,
                 (outcome == Outcome::Unsolved).then_some(NoGuessReason::NoCandidate),
                 0,

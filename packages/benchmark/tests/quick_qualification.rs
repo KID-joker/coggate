@@ -37,7 +37,10 @@ fn quick_corpus_is_reproducible_and_all_four_baselines_qualify() {
         ProfileName::Quick,
         &first,
         &rejecting_direct(),
-        BTreeMap::from([("runner".to_owned(), "fixed-rejection".to_owned())]),
+        ["c", "cpp", "go", "java", "rust"]
+            .into_iter()
+            .map(|tool| (tool.to_owned(), "fixed-rejection".to_owned()))
+            .collect(),
     )
     .unwrap();
     assert_eq!(reports.len(), 4);

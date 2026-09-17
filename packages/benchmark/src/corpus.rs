@@ -170,6 +170,11 @@ fn case_id(manifest_digest: &str, role: &[u8], index: u64) -> Result<String, Cor
     Ok(hex::encode(hash.finalize()))
 }
 
+pub(crate) fn scored_case_id(suite: &SuiteManifest, index: usize) -> Result<String, CorpusError> {
+    let index = u64::try_from(index).map_err(|_| CorpusError::InvalidIndex)?;
+    case_id(suite.digest(), b"scored", index)
+}
+
 fn question_digest(question: &str) -> Result<String, CorpusError> {
     let mut hash = Sha256::new();
     hash.update(QUESTION_DOMAIN);
