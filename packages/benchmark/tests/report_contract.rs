@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use agentgate_benchmark::{
     baseline::{NoGuessReason, Outcome},
     manifest::{ProfileName, SuiteManifest},
+    report::ReportError,
     report::{QualificationReport, ReportBinding, ReportCase, verify_report, write_report_bundle},
 };
 
@@ -106,4 +107,27 @@ fn rejects_path_like_subjects_control_characters_and_unbounded_durations() {
         .is_err()
     );
     assert!(ReportCase::new(format!("{:064x}", 1), Outcome::Solved, None, 3_600_001,).is_err());
+}
+
+#[test]
+fn rejects_duplicate_summary_and_nested_binding_keys() {
+    let suite = SuiteManifest::tracked_v1().unwrap();
+    let json = direct_report(5).to_canonical_json().unwrap();
+
+    let duplicate_solved = json.replacen("\"solved\":5", "\"solved\":5,\"solved\":5", 1);
+    assert_eq!(
+        verify_report(&duplicate_solved, &suite),
+        Err(ReportError::InvalidJson)
+    );
+
+    let duplicate_tool_version = json.replacen(
+        "\"tool_versions\":{\"rustc\":\"1.85.0\"}",
+        "\"tool_versions\":{\"rustc\":\"1.85.0\",\"rustc\":\"1.85.0\"}",
+        1,
+    );
+    assert_ne!(duplicate_tool_version, json);
+    assert_eq!(
+        verify_report(&duplicate_tool_version, &suite),
+        Err(ReportError::InvalidJson)
+    );
 }

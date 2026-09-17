@@ -12,6 +12,7 @@ use sha2::{Digest, Sha256};
 use crate::{
     baseline::{NoGuessReason, Outcome},
     manifest::{ProfileName, SuiteManifest, Threshold},
+    strict_json::parse_strict_value,
 };
 
 const REPORT_DOMAIN: &[u8] = b"agentgate-benchmark-report-v1";
@@ -322,8 +323,9 @@ pub fn verify_report(
     source: &str,
     suite: &SuiteManifest,
 ) -> Result<QualificationReport, ReportError> {
+    let value = parse_strict_value(source.as_bytes()).map_err(|_| ReportError::InvalidJson)?;
     let report: QualificationReport =
-        serde_json::from_str(source).map_err(|_| ReportError::InvalidJson)?;
+        serde_json::from_value(value).map_err(|_| ReportError::InvalidJson)?;
     report.binding.validate(suite)?;
     report.validate_structure()?;
     let expected_total = suite

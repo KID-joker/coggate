@@ -13,6 +13,7 @@ use crate::{
     corpus::{Corpus, CorpusCase},
     manifest::{ProfileName, SuiteManifest},
     report::{QualificationReport, ReportBinding, ReportCase},
+    strict_json::parse_strict_value,
 };
 
 const MAX_ID_BYTES: usize = 128;
@@ -157,8 +158,9 @@ pub fn score_llm_results(
     validate_corpus(suite, profile, corpus)?;
     let limit = suite.limits().max_result_line_bytes();
     let header_line = read_line_bounded(&mut reader, limit)?.ok_or(LlmError::MissingHeader)?;
+    let header_value = parse_strict_value(&header_line).map_err(|_| LlmError::InvalidJson)?;
     let header: RunHeader =
-        serde_json::from_slice(&header_line).map_err(|_| LlmError::InvalidJson)?;
+        serde_json::from_value(header_value).map_err(|_| LlmError::InvalidJson)?;
     if header.record_type != "run_header"
         || header.schema_version != 1
         || header.suite_manifest_digest != suite.digest()
@@ -281,7 +283,7 @@ fn read_line_bounded(
 }
 
 fn parse_result(line: &[u8]) -> Result<ImportedResult, LlmError> {
-    let value: Value = serde_json::from_slice(line).map_err(|_| LlmError::InvalidJson)?;
+    let value = parse_strict_value(line).map_err(|_| LlmError::InvalidJson)?;
     let mut object = match value {
         Value::Object(object) => object,
         _ => return Err(LlmError::InvalidResult),

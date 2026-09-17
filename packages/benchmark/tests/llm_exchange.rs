@@ -2,7 +2,7 @@ use std::io::Cursor;
 
 use agentgate_benchmark::{
     corpus::Corpus,
-    llm::{export_llm, export_llm_file, score_llm_results},
+    llm::{LlmError, export_llm, export_llm_file, score_llm_results},
     manifest::{ProfileName, SuiteManifest},
 };
 use agentgate_core::generation::generate_benchmark_case;
@@ -53,6 +53,25 @@ fn encode(lines: &[Value]) -> Vec<u8> {
     let mut encoded = Vec::new();
     for line in lines {
         serde_json::to_writer(&mut encoded, line).unwrap();
+        encoded.push(b'\n');
+    }
+    encoded
+}
+
+fn encode_with_duplicate_field(lines: &[Value], line_index: usize, field: &str) -> Vec<u8> {
+    let mut encoded = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        let mut source = serde_json::to_string(line).unwrap();
+        if index == line_index {
+            let marker = format!("\"{field}\":");
+            let offset = source.find(&marker).unwrap();
+            let duplicate = format!(
+                "\"{field}\":{},",
+                serde_json::to_string(&line[field]).unwrap()
+            );
+            source.insert_str(offset, &duplicate);
+        }
+        encoded.extend_from_slice(source.as_bytes());
         encoded.push(b'\n');
     }
     encoded
@@ -202,4 +221,34 @@ fn rejects_invalid_utf8_overlong_lines_and_trailing_garbage() {
     let mut trailing = good;
     trailing.extend_from_slice(b"garbage\n");
     assert!(rejects(trailing));
+}
+
+#[test]
+fn rejects_duplicate_keys_anywhere_in_a_complete_import() {
+    let (suite, corpus) = fixture();
+    let good = valid_lines(&suite, &corpus, 80);
+
+    for (line_index, field) in [(0, "model_id"), (1, "status"), (1, "case_id")] {
+        let bytes = encode_with_duplicate_field(&good, line_index, field);
+        assert_eq!(
+            score_llm_results(Cursor::new(bytes), &suite, ProfileName::Quick, &corpus),
+            Err(LlmError::InvalidJson),
+            "duplicate {field} on line {line_index} was not rejected as invalid JSON"
+        );
+    }
+
+    let mut nested = encode(&good);
+    let first_result_end = nested.iter().position(|byte| *byte == b'\n').unwrap() + 1;
+    let relative_end = nested[first_result_end..]
+        .iter()
+        .position(|byte| *byte == b'}')
+        .unwrap();
+    nested.splice(
+        first_result_end + relative_end..first_result_end + relative_end,
+        b",\"metadata\":{\"key\":1,\"key\":2}".iter().copied(),
+    );
+    assert_eq!(
+        score_llm_results(Cursor::new(nested), &suite, ProfileName::Quick, &corpus),
+        Err(LlmError::InvalidJson)
+    );
 }

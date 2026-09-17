@@ -8,4 +8,5 @@ pub mod manifest;
 pub mod process;
 pub mod qualification;
 pub mod report;
+mod strict_json;
 pub mod threshold;
