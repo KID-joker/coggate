@@ -1,5 +1,11 @@
 [workspace]
-members = ["packages/benchmark", "packages/contracts", "packages/core", "packages/ffi"]
+members = [
+    "packages/benchmark",
+    "packages/contracts",
+    "packages/core",
+    "packages/ffi",
+    "packages/release",
+]
 resolver = "2"
 
 [workspace.package]
