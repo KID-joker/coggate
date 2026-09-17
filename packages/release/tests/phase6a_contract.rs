@@ -180,11 +180,45 @@ fn direct_requires_all_and_only_producer_tool_keys() {
             .remove("rust");
         value["binding"]["tool_versions"]["rustc"] = json!("1.0");
     });
+    rejects_signed(|value| value["binding"]["tool_versions"]["rust"] = json!("rustc\nforged"));
+    rejects_signed(|value| value["binding"]["tool_versions"]["rust"] = json!("r".repeat(129)));
     for subject in ["fingerprint", "regex", "simple_parser", "llm-model"] {
         let mut report = valid_report(subject, if subject == "llm-model" { 800 } else { 10 });
         report["binding"]["tool_versions"] = json!({"c":"cc 1.0"});
         assert!(verify_phase6a_report(&signed(report)).is_err());
     }
+}
+
+fn only_json_report(directory: &std::path::Path) -> PathBuf {
+    let reports = fs::read_dir(directory)
+        .unwrap()
+        .map(|entry| entry.unwrap())
+        .filter(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            !name.starts_with('.')
+                && entry.file_type().unwrap().is_file()
+                && !entry.file_type().unwrap().is_symlink()
+                && entry
+                    .path()
+                    .extension()
+                    .is_some_and(|extension| extension == "json")
+        })
+        .map(|entry| entry.path())
+        .collect::<Vec<_>>();
+    assert_eq!(reports.len(), 1, "expected exactly one Phase6A JSON report");
+    reports.into_iter().next().unwrap()
+}
+
+#[test]
+fn cli_report_discovery_accepts_a_non_default_model_stem_only() {
+    let directory = tempfile::tempdir().unwrap();
+    fs::write(directory.path().join("vendor-model-release.json"), b"{}").unwrap();
+    fs::write(directory.path().join(".temporary.json"), b"{}").unwrap();
+    assert_eq!(
+        only_json_report(directory.path()).file_name().unwrap(),
+        "vendor-model-release.json"
+    );
 }
 
 #[test]
@@ -292,7 +326,7 @@ fn real_phase6a_cli_parity() {
         "score-llm failed: {}",
         String::from_utf8_lossy(&outcome.stderr)
     );
-    let report = fs::read(llm.path().join("llm-model-release.json")).unwrap();
+    let report = fs::read(only_json_report(llm.path())).unwrap();
     assert_eq!(
         verify_phase6a_report(&report).unwrap().role(),
         ReportRole::Indirect

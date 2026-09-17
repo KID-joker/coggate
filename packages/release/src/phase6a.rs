@@ -1,6 +1,6 @@
 //! Independent verifier for canonical Phase 6A qualification reports.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -20,6 +20,8 @@ const MAX_TOOL_ENTRIES: usize = 16;
 const MAX_TOOL_FIELD_BYTES: usize = 128;
 const MAX_CASE_DURATION_MS: u64 = 3_600_000;
 const RELEASE_CASES: usize = 1_000;
+const QUICK_CASES: usize = 100;
+const MAX_QUESTION_BYTES: usize = 12_288;
 
 #[derive(Debug, Error, Eq, PartialEq)]
 pub enum Phase6aError {
@@ -230,12 +232,37 @@ fn tracked_suite() -> Result<Manifest, Phase6aError> {
     let value = parse_strict_json(TRACKED_V1.as_bytes(), MAX_METADATA_BYTES)
         .map_err(|_| Phase6aError::Invalid)?;
     let suite: Manifest = serde_json::from_value(value).map_err(|_| Phase6aError::Invalid)?;
+    let profile_names = suite
+        .profiles
+        .keys()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    let quick = suite.profiles.get("quick");
+    let release = suite.profiles.get("release");
     if suite.schema_version != 1
         || suite.suite_version != "1.0"
         || suite.generator_version != "1.0"
-        || suite.profiles.get("release").is_none_or(|profile| {
-            profile.scored_cases != RELEASE_CASES || profile.calibration_cases != RELEASE_CASES
+        || profile_names != BTreeSet::from(["quick", "release"])
+        || quick.is_none_or(|profile| {
+            !valid_profile(
+                profile,
+                QUICK_CASES,
+                "phase6a-scored-v1",
+                "phase6a-calibration-v1",
+            )
         })
+        || release.is_none_or(|profile| {
+            !valid_profile(
+                profile,
+                RELEASE_CASES,
+                "phase6a-release-scored-v1",
+                "phase6a-release-calibration-v1",
+            )
+        })
+        || suite.limits.max_question_bytes != MAX_QUESTION_BYTES
+        || suite.limits.max_result_line_bytes != 16_384
+        || suite.limits.process_timeout_ms != 5_000
+        || suite.limits.max_process_output_bytes != 65_536
         || suite.thresholds != expected_thresholds()
         || suite.baseline_versions != expected_baselines()
         || suite.tools != expected_tools()
@@ -243,6 +270,18 @@ fn tracked_suite() -> Result<Manifest, Phase6aError> {
         return Err(Phase6aError::Invalid);
     }
     Ok(suite)
+}
+
+fn valid_profile(profile: &Profile, cases: usize, scored: &str, calibration: &str) -> bool {
+    profile.scored_cases == cases
+        && profile.calibration_cases == cases
+        && profile.scored_namespace == scored
+        && profile.calibration_namespace == calibration
+        && !profile.scored_namespace.is_empty()
+        && !profile.calibration_namespace.is_empty()
+        && profile.scored_namespace.len() <= 64
+        && profile.calibration_namespace.len() <= 64
+        && profile.scored_namespace != profile.calibration_namespace
 }
 
 fn validate_report(report: &Report, suite: &Manifest) -> Result<(), Phase6aError> {
