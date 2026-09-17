@@ -4,7 +4,7 @@ use std::{
     fmt, fs,
     io::{self, Read},
     path::{Component, Path, PathBuf},
-    process::{Child, Command, ExitStatus, Stdio},
+    process::{Command, ExitStatus, Stdio},
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -12,6 +12,8 @@ use std::{
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
+
+use command_group::{CommandGroup, GroupChild};
 
 const MAX_TOOL_ID_BYTES: usize = 32;
 const MAX_ARGUMENTS: usize = 32;
@@ -192,20 +194,20 @@ impl ProcessWorkspace<'_> {
         program: &Path,
         spec: &CommandSpec,
     ) -> Result<ProcessResult, ProcessError> {
-        let mut child = Command::new(program)
+        let mut command = Command::new(program);
+        command
             .args(&spec.arguments)
             .current_dir(self.path())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|_| ProcessError::Spawn)?;
+            .stderr(Stdio::piped());
+        let mut child = command.group_spawn().map_err(|_| ProcessError::Spawn)?;
 
-        let Some(stdout) = child.stdout.take() else {
+        let Some(stdout) = child.inner().stdout.take() else {
             let _ = kill_and_wait(&mut child);
             return Err(ProcessError::Output);
         };
-        let Some(stderr) = child.stderr.take() else {
+        let Some(stderr) = child.inner().stderr.take() else {
             let _ = kill_and_wait(&mut child);
             return Err(ProcessError::Output);
         };
@@ -246,7 +248,10 @@ impl ProcessWorkspace<'_> {
         };
 
         let completion = match completion {
-            Ok(Completion::Exited(status)) => Ok(Completion::Exited(status)),
+            Ok(Completion::Exited(status)) => {
+                terminate_group(&mut child, &stdout_reader, &stderr_reader)
+                    .map(|()| Completion::Exited(status))
+            }
             Ok(Completion::OutputLimit) => {
                 kill_and_wait(&mut child).map(|_| Completion::OutputLimit)
             }
@@ -259,8 +264,8 @@ impl ProcessWorkspace<'_> {
                 Err(error)
             }
         };
-        let captured = join_readers(stdout_reader, stderr_reader);
         let completion = completion?;
+        let captured = join_readers(stdout_reader, stderr_reader);
         let (stdout, stderr) = captured?;
         let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         if budget.overflowed() || completion == Completion::OutputLimit {
@@ -365,7 +370,34 @@ enum Termination {
     AlreadyExited(ExitStatus),
 }
 
-fn kill_and_wait(child: &mut Child) -> Result<Termination, ProcessError> {
+fn terminate_group(
+    child: &mut GroupChild,
+    stdout: &Reader,
+    stderr: &Reader,
+) -> Result<(), ProcessError> {
+    match child.kill() {
+        Ok(()) => {
+            child.wait().map_err(|_| ProcessError::Wait)?;
+            Ok(())
+        }
+        Err(_) => {
+            child.wait().map_err(|_| ProcessError::Wait)?;
+            let deadline = Instant::now() + Duration::from_millis(100);
+            while !(stdout.is_finished() && stderr.is_finished()) && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(1));
+            }
+            if stdout.is_finished() && stderr.is_finished() {
+                // Empty process groups can disappear between `try_wait` and
+                // `kill`. Closed pipes prove no descendant can block capture.
+                Ok(())
+            } else {
+                Err(ProcessError::Kill)
+            }
+        }
+    }
+}
+
+fn kill_and_wait(child: &mut GroupChild) -> Result<Termination, ProcessError> {
     match child.kill() {
         Ok(()) => {
             child.wait().map_err(|_| ProcessError::Wait)?;

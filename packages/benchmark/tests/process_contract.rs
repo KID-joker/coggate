@@ -60,6 +60,38 @@ fn kills_and_reaps_a_timed_out_child() {
 }
 
 #[test]
+fn terminates_a_descendant_that_keeps_output_pipes_open() {
+    let root = tempfile::tempdir().unwrap();
+    let runner = runner(&root, 65_536, Duration::from_millis(100));
+    let mut workspace = runner.workspace().unwrap();
+
+    let started = Instant::now();
+    let result = workspace
+        .run(&fixture("process_child_spawns_inheriting_descendant"))
+        .unwrap();
+
+    assert_eq!(result.outcome(), ProcessOutcome::Exited(0));
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "an inherited output pipe must not keep the runner blocked"
+    );
+    #[cfg(unix)]
+    {
+        let descendant_pid =
+            std::fs::read_to_string(workspace.path().join("descendant.pid")).unwrap();
+        let descendant_exists = std::process::Command::new("/bin/kill")
+            .args(["-0", descendant_pid.trim()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap()
+            .success();
+        assert!(!descendant_exists, "pipe-holding descendant survived");
+    }
+    workspace.close().unwrap();
+}
+
+#[test]
 fn kills_and_reaps_a_child_that_floods_both_output_streams() {
     let root = tempfile::tempdir().unwrap();
     let runner = runner(&root, 1_024, Duration::from_secs(4));
@@ -111,6 +143,28 @@ fn writes_only_safe_relative_input_names() {
 #[test]
 #[ignore = "child process fixture"]
 fn process_child_sleeps() {
+    std::thread::sleep(Duration::from_secs(5));
+}
+
+#[test]
+#[ignore = "child process fixture"]
+fn process_child_spawns_inheriting_descendant() {
+    #[allow(clippy::zombie_processes)]
+    let child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--ignored",
+            "--exact",
+            "process_descendant_holds_pipes",
+            "--nocapture",
+        ])
+        .spawn()
+        .unwrap();
+    std::fs::write("descendant.pid", child.id().to_string()).unwrap();
+}
+
+#[test]
+#[ignore = "descendant process fixture"]
+fn process_descendant_holds_pipes() {
     std::thread::sleep(Duration::from_secs(5));
 }
 

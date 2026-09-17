@@ -16,6 +16,7 @@ license = "Apache-2.0"
 
 [workspace.dependencies]
 base64 = "0.22"
+command-group = "5.0.1"
 getrandom = "0.3"
 hex = "0.4"
 hmac = "0.12"

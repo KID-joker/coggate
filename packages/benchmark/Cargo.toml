@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 agentgate-core = { path = "../core", features = ["insecure-benchmarking"] }
 base64.workspace = true
+command-group.workspace = true
 hex.workspace = true
 regex.workspace = true
 serde.workspace = true
