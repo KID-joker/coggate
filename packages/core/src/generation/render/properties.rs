@@ -31,6 +31,37 @@ fn fragment_slices(fragments: &[Vec<u8>]) -> Vec<&[u8]> {
     fragments.iter().map(Vec::as_slice).collect()
 }
 
+fn test_operation(
+    family: TemplateFamily,
+    operation: Operation,
+) -> (DisplayStep, ObfuscationProfile) {
+    let kind = OperationKind::from(&operation);
+    let alias = match kind {
+        OperationKind::Reverse => "reverse",
+        OperationKind::Slice => "slice",
+        _ => "operation_alias",
+    };
+    (
+        DisplayStep {
+            node: NodeId(0),
+            output_label: "output_000000000".to_owned(),
+            local_name: "helper_000000000".to_owned(),
+            template: family,
+            numeric_style: NumericStyle::Decimal,
+            literal_plan: None,
+            guard_value: None,
+            kind: DisplayStepKind::Operation {
+                operation,
+                inputs: Vec::new(),
+            },
+        },
+        ObfuscationProfile::new(BTreeMap::from([(
+            HelperSemantic::Operation(kind),
+            alias.to_owned(),
+        )])),
+    )
+}
+
 fn boundary_fixture(
     fragment_count: usize,
     operation_count: usize,
@@ -361,13 +392,13 @@ fn worst_case_assembled_question_fits_actual_fragment_and_question_limits() {
             RenderLanguage::Go,
         ]
     );
+    let (reverse_step, reverse_profile) =
+        test_operation(TemplateFamily::Helper, Operation::Reverse);
     let reverse_helper_lengths = RenderLanguage::ALL.map(|language| {
         emitter::emit_operation(
             language,
-            TemplateFamily::Helper,
-            "output_000000000",
-            "helper_000000000",
-            &Operation::Reverse,
+            &reverse_step,
+            &reverse_profile,
             &["source_000000000".to_owned()],
         )
         .unwrap()
@@ -471,8 +502,8 @@ fn worst_case_assembled_question_fits_actual_fragment_and_question_limits() {
 
     let question = emitter::emit_question(&plan, &fragments).unwrap();
     let expected_question_bytes = match usize::BITS {
-        64 => 5_390,
-        32 => 5_370,
+        64 => 4_802,
+        32 => 4_782,
         width => panic!("unsupported usize width {width}"),
     };
     assert_eq!(question.len(), expected_question_bytes);
@@ -515,8 +546,8 @@ fn worst_case_assembled_question_fits_actual_fragment_and_question_limits() {
         .map(|(index, start)| sections.get(index + 1).copied().unwrap_or(dependency_start) - start)
         .collect::<Vec<_>>();
     let expected_sections = match usize::BITS {
-        64 => vec![780, 932, 413, 225, 195, 94],
-        32 => vec![780, 922, 413, 215, 195, 94],
+        64 => vec![735, 896, 409, 215, 190, 94],
+        32 => vec![735, 886, 409, 205, 190, 94],
         _ => unreachable!(),
     };
     assert_eq!(section_lengths, expected_sections);
@@ -526,8 +557,8 @@ fn worst_case_assembled_question_fits_actual_fragment_and_question_limits() {
         .map(|(section, clue_bytes)| section + clue_bytes)
         .collect::<Vec<_>>();
     let expected_accounted = match usize::BITS {
-        64 => vec![780, 1_507, 652, 340, 310],
-        32 => vec![780, 1_497, 652, 330, 310],
+        64 => vec![735, 1_471, 648, 330, 305],
+        32 => vec![735, 1_461, 648, 320, 305],
         _ => unreachable!(),
     };
     assert_eq!(accounted_effective, expected_accounted);
@@ -541,8 +572,8 @@ fn worst_case_assembled_question_fits_actual_fragment_and_question_limits() {
         .map(|bytes| MAX_FRAGMENT_BYTES - bytes)
         .collect::<Vec<_>>();
     let expected_margins = match usize::BITS {
-        64 => vec![1_268, 541, 1_396, 1_708, 1_738],
-        32 => vec![1_268, 551, 1_396, 1_718, 1_738],
+        64 => vec![1_313, 577, 1_400, 1_718, 1_743],
+        32 => vec![1_313, 587, 1_400, 1_728, 1_743],
         _ => unreachable!(),
     };
     assert_eq!(fragment_margins, expected_margins);
@@ -550,10 +581,34 @@ fn worst_case_assembled_question_fits_actual_fragment_and_question_limits() {
 }
 
 #[test]
-fn fixed_common_question_text_fits_the_validator_reservation() {
-    let actual = common_question_bytes();
-    assert_eq!(actual, 1_691);
-    assert_eq!(COMMON_QUESTION_BUDGET - actual, 357);
+fn maximum_dynamic_common_question_text_fits_the_validator_reservation() {
+    let mut maximum = 0;
+    for mask in 0_u32..(1_u32 << OperationKind::ALL.len()) {
+        if mask.count_ones() != 8 {
+            continue;
+        }
+        let mut semantics = OperationKind::ALL
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, kind)| {
+                (mask & (1 << index) != 0).then_some(HelperSemantic::Operation(kind))
+            })
+            .collect::<BTreeSet<_>>();
+        semantics.insert(HelperSemantic::BytesAscii);
+        semantics.insert(HelperSemantic::Operation(OperationKind::Concat));
+        let profile = ObfuscationProfile::new(
+            semantics
+                .into_iter()
+                .enumerate()
+                .map(|(index, semantic)| (semantic, format!("a{index:015}")))
+                .collect(),
+        );
+        maximum = maximum.max(common_question_bytes(&profile));
+    }
+
+    assert_eq!(maximum, 1_521);
+    assert_eq!(COMMON_QUESTION_BUDGET - maximum, 527);
+    assert!(maximum <= COMMON_QUESTION_BUDGET);
 }
 
 #[test]
@@ -592,15 +647,8 @@ fn maximum_legal_v1_slice_index_fits_every_template_declaration() {
     };
     for language in RenderLanguage::ALL {
         for family in [TemplateFamily::Direct, TemplateFamily::Helper] {
-            let emitted = emitter::emit_operation(
-                language,
-                family,
-                "output_000000000",
-                "helper_000000000",
-                &operation,
-                &input,
-            )
-            .unwrap();
+            let (step, profile) = test_operation(family, operation.clone());
+            let emitted = emitter::emit_operation(language, &step, &profile, &input).unwrap();
             assert!(emitted.contains("1003976272, 1003976272"));
             assert!(emitted.len() <= declared_template_max_bytes(language, family));
         }

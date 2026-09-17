@@ -5,8 +5,8 @@ mod java;
 mod pseudocode;
 mod rust;
 
-use super::error::RenderError;
 use super::model::{RenderLanguage, TemplateFamily};
+use super::{emitter::bounded_parts, error::RenderError};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum BaseTemplateFamily {
@@ -56,6 +56,31 @@ pub(super) fn base_template_family(family: TemplateFamily) -> BaseTemplateFamily
         TemplateFamily::Helper => BaseTemplateFamily::Helper,
         TemplateFamily::AliasChain | TemplateFamily::Guarded => BaseTemplateFamily::Direct,
     }
+}
+
+pub(super) fn emit_inline_chunk_lookup(
+    language: RenderLanguage,
+    displayed_chunks: &[String],
+    index: &str,
+) -> Result<String, RenderError> {
+    let (open, separator, close) = match language {
+        RenderLanguage::C => ("((bytes[]){", ", ", "})["),
+        RenderLanguage::Cpp => ("(std::array{", ", ", "})["),
+        RenderLanguage::Rust => ("([", ", ", "])["),
+        RenderLanguage::Go => ("([]bytes{", ", ", "})["),
+        RenderLanguage::Java => ("(new byte[][]{", ", ", "})["),
+        RenderLanguage::Pseudocode => ("[", ", ", "]["),
+    };
+    let mut parts = Vec::with_capacity(displayed_chunks.len() * 2 + 3);
+    parts.push(open);
+    for (position, chunk) in displayed_chunks.iter().enumerate() {
+        if position != 0 {
+            parts.push(separator);
+        }
+        parts.push(chunk);
+    }
+    parts.extend([close, index, "]"]);
+    bounded_parts(&parts)
 }
 
 #[cfg(test)]

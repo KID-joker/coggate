@@ -34,41 +34,20 @@ mod tests {
         RenderedQuestion, emitter,
         error::RenderError,
         model::{
-            DisplayFragment, DisplayStep, DisplayStepKind, FragmentLiteralPlan, MAX_QUESTION_BYTES,
-            NumericStyle, ObfuscationProfile, RenderLanguage, RenderPlan, TemplateFamily,
+            DisplayFragment, DisplayStep, DisplayStepKind, FragmentLiteralPlan, HelperSemantic,
+            MAX_QUESTION_BYTES, NumericStyle, ObfuscationProfile, RenderLanguage, RenderPlan,
+            TemplateFamily,
         },
         planner::plan_rendering,
         render_with,
     };
     use crate::generation::{
-        NodeId, Operation, SemanticGraphBuilder, ValidatedSemanticGraph, evaluate_semantic_graph,
+        NodeId, Operation, OperationKind, SemanticGraphBuilder, ValidatedSemanticGraph,
+        evaluate_semantic_graph,
         planner::{PlannedSemantics, plan_with},
         secret::Secret,
         test_random::DeterministicRandom,
     };
-
-    const EXPECTED_HELPER_SEMANTICS: [&str; 18] = [
-        "bytes_ascii(\"...\"): the listed ASCII bytes.",
-        "reverse(x): the bytes of x in reverse order.",
-        "rotate_left(x, n): cyclically rotate x left by n modulo len(x); x must be nonempty.",
-        "rotate_right(x, n): cyclically rotate x right by n modulo len(x); x must be nonempty.",
-        "xor_repeat(x, key): out[i] = x[i] XOR key[i modulo len(key)].",
-        "even_bytes(x): bytes of x at zero-based indices 0, 2, ...",
-        "odd_bytes(x): bytes of x at zero-based indices 1, 3, ...",
-        "permute(x, p): out[j] = x[p[j]].",
-        "slice(x, start, end): bytes x[start..end] using a half-open range.",
-        "concat(x1, x2, ...): concatenate inputs in the listed order.",
-        "add_u8(x, y): elementwise x[i] + y[i] modulo 256.",
-        "sub_u8(x, y): elementwise x[i] - y[i] modulo 256.",
-        "hex_lower(x): encode bytes as canonical lowercase hexadecimal.",
-        "hex_decode_lower(x): inverse of hex_lower for canonical lowercase hexadecimal only.",
-        "base64url_no_pad(x): encode bytes as canonical unpadded base64url.",
-        "base64url_decode_no_pad(x): inverse of base64url_no_pad for canonical unpadded base64url only.",
-        "sha256_prefix(x, n): the first n raw bytes of the SHA-256 digest of x.",
-        "rotate_left_derived(x, key): rotate_left(x, unsigned key[0]).",
-    ];
-
-    const CONDITIONAL_ORDER_SEMANTICS: &str = "conditional_order(control, a, b): concat(a, b) if unsigned control[0] is even; otherwise concat(b, a).";
 
     fn planned_fixture() -> PlannedSemantics {
         let secret = Secret::from_test_bytes(b"AbCdEf12Gh".to_vec());
@@ -146,6 +125,42 @@ mod tests {
     }
 
     #[test]
+    fn generated_seed_matrix_never_leaks_fixed_helper_identifiers() {
+        let semantics = planned_fixture();
+        let forbidden = [
+            "bytes_ascii(",
+            "reverse(",
+            "rotate_left(",
+            "rotate_right(",
+            "xor_repeat(",
+            "even_bytes(",
+            "odd_bytes(",
+            "permute(",
+            "slice(",
+            "concat(",
+            "add_u8(",
+            "sub_u8(",
+            "hex_lower(",
+            "hex_decode_lower(",
+            "base64url_no_pad(",
+            "base64url_decode_no_pad(",
+            "sha256_prefix(",
+            "rotate_left_derived(",
+            "conditional_order(",
+        ];
+
+        for seed in 0_u8..=127 {
+            let rendered = render_graph(semantics.graph(), semantics.fragments(), seed);
+            for identifier in forbidden {
+                assert!(
+                    !rendered.question().contains(identifier),
+                    "seed {seed} leaked {identifier}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn every_effective_output_label_and_metadata_language_is_visible() {
         let semantics = planned_fixture();
         let mut plan_random = DeterministicRandom::new([31; 32]);
@@ -217,7 +232,10 @@ mod tests {
         let plan = RenderPlan {
             fragments: display_fragments,
             output: NodeId(127),
-            profile: ObfuscationProfile::new(BTreeMap::new()),
+            profile: ObfuscationProfile::new(BTreeMap::from([(
+                HelperSemantic::BytesAscii,
+                "make_bytes".to_owned(),
+            )])),
         };
 
         let error = emitter::emit_question(&plan, &fragments).unwrap_err();
@@ -228,14 +246,27 @@ mod tests {
     }
 
     #[test]
-    fn rendered_questions_define_every_helper_semantic() {
+    fn rendered_questions_define_only_allocated_helper_semantics_once() {
         let semantics = planned_fixture();
+        let mut random = DeterministicRandom::new([41; 32]);
+        let plan = plan_rendering(semantics.graph(), semantics.fragments(), &mut random).unwrap();
         let rendered = render_graph(semantics.graph(), semantics.fragments(), 41);
 
-        for definition in EXPECTED_HELPER_SEMANTICS {
-            assert!(rendered.question().contains(definition), "{definition}");
+        for alias in plan.profile.aliases().values() {
+            let definition = format!("{alias}(");
+            assert_eq!(
+                rendered
+                    .question()
+                    .lines()
+                    .filter(|line| line.starts_with(&definition))
+                    .count(),
+                1,
+                "exactly one definition expected for {alias}"
+            );
+            assert!(rendered.question().matches(&definition).count() >= 2);
         }
-        assert!(rendered.question().contains(CONDITIONAL_ORDER_SEMANTICS));
+        assert!(!rendered.question().contains("bytes_ascii"));
+        assert!(!rendered.question().contains("reverse("));
     }
 
     #[test]
@@ -253,13 +284,19 @@ mod tests {
         let graph = builder.validate().unwrap();
 
         let answer = evaluate_semantic_graph(&graph, &fragment_slices(&fragments)).unwrap();
+        let mut random = DeterministicRandom::new([43; 32]);
+        let plan = plan_rendering(&graph, &fragments, &mut random).unwrap();
         let rendered = render_graph(&graph, &fragments, 43);
+        let alias = plan
+            .profile
+            .alias(HelperSemantic::Operation(OperationKind::RotateLeftDerived))
+            .unwrap();
 
         assert_eq!(answer, b"bcdaZ");
         assert!(
             rendered
                 .question()
-                .contains("rotate_left_derived(x, key): rotate_left(x, unsigned key[0]).")
+                .contains(&format!("{alias}(x, key): cyclically rotate x left"))
         );
     }
 
@@ -279,10 +316,18 @@ mod tests {
         let graph = builder.validate().unwrap();
 
         let answer = evaluate_semantic_graph(&graph, &fragment_slices(&fragments)).unwrap();
+        let mut random = DeterministicRandom::new([47; 32]);
+        let plan = plan_rendering(&graph, &fragments, &mut random).unwrap();
         let rendered = render_graph(&graph, &fragments, 47);
+        let alias = plan
+            .profile
+            .alias(HelperSemantic::Operation(OperationKind::ConditionalOrder))
+            .unwrap();
 
         assert_eq!(answer, b"abcd");
-        assert!(rendered.question().contains(CONDITIONAL_ORDER_SEMANTICS));
+        assert!(rendered.question().contains(&format!(
+            "{alias}(control, a, b): a followed by b when unsigned control[0] is even"
+        )));
     }
 
     #[test]
@@ -340,13 +385,19 @@ mod tests {
                 },
             ],
             output: combined,
-            profile: ObfuscationProfile::new(BTreeMap::new()),
+            profile: ObfuscationProfile::new(BTreeMap::from([
+                (HelperSemantic::BytesAscii, "make_bytes".to_owned()),
+                (
+                    HelperSemantic::Operation(OperationKind::Concat),
+                    "join_bytes".to_owned(),
+                ),
+            ])),
         };
 
         let question = emitter::emit_question(&plan, &fragments).unwrap();
         let clue = "Dependency: output labels source_x (Fragment 1) are inputs to output label combined in Fragment 2.\n";
 
-        assert!(question.contains("concat(source_x, source_x, source_y)"));
+        assert!(question.contains("join_bytes(source_x, source_x, source_y)"));
         assert_eq!(question.matches(clue).count(), 1);
     }
 }

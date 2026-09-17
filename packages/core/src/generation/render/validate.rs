@@ -182,7 +182,7 @@ fn validate_obfuscation(
     fragments: &[Vec<u8>],
     plan: &RenderPlan,
 ) -> Result<(), RenderError> {
-    let expected_semantics = expected_helper_semantics(graph);
+    let expected_semantics = expected_helper_semantics(graph, plan);
     if plan
         .profile
         .aliases()
@@ -221,12 +221,25 @@ fn validate_obfuscation(
     Ok(())
 }
 
-fn expected_helper_semantics(graph: &ValidatedSemanticGraph) -> BTreeSet<HelperSemantic> {
+fn expected_helper_semantics(
+    graph: &ValidatedSemanticGraph,
+    plan: &RenderPlan,
+) -> BTreeSet<HelperSemantic> {
     let mut expected = BTreeSet::from([HelperSemantic::BytesAscii]);
     for node in graph.topological_nodes() {
         if let NodeKind::Operation { operation, .. } = node.kind() {
             expected.insert(HelperSemantic::Operation(OperationKind::from(operation)));
         }
+    }
+    if plan
+        .fragments
+        .iter()
+        .filter(|fragment| !fragment.distractor)
+        .flat_map(|fragment| &fragment.steps)
+        .filter_map(|step| step.literal_plan.as_ref())
+        .any(|literal_plan| !matches!(literal_plan, FragmentLiteralPlan::Whole))
+    {
+        expected.insert(HelperSemantic::Operation(OperationKind::Concat));
     }
     expected
 }
@@ -455,8 +468,13 @@ fn validate_length_bounds(
         .collect::<Result<Vec<_>, _>>()?;
 
     for (step, fragment_index) in steps.values() {
-        let step_budget =
-            emitted_step_bytes(effective[*fragment_index].language, step, fragments, steps)?;
+        let step_budget = emitted_step_bytes(
+            effective[*fragment_index].language,
+            step,
+            fragments,
+            steps,
+            &plan.profile,
+        )?;
         fragment_budgets[*fragment_index] =
             checked_add(fragment_budgets[*fragment_index], step_budget)?;
 
@@ -514,16 +532,19 @@ fn emitted_step_bytes(
     step: &DisplayStep,
     fragments: &[Vec<u8>],
     steps: &BTreeMap<NodeId, (&DisplayStep, usize)>,
+    profile: &super::model::ObfuscationProfile,
 ) -> Result<usize, RenderError> {
     let emitted = match &step.kind {
         DisplayStepKind::Fragment { index } => emit_fragment(
             language,
-            step.template,
-            &step.output_label,
-            &step.local_name,
+            step,
+            profile,
             fragments.get(*index).ok_or(RenderError::InvalidPlan)?,
         )?,
-        DisplayStepKind::Operation { operation, inputs } => {
+        DisplayStepKind::Operation {
+            operation: _,
+            inputs,
+        } => {
             let input_labels = inputs
                 .iter()
                 .map(|input| {
@@ -533,14 +554,7 @@ fn emitted_step_bytes(
                         .ok_or(RenderError::MissingReference(*input))
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            emit_operation(
-                language,
-                step.template,
-                &step.output_label,
-                &step.local_name,
-                operation,
-                &input_labels,
-            )?
+            emit_operation(language, step, profile, &input_labels)?
         }
     };
     let declared = declared_template_max_bytes(language, step.template);
@@ -657,7 +671,10 @@ mod tests {
     fn validator_alias_oracle_matches_a_hand_authored_diverse_graph() {
         let (graph, fragments, plan) = diverse_alias_fixture();
 
-        assert_eq!(expected_helper_semantics(&graph), diverse_alias_oracle());
+        assert_eq!(
+            expected_helper_semantics(&graph, &plan),
+            diverse_alias_oracle()
+        );
         assert_eq!(
             plan.profile
                 .aliases()
@@ -715,24 +732,24 @@ mod tests {
                     DisplayStepKind::Fragment { index } => {
                         crate::generation::render::emitter::emit_fragment(
                             fragment.language,
-                            step.template,
-                            &step.output_label,
-                            &step.local_name,
+                            step,
+                            &plan.profile,
                             &fragments[*index],
                         )
                         .unwrap()
                     }
-                    DisplayStepKind::Operation { operation, inputs } => {
+                    DisplayStepKind::Operation {
+                        operation: _,
+                        inputs,
+                    } => {
                         let labels = inputs
                             .iter()
                             .map(|input| steps[input].0.output_label.clone())
                             .collect::<Vec<_>>();
                         crate::generation::render::emitter::emit_operation(
                             fragment.language,
-                            step.template,
-                            &step.output_label,
-                            &step.local_name,
-                            operation,
+                            step,
+                            &plan.profile,
                             &labels,
                         )
                         .unwrap()
@@ -740,7 +757,8 @@ mod tests {
                 };
 
                 assert_eq!(
-                    emitted_step_bytes(fragment.language, step, &fragments, &steps).unwrap(),
+                    emitted_step_bytes(fragment.language, step, &fragments, &steps, &plan.profile,)
+                        .unwrap(),
                     actual.len()
                 );
             }
@@ -767,31 +785,32 @@ mod tests {
                         DisplayStepKind::Fragment { index } => {
                             crate::generation::render::emitter::emit_fragment(
                                 language,
-                                family,
-                                &step.output_label,
-                                &step.local_name,
+                                &step,
+                                &plan.profile,
                                 &fragments[*index],
                             )
                             .unwrap()
                         }
-                        DisplayStepKind::Operation { operation, inputs } => {
+                        DisplayStepKind::Operation {
+                            operation: _,
+                            inputs,
+                        } => {
                             let labels = inputs
                                 .iter()
                                 .map(|input| steps[input].0.output_label.clone())
                                 .collect::<Vec<_>>();
                             crate::generation::render::emitter::emit_operation(
                                 language,
-                                family,
-                                &step.output_label,
-                                &step.local_name,
-                                operation,
+                                &step,
+                                &plan.profile,
                                 &labels,
                             )
                             .unwrap()
                         }
                     };
                     assert_eq!(
-                        emitted_step_bytes(language, &step, &fragments, &steps).unwrap(),
+                        emitted_step_bytes(language, &step, &fragments, &steps, &plan.profile,)
+                            .unwrap(),
                         actual.len()
                     );
                 }
@@ -833,14 +852,22 @@ mod tests {
 
     #[test]
     fn rejects_a_changed_operation() {
-        let (graph, fragments, mut plan) = fixture_plan();
+        let (graph, fragments, mut plan) = diverse_alias_fixture();
         let step = effective_fragments(&mut plan)
             .into_iter()
             .flat_map(|fragment| &mut fragment.steps)
-            .find(|step| matches!(step.kind, DisplayStepKind::Operation { .. }))
+            .find(|step| {
+                matches!(
+                    step.kind,
+                    DisplayStepKind::Operation {
+                        operation: Operation::RotateLeft(_),
+                        ..
+                    }
+                )
+            })
             .unwrap();
         step.kind = DisplayStepKind::Operation {
-            operation: Operation::RotateLeft(1),
+            operation: Operation::RotateLeft(2),
             inputs: match &step.kind {
                 DisplayStepKind::Operation { inputs, .. } => inputs.clone(),
                 DisplayStepKind::Fragment { .. } => unreachable!(),
@@ -949,6 +976,59 @@ mod tests {
             HelperSemantic::Operation(OperationKind::ConditionalOrder),
             "unused_alias".to_owned(),
         );
+        plan.profile = ObfuscationProfile::new(aliases);
+        assert_eq!(
+            validate_plan(&graph, &fragments, &plan),
+            Err(RenderError::InvalidPlan)
+        );
+    }
+
+    #[test]
+    fn chunked_literal_requires_concat_alias_even_when_graph_does_not_use_concat() {
+        let fragments = vec![b"A0".to_vec(), b"B1".to_vec(), b"C2".to_vec()];
+        let mut builder = SemanticGraphBuilder::new(vec![2, 2, 2]);
+        let control = builder.fragment(0).unwrap();
+        let first = builder.fragment(1).unwrap();
+        let second = builder.fragment(2).unwrap();
+        let mut output =
+            builder.operation(Operation::ConditionalOrder, vec![control, first, second]);
+        for _ in 0..3 {
+            output = builder.operation(Operation::Reverse, vec![output]);
+        }
+        builder.output(output);
+        let graph = builder.validate().unwrap();
+        assert!(!graph.topological_nodes().iter().any(|node| {
+            matches!(
+                node.kind(),
+                crate::generation::NodeKind::Operation {
+                    operation: Operation::Concat,
+                    ..
+                }
+            )
+        }));
+
+        let mut plan = (0_u8..=127)
+            .find_map(|seed| {
+                let mut random = DeterministicRandom::new([seed; 32]);
+                let plan = plan_rendering(&graph, &fragments, &mut random).unwrap();
+                plan.fragments
+                    .iter()
+                    .flat_map(|fragment| &fragment.steps)
+                    .filter_map(|step| step.literal_plan.as_ref())
+                    .any(|literal| !matches!(literal, FragmentLiteralPlan::Whole))
+                    .then_some(plan)
+            })
+            .expect("seed matrix includes a chunked literal plan");
+
+        assert!(
+            plan.profile
+                .alias(HelperSemantic::Operation(OperationKind::Concat))
+                .is_some()
+        );
+        assert_eq!(validate_plan(&graph, &fragments, &plan), Ok(()));
+
+        let mut aliases = plan.profile.aliases().clone();
+        aliases.remove(&HelperSemantic::Operation(OperationKind::Concat));
         plan.profile = ObfuscationProfile::new(aliases);
         assert_eq!(
             validate_plan(&graph, &fragments, &plan),

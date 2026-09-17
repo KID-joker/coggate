@@ -62,14 +62,19 @@ pub(super) fn plan_rendering(
     let allocated_names = (0..allocated_name_count)
         .map(|_| allocator.allocate_identifier())
         .collect::<Result<Vec<_>, _>>()?;
-    let aliases = used_helper_semantics(graph)
-        .into_iter()
-        .map(|semantic| {
-            allocator
-                .allocate_identifier()
-                .map(|alias| (semantic, alias))
-        })
-        .collect::<Result<BTreeMap<_, _>, _>>()?;
+    let aliases = used_helper_semantics(
+        graph,
+        obfuscation
+            .iter()
+            .filter_map(|(_, _, literal_plan, _)| literal_plan.as_ref()),
+    )
+    .into_iter()
+    .map(|semantic| {
+        allocator
+            .allocate_identifier()
+            .map(|alias| (semantic, alias))
+    })
+    .collect::<Result<BTreeMap<_, _>, _>>()?;
     let profile = ObfuscationProfile::new(aliases);
     let mut names = allocated_names.into_iter();
 

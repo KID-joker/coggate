@@ -10,8 +10,11 @@ use super::{
     model::{FragmentLiteralPlan, HelperSemantic, NumericStyle, TemplateFamily},
 };
 
-pub(super) fn used_helper_semantics(graph: &ValidatedSemanticGraph) -> BTreeSet<HelperSemantic> {
-    graph
+pub(super) fn used_helper_semantics<'a>(
+    graph: &ValidatedSemanticGraph,
+    literal_plans: impl IntoIterator<Item = &'a FragmentLiteralPlan>,
+) -> BTreeSet<HelperSemantic> {
+    let mut semantics = graph
         .topological_nodes()
         .iter()
         .filter_map(|node| match node.kind() {
@@ -21,7 +24,14 @@ pub(super) fn used_helper_semantics(graph: &ValidatedSemanticGraph) -> BTreeSet<
             }
         })
         .chain([HelperSemantic::BytesAscii])
-        .collect()
+        .collect::<BTreeSet<_>>();
+    if literal_plans
+        .into_iter()
+        .any(|plan| !matches!(plan, FragmentLiteralPlan::Whole))
+    {
+        semantics.insert(HelperSemantic::Operation(OperationKind::Concat));
+    }
+    semantics
 }
 
 pub(super) fn sample_template_family(
