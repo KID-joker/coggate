@@ -9,10 +9,11 @@ use super::{
     },
     error::RenderError,
     model::{
-        DisplayStep, DisplayStepKind, MAX_FRAGMENT_BYTES, MAX_QUESTION_BYTES, RenderLanguage,
-        RenderPlan,
+        DisplayStep, DisplayStepKind, FragmentLiteralPlan, MAX_FRAGMENT_BYTES, MAX_QUESTION_BYTES,
+        NumericStyle, RenderLanguage, RenderPlan, TemplateFamily,
     },
     names::MAX_IDENTIFIER_BYTES,
+    obfuscation::used_helper_semantics,
 };
 
 pub(super) const COMMON_QUESTION_BUDGET: usize = 2_048;
@@ -30,6 +31,7 @@ pub(super) fn validate_plan(
 
     validate_source_fragments(graph, fragments)?;
     validate_shape(plan, graph.fragment_lengths().len())?;
+    validate_obfuscation(graph, fragments, plan)?;
     validate_identifiers(plan)?;
 
     let steps = index_effective_steps(plan)?;
@@ -122,6 +124,9 @@ fn validate_identifiers(plan: &RenderPlan) -> Result<(), RenderError> {
             validate_identifier(&step.local_name)?;
         }
     }
+    for alias in plan.profile.aliases().values() {
+        validate_identifier(alias)?;
+    }
 
     let mut output_labels = BTreeSet::new();
     for step in plan
@@ -164,6 +169,122 @@ fn validate_identifiers(plan: &RenderPlan) -> Result<(), RenderError> {
         if !all_names.insert(local_name) {
             return Err(RenderError::InvalidPlan);
         }
+    }
+    for alias in plan.profile.aliases().values() {
+        if !all_names.insert(alias) {
+            return Err(RenderError::InvalidPlan);
+        }
+    }
+    Ok(())
+}
+
+fn validate_obfuscation(
+    graph: &ValidatedSemanticGraph,
+    fragments: &[Vec<u8>],
+    plan: &RenderPlan,
+) -> Result<(), RenderError> {
+    let expected_semantics = used_helper_semantics(graph);
+    if plan
+        .profile
+        .aliases()
+        .keys()
+        .copied()
+        .collect::<BTreeSet<_>>()
+        != expected_semantics
+    {
+        return Err(RenderError::InvalidPlan);
+    }
+
+    for step in plan
+        .fragments
+        .iter()
+        .filter(|fragment| !fragment.distractor)
+        .flat_map(|fragment| &fragment.steps)
+    {
+        if step.guard_value.is_some() != (step.template == TemplateFamily::Guarded) {
+            return Err(RenderError::InvalidPlan);
+        }
+        if let NumericStyle::IdentityOffset { delta } = step.numeric_style {
+            if !(1..=15).contains(&delta) {
+                return Err(RenderError::InvalidPlan);
+            }
+        }
+
+        match (&step.kind, &step.literal_plan) {
+            (DisplayStepKind::Fragment { index }, Some(literal_plan)) => {
+                let length = fragments.get(*index).ok_or(RenderError::InvalidPlan)?.len();
+                validate_literal_plan(literal_plan, length)?;
+            }
+            (DisplayStepKind::Operation { .. }, None) => {}
+            _ => return Err(RenderError::InvalidPlan),
+        }
+    }
+    Ok(())
+}
+
+fn validate_literal_plan(
+    plan: &FragmentLiteralPlan,
+    source_length: usize,
+) -> Result<(), RenderError> {
+    if source_length == 1 {
+        return if *plan == FragmentLiteralPlan::Whole {
+            Ok(())
+        } else {
+            Err(RenderError::InvalidPlan)
+        };
+    }
+
+    match plan {
+        FragmentLiteralPlan::Whole => Ok(()),
+        FragmentLiteralPlan::OrderedChunks(chunks) => {
+            validate_chunk_count(chunks.len(), source_length)?;
+            validate_source_order(chunks, source_length)
+        }
+        FragmentLiteralPlan::ShuffledChunks {
+            chunks,
+            restore_order,
+        } => {
+            validate_chunk_count(chunks.len(), source_length)?;
+            if restore_order.len() != chunks.len() {
+                return Err(RenderError::InvalidPlan);
+            }
+            let permutation = restore_order.iter().copied().collect::<BTreeSet<_>>();
+            if permutation != (0..chunks.len()).collect() {
+                return Err(RenderError::InvalidPlan);
+            }
+            let restored = restore_order
+                .iter()
+                .map(|index| chunks[*index].clone())
+                .collect::<Vec<_>>();
+            validate_source_order(&restored, source_length)?;
+            if chunks == &restored {
+                return Err(RenderError::InvalidPlan);
+            }
+            Ok(())
+        }
+    }
+}
+
+fn validate_chunk_count(chunk_count: usize, source_length: usize) -> Result<(), RenderError> {
+    if !(2..=3).contains(&chunk_count) || (chunk_count == 3 && source_length < 3) {
+        return Err(RenderError::InvalidPlan);
+    }
+    Ok(())
+}
+
+fn validate_source_order(
+    chunks: &[std::ops::Range<usize>],
+    source_length: usize,
+) -> Result<(), RenderError> {
+    let mut expected_start = 0;
+    for chunk in chunks {
+        if chunk.start != expected_start || chunk.start >= chunk.end || chunk.end > source_length {
+            return Err(RenderError::InvalidPlan);
+        }
+        expected_start = chunk.end;
+    }
+    if expected_start != source_length {
+        return Err(RenderError::InvalidPlan);
     }
     Ok(())
 }
@@ -432,11 +553,16 @@ fn checked_add(left: usize, right: usize) -> Result<usize, RenderError> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use crate::generation::{
-        NodeId, Operation, SemanticGraphBuilder, ValidatedSemanticGraph,
+        NodeId, Operation, OperationKind, SemanticGraphBuilder, ValidatedSemanticGraph,
         render::{
             error::RenderError,
-            model::{DisplayFragment, DisplayStepKind, RenderLanguage, RenderPlan, TemplateFamily},
+            model::{
+                DisplayFragment, DisplayStepKind, FragmentLiteralPlan, HelperSemantic,
+                NumericStyle, ObfuscationProfile, RenderLanguage, RenderPlan, TemplateFamily,
+            },
             planner::plan_rendering,
         },
         test_random::DeterministicRandom,
@@ -713,6 +839,165 @@ mod tests {
         let output_label = effective.next().unwrap().steps[0].output_label.clone();
         effective.next().unwrap().heading = output_label;
 
+        assert_eq!(
+            validate_plan(&graph, &fragments, &plan),
+            Err(RenderError::InvalidPlan)
+        );
+    }
+
+    #[test]
+    fn rejects_missing_or_unused_helper_alias_semantics() {
+        let (graph, fragments, mut plan) = fixture_plan();
+        let mut aliases = plan.profile.aliases().clone();
+        aliases.remove(&HelperSemantic::BytesAscii);
+        plan.profile = ObfuscationProfile::new(aliases);
+        assert_eq!(
+            validate_plan(&graph, &fragments, &plan),
+            Err(RenderError::InvalidPlan)
+        );
+
+        let (_, _, mut plan) = fixture_plan();
+        let mut aliases = plan.profile.aliases().clone();
+        aliases.insert(
+            HelperSemantic::Operation(OperationKind::ConditionalOrder),
+            "unused_alias".to_owned(),
+        );
+        plan.profile = ObfuscationProfile::new(aliases);
+        assert_eq!(
+            validate_plan(&graph, &fragments, &plan),
+            Err(RenderError::InvalidPlan)
+        );
+    }
+
+    #[test]
+    fn rejects_alias_identifier_collisions_and_nonportable_aliases() {
+        let (graph, fragments, mut plan) = fixture_plan();
+        let collision = plan.fragments[0].heading.clone();
+        let aliases = plan
+            .profile
+            .aliases()
+            .keys()
+            .copied()
+            .enumerate()
+            .map(|(index, semantic)| {
+                (
+                    semantic,
+                    if index == 0 {
+                        collision.clone()
+                    } else {
+                        format!("alias_{index}")
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        plan.profile = ObfuscationProfile::new(aliases);
+        assert_eq!(
+            validate_plan(&graph, &fragments, &plan),
+            Err(RenderError::InvalidPlan)
+        );
+
+        let (_, _, mut plan) = fixture_plan();
+        let aliases = plan
+            .profile
+            .aliases()
+            .keys()
+            .copied()
+            .enumerate()
+            .map(|(index, semantic)| {
+                (
+                    semantic,
+                    if index == 0 {
+                        "not-portable".to_owned()
+                    } else {
+                        format!("alias_{index}")
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        plan.profile = ObfuscationProfile::new(aliases);
+        assert_eq!(
+            validate_plan(&graph, &fragments, &plan),
+            Err(RenderError::InvalidPlan)
+        );
+    }
+
+    #[test]
+    fn rejects_literal_and_guard_field_shape_mismatches() {
+        let (graph, fragments, mut plan) = fixture_plan();
+        let fragment_step = effective_fragments(&mut plan)
+            .into_iter()
+            .flat_map(|fragment| &mut fragment.steps)
+            .find(|step| matches!(step.kind, DisplayStepKind::Fragment { .. }))
+            .unwrap();
+        fragment_step.literal_plan = None;
+        assert_eq!(
+            validate_plan(&graph, &fragments, &plan),
+            Err(RenderError::InvalidPlan)
+        );
+
+        let (_, _, mut plan) = fixture_plan();
+        let operation_step = effective_fragments(&mut plan)
+            .into_iter()
+            .flat_map(|fragment| &mut fragment.steps)
+            .find(|step| matches!(step.kind, DisplayStepKind::Operation { .. }))
+            .unwrap();
+        operation_step.literal_plan = Some(FragmentLiteralPlan::Whole);
+        assert_eq!(
+            validate_plan(&graph, &fragments, &plan),
+            Err(RenderError::InvalidPlan)
+        );
+
+        let (_, _, mut plan) = fixture_plan();
+        let step = &mut effective_fragments(&mut plan)[0].steps[0];
+        step.template = TemplateFamily::Guarded;
+        step.guard_value = None;
+        assert_eq!(
+            validate_plan(&graph, &fragments, &plan),
+            Err(RenderError::InvalidPlan)
+        );
+
+        let (_, _, mut plan) = fixture_plan();
+        let step = &mut effective_fragments(&mut plan)[0].steps[0];
+        step.template = TemplateFamily::Direct;
+        step.guard_value = Some(7);
+        assert_eq!(
+            validate_plan(&graph, &fragments, &plan),
+            Err(RenderError::InvalidPlan)
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_literal_partitions_restore_orders_and_numeric_offsets() {
+        let (graph, fragments, mut plan) = fixture_plan();
+        let step = effective_fragments(&mut plan)
+            .into_iter()
+            .flat_map(|fragment| &mut fragment.steps)
+            .find(|step| matches!(step.kind, DisplayStepKind::Fragment { .. }))
+            .unwrap();
+        step.literal_plan = Some(FragmentLiteralPlan::OrderedChunks(vec![0..1, 0..2]));
+        assert_eq!(
+            validate_plan(&graph, &fragments, &plan),
+            Err(RenderError::InvalidPlan)
+        );
+
+        let (_, _, mut plan) = fixture_plan();
+        let step = effective_fragments(&mut plan)
+            .into_iter()
+            .flat_map(|fragment| &mut fragment.steps)
+            .find(|step| matches!(step.kind, DisplayStepKind::Fragment { .. }))
+            .unwrap();
+        step.literal_plan = Some(FragmentLiteralPlan::ShuffledChunks {
+            chunks: vec![1..2, 0..1],
+            restore_order: vec![0, 0],
+        });
+        assert_eq!(
+            validate_plan(&graph, &fragments, &plan),
+            Err(RenderError::InvalidPlan)
+        );
+
+        let (_, _, mut plan) = fixture_plan();
+        effective_fragments(&mut plan)[0].steps[0].numeric_style =
+            NumericStyle::IdentityOffset { delta: 0 };
         assert_eq!(
             validate_plan(&graph, &fragments, &plan),
             Err(RenderError::InvalidPlan)

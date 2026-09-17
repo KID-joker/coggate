@@ -1,6 +1,6 @@
-use std::fmt;
+use std::{collections::BTreeMap, fmt, ops::Range};
 
-use crate::generation::{NodeId, Operation};
+use crate::generation::{NodeId, Operation, OperationKind};
 
 /// Maximum conservative pre-emission budget for one effective display fragment.
 pub(super) const MAX_FRAGMENT_BYTES: usize = 2_048;
@@ -29,11 +29,59 @@ impl RenderLanguage {
     ];
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[allow(dead_code)]
 pub(super) enum TemplateFamily {
     Direct,
     Helper,
+    AliasChain,
+    Guarded,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(super) enum HelperSemantic {
+    BytesAscii,
+    Operation(OperationKind),
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(super) enum NumericStyle {
+    Decimal,
+    LowerHex,
+    IdentityOffset { delta: u8 },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum FragmentLiteralPlan {
+    Whole,
+    OrderedChunks(Vec<Range<usize>>),
+    ShuffledChunks {
+        chunks: Vec<Range<usize>>,
+        restore_order: Vec<usize>,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct ObfuscationProfile {
+    aliases: BTreeMap<HelperSemantic, String>,
+}
+
+impl ObfuscationProfile {
+    pub(super) fn new(aliases: BTreeMap<HelperSemantic, String>) -> Self {
+        Self { aliases }
+    }
+
+    pub(super) fn aliases(&self) -> &BTreeMap<HelperSemantic, String> {
+        &self.aliases
+    }
+
+    #[allow(
+        dead_code,
+        reason = "Task 6 consumes aliases during expression emission"
+    )]
+    pub(super) fn alias(&self, semantic: HelperSemantic) -> Option<&str> {
+        self.aliases.get(&semantic).map(String::as_str)
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -55,6 +103,9 @@ pub(super) struct DisplayStep {
     pub(super) output_label: String,
     pub(super) local_name: String,
     pub(super) template: TemplateFamily,
+    pub(super) numeric_style: NumericStyle,
+    pub(super) literal_plan: Option<FragmentLiteralPlan>,
+    pub(super) guard_value: Option<u8>,
     pub(super) kind: DisplayStepKind,
 }
 
@@ -72,6 +123,7 @@ pub(super) struct DisplayFragment {
 pub(super) struct RenderPlan {
     pub(super) fragments: Vec<DisplayFragment>,
     pub(super) output: NodeId,
+    pub(super) profile: ObfuscationProfile,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -155,8 +207,11 @@ impl fmt::Debug for RenderedQuestion {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::{
-        DisplayFragment, DisplayStep, DisplayStepKind, RenderLanguage, RenderMetadata, RenderPlan,
+        DisplayFragment, DisplayStep, DisplayStepKind, FragmentLiteralPlan, HelperSemantic,
+        NumericStyle, ObfuscationProfile, RenderLanguage, RenderMetadata, RenderPlan,
         RenderedQuestion, TemplateFamily,
     };
     use crate::generation::{NodeId, Operation};
@@ -211,6 +266,9 @@ mod tests {
             output_label: "fragment output".to_owned(),
             local_name: "part_0".to_owned(),
             template: TemplateFamily::Direct,
+            numeric_style: NumericStyle::Decimal,
+            literal_plan: Some(FragmentLiteralPlan::Whole),
+            guard_value: None,
             kind: DisplayStepKind::Fragment { index: 0 },
         };
         let operation_step = DisplayStep {
@@ -218,11 +276,18 @@ mod tests {
             output_label: "operation output".to_owned(),
             local_name: "value_0".to_owned(),
             template: TemplateFamily::Helper,
+            numeric_style: NumericStyle::LowerHex,
+            literal_plan: None,
+            guard_value: None,
             kind: DisplayStepKind::Operation {
                 operation: Operation::Reverse,
                 inputs: vec![NodeId(0)],
             },
         };
+        let profile = ObfuscationProfile::new(BTreeMap::from([(
+            HelperSemantic::BytesAscii,
+            "decode_bytes".to_owned(),
+        )]));
         let plan = RenderPlan {
             fragments: vec![DisplayFragment {
                 heading: "Step one".to_owned(),
@@ -231,10 +296,15 @@ mod tests {
                 distractor: false,
             }],
             output: NodeId(1),
+            profile,
         };
 
         assert_eq!(plan.fragments.len(), 1);
         assert_eq!(plan.fragments[0].steps.len(), 2);
         assert_eq!(plan.output, NodeId(1));
+        assert_eq!(
+            plan.profile.alias(HelperSemantic::BytesAscii),
+            Some("decode_bytes")
+        );
     }
 }

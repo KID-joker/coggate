@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use crate::generation::{
     NodeKind, ValidatedSemanticGraph,
     random::{RandomSource, sample_below, shuffle},
@@ -6,9 +8,14 @@ use crate::generation::{
 use super::{
     error::RenderError,
     model::{
-        DisplayFragment, DisplayStep, DisplayStepKind, RenderLanguage, RenderPlan, TemplateFamily,
+        DisplayFragment, DisplayStep, DisplayStepKind, ObfuscationProfile, RenderLanguage,
+        RenderPlan, TemplateFamily,
     },
     names::NameAllocator,
+    obfuscation::{
+        plan_fragment_literal, sample_guard_value, sample_numeric_style, sample_template_family,
+        used_helper_semantics,
+    },
 };
 
 pub(super) fn plan_rendering(
@@ -29,47 +36,70 @@ pub(super) fn plan_rendering(
     shuffle(random, &mut assigned_languages).map_err(RenderError::from_generation_error)?;
 
     let has_distractor = sample(random, 2)? == 1;
-    let templates = (0..graph.topological_nodes().len())
-        .map(|_| {
-            sample(random, 2).map(|choice| match choice {
-                0 => TemplateFamily::Direct,
-                _ => TemplateFamily::Helper,
-            })
+    let obfuscation = graph
+        .topological_nodes()
+        .iter()
+        .map(|node| {
+            let template = sample_template_family(random)?;
+            let numeric_style = sample_numeric_style(random)?;
+            let literal_plan = match node.kind() {
+                NodeKind::Fragment { index } => Some(plan_fragment_literal(
+                    fragments.get(*index).ok_or(RenderError::InvalidPlan)?.len(),
+                    random,
+                )?),
+                NodeKind::Operation { .. } => None,
+            };
+            let guard_value = (template == TemplateFamily::Guarded)
+                .then(|| sample_guard_value(random))
+                .transpose()?;
+            Ok((template, numeric_style, literal_plan, guard_value))
         })
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect::<Result<Vec<_>, RenderError>>()?;
 
     let allocated_name_count =
         graph.topological_nodes().len() * 2 + fragments.len() + usize::from(has_distractor);
-    let allocated_names = {
-        let mut allocator = NameAllocator::new(random)?;
-        (0..allocated_name_count)
-            .map(|_| allocator.allocate_identifier())
-            .collect::<Result<Vec<_>, _>>()?
-    };
+    let mut allocator = NameAllocator::new(random)?;
+    let allocated_names = (0..allocated_name_count)
+        .map(|_| allocator.allocate_identifier())
+        .collect::<Result<Vec<_>, _>>()?;
+    let aliases = used_helper_semantics(graph)
+        .into_iter()
+        .map(|semantic| {
+            allocator
+                .allocate_identifier()
+                .map(|alias| (semantic, alias))
+        })
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
+    let profile = ObfuscationProfile::new(aliases);
     let mut names = allocated_names.into_iter();
 
     let steps = graph
         .topological_nodes()
         .iter()
-        .zip(templates)
-        .map(|(node, template)| {
-            let output_label = names.next().ok_or(RenderError::InvalidPlan)?;
-            let local_name = names.next().ok_or(RenderError::InvalidPlan)?;
-            let kind = match node.kind() {
-                NodeKind::Fragment { index } => DisplayStepKind::Fragment { index: *index },
-                NodeKind::Operation { operation, inputs } => DisplayStepKind::Operation {
-                    operation: operation.clone(),
-                    inputs: inputs.clone(),
-                },
-            };
-            Ok(DisplayStep {
-                node: node.id(),
-                output_label,
-                local_name,
-                template,
-                kind,
-            })
-        })
+        .zip(obfuscation)
+        .map(
+            |(node, (template, numeric_style, literal_plan, guard_value))| {
+                let output_label = names.next().ok_or(RenderError::InvalidPlan)?;
+                let local_name = names.next().ok_or(RenderError::InvalidPlan)?;
+                let kind = match node.kind() {
+                    NodeKind::Fragment { index } => DisplayStepKind::Fragment { index: *index },
+                    NodeKind::Operation { operation, inputs } => DisplayStepKind::Operation {
+                        operation: operation.clone(),
+                        inputs: inputs.clone(),
+                    },
+                };
+                Ok(DisplayStep {
+                    node: node.id(),
+                    output_label,
+                    local_name,
+                    template,
+                    numeric_style,
+                    literal_plan,
+                    guard_value,
+                    kind,
+                })
+            },
+        )
         .collect::<Result<Vec<_>, RenderError>>()?;
 
     let step_count = steps.len();
@@ -115,6 +145,7 @@ pub(super) fn plan_rendering(
     Ok(RenderPlan {
         fragments: display_fragments,
         output: graph.output(),
+        profile,
     })
 }
 
@@ -156,11 +187,15 @@ mod tests {
 
     use super::plan_rendering;
     use crate::generation::{
-        GenerationError, NodeKind, Operation, SemanticGraphBuilder, ValidatedSemanticGraph,
+        GenerationError, NodeKind, Operation, OperationKind, SemanticGraphBuilder,
+        ValidatedSemanticGraph,
         random::RandomSource,
         render::{
             error::RenderError,
-            model::{DisplayStepKind, RenderPlan, TemplateFamily},
+            model::{
+                DisplayStepKind, FragmentLiteralPlan, HelperSemantic, NumericStyle, RenderPlan,
+                TemplateFamily,
+            },
             names::{MAX_ALLOCATED_NAMES, MAX_IDENTIFIER_BYTES},
         },
         test_random::DeterministicRandom,
@@ -238,6 +273,24 @@ mod tests {
 
     fn five_fragment_max_graph() -> ValidatedSemanticGraph {
         boundary_graph(5, 8)
+    }
+
+    fn five_fragment_eight_kind_graph() -> ValidatedSemanticGraph {
+        let mut builder = SemanticGraphBuilder::new(vec![2; 5]);
+        let fragments = (0..5)
+            .map(|index| builder.fragment(index).unwrap())
+            .collect::<Vec<_>>();
+        let reversed = builder.operation(Operation::Reverse, vec![fragments[0]]);
+        let left = builder.operation(Operation::RotateLeft(1), vec![fragments[1]]);
+        let right = builder.operation(Operation::RotateRight(1), vec![fragments[2]]);
+        let xored = builder.operation(Operation::Xor(vec![7]), vec![fragments[3]]);
+        let evens = builder.operation(Operation::EvenBytes, vec![fragments[4]]);
+        let concatenated =
+            builder.operation(Operation::Concat, vec![reversed, left, right, xored, evens]);
+        let odds = builder.operation(Operation::OddBytes, vec![concatenated]);
+        let output = builder.operation(Operation::Sha256Prefix(8), vec![odds]);
+        builder.output(output);
+        builder.validate().unwrap()
     }
 
     fn plan_for(seed: u8) -> RenderPlan {
@@ -325,8 +378,9 @@ mod tests {
         let mut distinct = Vec::new();
         let mut language_counts = BTreeSet::new();
         let mut distractor_choices = BTreeSet::new();
-        let mut saw_direct = false;
-        let mut saw_helper = false;
+        let mut templates = BTreeSet::new();
+        let mut numeric_styles = BTreeSet::new();
+        let mut literal_kinds = BTreeSet::new();
 
         for seed in 0_u8..=127 {
             let plan = plan_for(seed);
@@ -354,8 +408,15 @@ mod tests {
                     assert!(fragment.steps.is_empty());
                 }
                 for step in &fragment.steps {
-                    saw_direct |= step.template == TemplateFamily::Direct;
-                    saw_helper |= step.template == TemplateFamily::Helper;
+                    templates.insert(step.template);
+                    numeric_styles.insert(step.numeric_style);
+                    if let Some(literal_plan) = &step.literal_plan {
+                        literal_kinds.insert(match literal_plan {
+                            FragmentLiteralPlan::Whole => 0,
+                            FragmentLiteralPlan::OrderedChunks(_) => 1,
+                            FragmentLiteralPlan::ShuffledChunks { .. } => 2,
+                        });
+                    }
                 }
             }
         }
@@ -363,8 +424,130 @@ mod tests {
         assert!(distinct.len() > 1);
         assert_eq!(language_counts, BTreeSet::from([2, 3]));
         assert_eq!(distractor_choices, BTreeSet::from([false, true]));
-        assert!(saw_direct);
-        assert!(saw_helper);
+        assert_eq!(
+            templates,
+            BTreeSet::from([
+                TemplateFamily::Direct,
+                TemplateFamily::Helper,
+                TemplateFamily::AliasChain,
+                TemplateFamily::Guarded,
+            ])
+        );
+        assert!(numeric_styles.contains(&NumericStyle::Decimal));
+        assert!(numeric_styles.contains(&NumericStyle::LowerHex));
+        assert!(
+            numeric_styles
+                .iter()
+                .any(|style| matches!(style, NumericStyle::IdentityOffset { delta: 1..=15 }))
+        );
+        assert_eq!(literal_kinds, BTreeSet::from([0, 1, 2]));
+    }
+
+    #[test]
+    fn step_obfuscation_fields_match_step_and_template_shapes() {
+        for seed in 0_u8..=127 {
+            let plan = plan_for(seed);
+            for step in plan
+                .fragments
+                .iter()
+                .filter(|fragment| !fragment.distractor)
+                .flat_map(|fragment| &fragment.steps)
+            {
+                assert_eq!(
+                    step.guard_value.is_some(),
+                    step.template == TemplateFamily::Guarded
+                );
+                assert_eq!(
+                    step.literal_plan.is_some(),
+                    matches!(step.kind, DisplayStepKind::Fragment { .. })
+                );
+                if let NumericStyle::IdentityOffset { delta } = step.numeric_style {
+                    assert!((1..=15).contains(&delta));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn aliases_are_exact_sorted_deterministic_and_share_the_identifier_domain() {
+        let expected_semantics = BTreeSet::from([
+            HelperSemantic::BytesAscii,
+            HelperSemantic::Operation(OperationKind::Reverse),
+            HelperSemantic::Operation(OperationKind::RotateLeft),
+            HelperSemantic::Operation(OperationKind::RotateRight),
+            HelperSemantic::Operation(OperationKind::Xor),
+            HelperSemantic::Operation(OperationKind::Concat),
+        ]);
+
+        for seed in 0_u8..=127 {
+            let plan = plan_for(seed);
+            assert_eq!(plan, plan_for(seed));
+            assert_eq!(
+                plan.profile
+                    .aliases()
+                    .keys()
+                    .copied()
+                    .collect::<BTreeSet<_>>(),
+                expected_semantics
+            );
+            assert!(plan.profile.aliases().keys().copied().is_sorted());
+
+            let mut allocated = BTreeSet::new();
+            for fragment in &plan.fragments {
+                assert_allocated_name(&fragment.heading, &mut allocated);
+                for step in &fragment.steps {
+                    assert_allocated_name(&step.output_label, &mut allocated);
+                    assert_allocated_name(&step.local_name, &mut allocated);
+                }
+            }
+            for alias in plan.profile.aliases().values() {
+                assert_allocated_name(alias, &mut allocated);
+            }
+        }
+    }
+
+    #[test]
+    fn maximum_used_semantics_with_a_distractor_stays_within_the_name_limit() {
+        let graph = five_fragment_eight_kind_graph();
+        let fragments = boundary_fragments(5);
+        let plan = (0_u8..=127)
+            .find_map(|seed| {
+                let mut random = DeterministicRandom::new([seed; 32]);
+                let plan = plan_rendering(&graph, &fragments, &mut random).unwrap();
+                plan.fragments
+                    .iter()
+                    .any(|fragment| fragment.distractor)
+                    .then_some(plan)
+            })
+            .expect("a deterministic stream selects a distractor");
+        let expected_semantics = graph
+            .topological_nodes()
+            .iter()
+            .filter_map(|node| match node.kind() {
+                NodeKind::Operation { operation, .. } => {
+                    Some(HelperSemantic::Operation(OperationKind::from(operation)))
+                }
+                NodeKind::Fragment { .. } => None,
+            })
+            .chain([HelperSemantic::BytesAscii])
+            .collect::<BTreeSet<_>>();
+        let aliases = plan.profile.aliases();
+        let allocation_count = plan
+            .fragments
+            .iter()
+            .map(|fragment| 1 + fragment.steps.len() * 2)
+            .sum::<usize>()
+            + aliases.len();
+
+        assert_eq!(graph.topological_nodes().len(), 13);
+        assert_eq!(expected_semantics.len(), 9);
+        assert_eq!(
+            aliases.keys().copied().collect::<BTreeSet<_>>(),
+            expected_semantics
+        );
+        assert_eq!(allocation_count, 41);
+        assert!(allocation_count <= MAX_ALLOCATED_NAMES);
+        assert!(allocation_count + 4 <= MAX_ALLOCATED_NAMES);
     }
 
     #[test]

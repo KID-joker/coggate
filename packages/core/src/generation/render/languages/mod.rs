@@ -15,6 +15,7 @@ pub(super) fn emit_assignment(
     local_name: &str,
     expression: &str,
 ) -> Result<String, RenderError> {
+    let family = temporary_base_emission_family(family);
     match language {
         RenderLanguage::C => c::emit_assignment(family, output_label, local_name, expression),
         RenderLanguage::Cpp => cpp::emit_assignment(family, output_label, local_name, expression),
@@ -24,5 +25,13 @@ pub(super) fn emit_assignment(
         RenderLanguage::Pseudocode => {
             pseudocode::emit_assignment(family, output_label, local_name, expression)
         }
+    }
+}
+
+pub(super) fn temporary_base_emission_family(family: TemplateFamily) -> TemplateFamily {
+    // Task 7 replaces this scaffold mapping with real AliasChain and Guarded syntax.
+    match family {
+        TemplateFamily::Direct | TemplateFamily::Helper => family,
+        TemplateFamily::AliasChain | TemplateFamily::Guarded => TemplateFamily::Direct,
     }
 }

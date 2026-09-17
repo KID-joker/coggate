@@ -324,6 +324,7 @@ pub(super) fn declared_template_max_bytes(
     language: RenderLanguage,
     family: TemplateFamily,
 ) -> usize {
+    let family = languages::temporary_base_emission_family(family);
     match (language, family) {
         (RenderLanguage::C, TemplateFamily::Direct) => 304,
         (RenderLanguage::C, TemplateFamily::Helper) => 352,
@@ -337,6 +338,8 @@ pub(super) fn declared_template_max_bytes(
         (RenderLanguage::Java, TemplateFamily::Helper) => 352,
         (RenderLanguage::Pseudocode, TemplateFamily::Direct) => 288,
         (RenderLanguage::Pseudocode, TemplateFamily::Helper) => 352,
+        // The temporary mapping above makes these unreachable until Task 7.
+        (_, TemplateFamily::AliasChain | TemplateFamily::Guarded) => unreachable!(),
     }
 }
 
@@ -552,6 +555,9 @@ mod tests {
             (RenderLanguage::Java, TemplateFamily::Helper) => 352,
             (RenderLanguage::Pseudocode, TemplateFamily::Direct) => 288,
             (RenderLanguage::Pseudocode, TemplateFamily::Helper) => 341,
+            (_, TemplateFamily::AliasChain | TemplateFamily::Guarded) => {
+                expected_stable_longest(language, TemplateFamily::Direct)
+            }
         }
     }
 
@@ -719,6 +725,53 @@ mod tests {
                 .unwrap(),
                 expected
             );
+        }
+    }
+
+    #[test]
+    fn future_surface_templates_temporarily_emit_the_exact_direct_scaffold() {
+        let inputs = ["source_0".to_owned()];
+        for language in RenderLanguage::ALL {
+            let direct_operation = emit_operation(
+                language,
+                TemplateFamily::Direct,
+                "result_0",
+                "local_0",
+                &Operation::Reverse,
+                &inputs,
+            )
+            .unwrap();
+            let direct_fragment = emit_fragment(
+                language,
+                TemplateFamily::Direct,
+                "result_0",
+                "local_0",
+                b"Ab1",
+            )
+            .unwrap();
+
+            for family in [TemplateFamily::AliasChain, TemplateFamily::Guarded] {
+                assert_eq!(
+                    emit_operation(
+                        language,
+                        family,
+                        "result_0",
+                        "local_0",
+                        &Operation::Reverse,
+                        &inputs,
+                    )
+                    .unwrap(),
+                    direct_operation
+                );
+                assert_eq!(
+                    emit_fragment(language, family, "result_0", "local_0", b"Ab1").unwrap(),
+                    direct_fragment
+                );
+                assert_eq!(
+                    declared_template_max_bytes(language, family),
+                    declared_template_max_bytes(language, TemplateFamily::Direct)
+                );
+            }
         }
     }
 

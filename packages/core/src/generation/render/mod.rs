@@ -3,6 +3,7 @@ mod error;
 mod languages;
 mod model;
 mod names;
+mod obfuscation;
 mod planner;
 #[cfg(test)]
 mod properties;
@@ -27,14 +28,14 @@ pub(crate) fn render_with(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
 
     use super::{
         RenderedQuestion, emitter,
         error::RenderError,
         model::{
-            DisplayFragment, DisplayStep, DisplayStepKind, MAX_QUESTION_BYTES, RenderLanguage,
-            RenderPlan, TemplateFamily,
+            DisplayFragment, DisplayStep, DisplayStepKind, FragmentLiteralPlan, MAX_QUESTION_BYTES,
+            NumericStyle, ObfuscationProfile, RenderLanguage, RenderPlan, TemplateFamily,
         },
         planner::plan_rendering,
         render_with,
@@ -205,6 +206,9 @@ mod tests {
                     output_label: format!("result_{index}"),
                     local_name: format!("local_{index}"),
                     template: TemplateFamily::Direct,
+                    numeric_style: NumericStyle::Decimal,
+                    literal_plan: Some(FragmentLiteralPlan::Whole),
+                    guard_value: None,
                     kind: DisplayStepKind::Fragment { index: 0 },
                 }],
                 distractor: false,
@@ -213,6 +217,7 @@ mod tests {
         let plan = RenderPlan {
             fragments: display_fragments,
             output: NodeId(127),
+            profile: ObfuscationProfile::new(BTreeMap::new()),
         };
 
         let error = emitter::emit_question(&plan, &fragments).unwrap_err();
@@ -296,6 +301,9 @@ mod tests {
                         output_label: "source_x".to_owned(),
                         local_name: "load_x".to_owned(),
                         template: TemplateFamily::Direct,
+                        numeric_style: NumericStyle::Decimal,
+                        literal_plan: Some(FragmentLiteralPlan::Whole),
+                        guard_value: None,
                         kind: DisplayStepKind::Fragment { index: 0 },
                     }],
                     distractor: false,
@@ -309,6 +317,9 @@ mod tests {
                             output_label: "source_y".to_owned(),
                             local_name: "load_y".to_owned(),
                             template: TemplateFamily::Direct,
+                            numeric_style: NumericStyle::Decimal,
+                            literal_plan: Some(FragmentLiteralPlan::Whole),
+                            guard_value: None,
                             kind: DisplayStepKind::Fragment { index: 1 },
                         },
                         DisplayStep {
@@ -316,6 +327,9 @@ mod tests {
                             output_label: "combined".to_owned(),
                             local_name: "join_values".to_owned(),
                             template: TemplateFamily::Direct,
+                            numeric_style: NumericStyle::Decimal,
+                            literal_plan: None,
+                            guard_value: None,
                             kind: DisplayStepKind::Operation {
                                 operation: Operation::Concat,
                                 inputs: vec![source_x, source_x, source_y],
@@ -326,6 +340,7 @@ mod tests {
                 },
             ],
             output: combined,
+            profile: ObfuscationProfile::new(BTreeMap::new()),
         };
 
         let question = emitter::emit_question(&plan, &fragments).unwrap();

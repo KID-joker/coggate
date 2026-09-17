@@ -9,14 +9,16 @@ pub(super) fn emit_assignment(
     expression: &str,
 ) -> Result<String, RenderError> {
     match family {
-        TemplateFamily::Direct => bounded_parts(&[
-            "bytes ",
-            output,
-            " = ",
-            expression,
-            ";  // exports ",
-            output,
-        ]),
+        TemplateFamily::Direct | TemplateFamily::AliasChain | TemplateFamily::Guarded => {
+            bounded_parts(&[
+                "bytes ",
+                output,
+                " = ",
+                expression,
+                ";  // exports ",
+                output,
+            ])
+        }
         TemplateFamily::Helper => bounded_parts(&[
             "bytes ",
             local,

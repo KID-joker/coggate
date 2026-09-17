@@ -9,7 +9,7 @@ pub(super) fn emit_assignment(
     expression: &str,
 ) -> Result<String, RenderError> {
     match family {
-        TemplateFamily::Direct => {
+        TemplateFamily::Direct | TemplateFamily::AliasChain | TemplateFamily::Guarded => {
             bounded_parts(&["auto ", output, " = ", expression, ";  // exports ", output])
         }
         TemplateFamily::Helper => bounded_parts(&[

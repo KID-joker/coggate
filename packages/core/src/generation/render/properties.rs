@@ -4,16 +4,18 @@ use super::{
     emitter::{self, common_question_bytes, declared_template_max_bytes},
     error::RenderError,
     model::{
-        DisplayFragment, DisplayStep, DisplayStepKind, MAX_FRAGMENT_BYTES, MAX_QUESTION_BYTES,
-        RenderLanguage, RenderPlan, TemplateFamily,
+        DisplayFragment, DisplayStep, DisplayStepKind, FragmentLiteralPlan, HelperSemantic,
+        MAX_FRAGMENT_BYTES, MAX_QUESTION_BYTES, NumericStyle, ObfuscationProfile, RenderLanguage,
+        RenderPlan, TemplateFamily,
     },
     planner::plan_rendering,
     render_with,
     validate::{self, COMMON_QUESTION_BUDGET},
 };
 use crate::generation::{
-    MAX_CONCAT_INPUTS, NodeId, NodeKind, Operation, SemanticGraphBuilder, ValidatedSemanticGraph,
-    evaluate_semantic_graph, planner::plan_with, secret::Secret, test_random::DeterministicRandom,
+    MAX_CONCAT_INPUTS, NodeId, NodeKind, Operation, OperationKind, SemanticGraphBuilder,
+    ValidatedSemanticGraph, evaluate_semantic_graph, planner::plan_with, secret::Secret,
+    test_random::DeterministicRandom,
 };
 
 fn ascii_secret(length: usize) -> Secret {
@@ -230,6 +232,27 @@ fn longest_identifier(prefix: char, index: usize) -> String {
     identifier
 }
 
+fn explicit_profile(graph: &ValidatedSemanticGraph) -> ObfuscationProfile {
+    let semantics = graph
+        .topological_nodes()
+        .iter()
+        .filter_map(|node| match node.kind() {
+            NodeKind::Fragment { .. } => None,
+            NodeKind::Operation { operation, .. } => {
+                Some(HelperSemantic::Operation(OperationKind::from(operation)))
+            }
+        })
+        .chain([HelperSemantic::BytesAscii])
+        .collect::<BTreeSet<_>>();
+    ObfuscationProfile::new(
+        semantics
+            .into_iter()
+            .enumerate()
+            .map(|(index, semantic)| (semantic, format!("a{index}")))
+            .collect(),
+    )
+}
+
 fn worst_case_question_fixture() -> (ValidatedSemanticGraph, Vec<Vec<u8>>, RenderPlan) {
     let fragments = (0..5)
         .map(|index| {
@@ -269,6 +292,10 @@ fn worst_case_question_fixture() -> (ValidatedSemanticGraph, Vec<Vec<u8>>, Rende
             output_label: longest_identifier('o', index),
             local_name: longest_identifier('l', index),
             template: TemplateFamily::Helper,
+            numeric_style: NumericStyle::Decimal,
+            literal_plan: matches!(node.kind(), NodeKind::Fragment { .. })
+                .then_some(FragmentLiteralPlan::Whole),
+            guard_value: None,
             kind: match node.kind() {
                 NodeKind::Fragment { index } => DisplayStepKind::Fragment { index: *index },
                 NodeKind::Operation { operation, inputs } => DisplayStepKind::Operation {
@@ -303,9 +330,11 @@ fn worst_case_question_fixture() -> (ValidatedSemanticGraph, Vec<Vec<u8>>, Rende
         steps: Vec::new(),
         distractor: true,
     });
+    let profile = explicit_profile(&graph);
     let plan = RenderPlan {
         fragments: display_fragments,
         output: graph.output(),
+        profile,
     };
 
     (graph, fragments, plan)
