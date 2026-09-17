@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use crate::generation::{NodeId, NodeKind, ValidatedSemanticGraph};
+use crate::generation::{NodeId, NodeKind, OperationKind, ValidatedSemanticGraph};
 
 use super::{
     emitter::{
@@ -9,11 +9,10 @@ use super::{
     },
     error::RenderError,
     model::{
-        DisplayStep, DisplayStepKind, FragmentLiteralPlan, MAX_FRAGMENT_BYTES, MAX_QUESTION_BYTES,
-        NumericStyle, RenderLanguage, RenderPlan, TemplateFamily,
+        DisplayStep, DisplayStepKind, FragmentLiteralPlan, HelperSemantic, MAX_FRAGMENT_BYTES,
+        MAX_QUESTION_BYTES, NumericStyle, RenderLanguage, RenderPlan, TemplateFamily,
     },
     names::MAX_IDENTIFIER_BYTES,
-    obfuscation::used_helper_semantics,
 };
 
 pub(super) const COMMON_QUESTION_BUDGET: usize = 2_048;
@@ -183,7 +182,7 @@ fn validate_obfuscation(
     fragments: &[Vec<u8>],
     plan: &RenderPlan,
 ) -> Result<(), RenderError> {
-    let expected_semantics = used_helper_semantics(graph);
+    let expected_semantics = expected_helper_semantics(graph);
     if plan
         .profile
         .aliases()
@@ -220,6 +219,16 @@ fn validate_obfuscation(
         }
     }
     Ok(())
+}
+
+fn expected_helper_semantics(graph: &ValidatedSemanticGraph) -> BTreeSet<HelperSemantic> {
+    let mut expected = BTreeSet::from([HelperSemantic::BytesAscii]);
+    for node in graph.topological_nodes() {
+        if let NodeKind::Operation { operation, .. } = node.kind() {
+            expected.insert(HelperSemantic::Operation(OperationKind::from(operation)));
+        }
+    }
+    expected
 }
 
 fn validate_literal_plan(
@@ -568,7 +577,9 @@ mod tests {
         test_random::DeterministicRandom,
     };
 
-    use super::{emitted_step_bytes, index_effective_steps, validate_plan};
+    use super::{
+        emitted_step_bytes, expected_helper_semantics, index_effective_steps, validate_plan,
+    };
 
     fn fixture() -> (ValidatedSemanticGraph, Vec<Vec<u8>>) {
         let mut builder = SemanticGraphBuilder::new(vec![2, 2, 2, 2]);
@@ -599,6 +610,35 @@ mod tests {
         (graph, fragments, plan)
     }
 
+    fn diverse_alias_fixture() -> (ValidatedSemanticGraph, Vec<Vec<u8>>, RenderPlan) {
+        let fragments = vec![b"A0".to_vec(), b"B1".to_vec(), b"C2".to_vec()];
+        let mut builder = SemanticGraphBuilder::new(vec![2, 2, 2]);
+        let first = builder.fragment(0).unwrap();
+        let second = builder.fragment(1).unwrap();
+        let third = builder.fragment(2).unwrap();
+        let reversed = builder.operation(Operation::Reverse, vec![first]);
+        let rotated = builder.operation(Operation::RotateLeft(1), vec![second]);
+        let xored = builder.operation(Operation::Xor(vec![7]), vec![third]);
+        let output = builder.operation(Operation::Concat, vec![reversed, rotated, xored]);
+        builder.output(output);
+        let graph = builder.validate().unwrap();
+        let mut random = DeterministicRandom::new([83; 32]);
+        let plan = plan_rendering(&graph, &fragments, &mut random).unwrap();
+        (graph, fragments, plan)
+    }
+
+    fn diverse_alias_oracle() -> std::collections::BTreeSet<HelperSemantic> {
+        [
+            HelperSemantic::BytesAscii,
+            HelperSemantic::Operation(OperationKind::Reverse),
+            HelperSemantic::Operation(OperationKind::RotateLeft),
+            HelperSemantic::Operation(OperationKind::Xor),
+            HelperSemantic::Operation(OperationKind::Concat),
+        ]
+        .into_iter()
+        .collect()
+    }
+
     fn effective_fragments(plan: &mut RenderPlan) -> Vec<&mut DisplayFragment> {
         plan.fragments
             .iter_mut()
@@ -611,6 +651,53 @@ mod tests {
         let (graph, fragments, plan) = fixture_plan();
 
         assert_eq!(validate_plan(&graph, &fragments, &plan), Ok(()));
+    }
+
+    #[test]
+    fn validator_alias_oracle_matches_a_hand_authored_diverse_graph() {
+        let (graph, fragments, plan) = diverse_alias_fixture();
+
+        assert_eq!(expected_helper_semantics(&graph), diverse_alias_oracle());
+        assert_eq!(
+            plan.profile
+                .aliases()
+                .keys()
+                .copied()
+                .collect::<std::collections::BTreeSet<_>>(),
+            diverse_alias_oracle()
+        );
+        assert_eq!(validate_plan(&graph, &fragments, &plan), Ok(()));
+    }
+
+    #[test]
+    fn accepts_an_unmodified_diverse_planner_profile() {
+        let (graph, fragments, plan) = diverse_alias_fixture();
+
+        assert_eq!(validate_plan(&graph, &fragments, &plan), Ok(()));
+    }
+
+    #[test]
+    fn diverse_graph_rejects_missing_and_extra_alias_semantics() {
+        let (graph, fragments, mut plan) = diverse_alias_fixture();
+        let mut aliases = plan.profile.aliases().clone();
+        aliases.remove(&HelperSemantic::Operation(OperationKind::RotateLeft));
+        plan.profile = ObfuscationProfile::new(aliases);
+        assert_eq!(
+            validate_plan(&graph, &fragments, &plan),
+            Err(RenderError::InvalidPlan)
+        );
+
+        let (_, _, mut plan) = diverse_alias_fixture();
+        let mut aliases = plan.profile.aliases().clone();
+        aliases.insert(
+            HelperSemantic::Operation(OperationKind::ConditionalOrder),
+            "unused_alias".to_owned(),
+        );
+        plan.profile = ObfuscationProfile::new(aliases);
+        assert_eq!(
+            validate_plan(&graph, &fragments, &plan),
+            Err(RenderError::InvalidPlan)
+        );
     }
 
     #[test]

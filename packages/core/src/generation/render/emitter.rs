@@ -324,22 +324,20 @@ pub(super) fn declared_template_max_bytes(
     language: RenderLanguage,
     family: TemplateFamily,
 ) -> usize {
-    let family = languages::temporary_base_emission_family(family);
+    let family = languages::base_template_family(family);
     match (language, family) {
-        (RenderLanguage::C, TemplateFamily::Direct) => 304,
-        (RenderLanguage::C, TemplateFamily::Helper) => 352,
-        (RenderLanguage::Cpp, TemplateFamily::Direct) => 304,
-        (RenderLanguage::Cpp, TemplateFamily::Helper) => 352,
-        (RenderLanguage::Rust, TemplateFamily::Direct) => 304,
-        (RenderLanguage::Rust, TemplateFamily::Helper) => 352,
-        (RenderLanguage::Go, TemplateFamily::Direct) => 288,
-        (RenderLanguage::Go, TemplateFamily::Helper) => 352,
-        (RenderLanguage::Java, TemplateFamily::Direct) => 304,
-        (RenderLanguage::Java, TemplateFamily::Helper) => 352,
-        (RenderLanguage::Pseudocode, TemplateFamily::Direct) => 288,
-        (RenderLanguage::Pseudocode, TemplateFamily::Helper) => 352,
-        // The temporary mapping above makes these unreachable until Task 7.
-        (_, TemplateFamily::AliasChain | TemplateFamily::Guarded) => unreachable!(),
+        (RenderLanguage::C, languages::BaseTemplateFamily::Direct) => 304,
+        (RenderLanguage::C, languages::BaseTemplateFamily::Helper) => 352,
+        (RenderLanguage::Cpp, languages::BaseTemplateFamily::Direct) => 304,
+        (RenderLanguage::Cpp, languages::BaseTemplateFamily::Helper) => 352,
+        (RenderLanguage::Rust, languages::BaseTemplateFamily::Direct) => 304,
+        (RenderLanguage::Rust, languages::BaseTemplateFamily::Helper) => 352,
+        (RenderLanguage::Go, languages::BaseTemplateFamily::Direct) => 288,
+        (RenderLanguage::Go, languages::BaseTemplateFamily::Helper) => 352,
+        (RenderLanguage::Java, languages::BaseTemplateFamily::Direct) => 304,
+        (RenderLanguage::Java, languages::BaseTemplateFamily::Helper) => 352,
+        (RenderLanguage::Pseudocode, languages::BaseTemplateFamily::Direct) => 288,
+        (RenderLanguage::Pseudocode, languages::BaseTemplateFamily::Helper) => 352,
     }
 }
 
@@ -542,22 +540,19 @@ mod tests {
     }
 
     fn expected_stable_longest(language: RenderLanguage, family: TemplateFamily) -> usize {
-        match (language, family) {
-            (RenderLanguage::C, TemplateFamily::Direct) => 295,
-            (RenderLanguage::C, TemplateFamily::Helper) => 351,
-            (RenderLanguage::Cpp, TemplateFamily::Direct) => 294,
-            (RenderLanguage::Cpp, TemplateFamily::Helper) => 349,
-            (RenderLanguage::Rust, TemplateFamily::Direct) => 292,
-            (RenderLanguage::Rust, TemplateFamily::Helper) => 346,
-            (RenderLanguage::Go, TemplateFamily::Direct) => 288,
-            (RenderLanguage::Go, TemplateFamily::Helper) => 351,
-            (RenderLanguage::Java, TemplateFamily::Direct) => 295,
-            (RenderLanguage::Java, TemplateFamily::Helper) => 352,
-            (RenderLanguage::Pseudocode, TemplateFamily::Direct) => 288,
-            (RenderLanguage::Pseudocode, TemplateFamily::Helper) => 341,
-            (_, TemplateFamily::AliasChain | TemplateFamily::Guarded) => {
-                expected_stable_longest(language, TemplateFamily::Direct)
-            }
+        match (language, super::languages::base_template_family(family)) {
+            (RenderLanguage::C, super::languages::BaseTemplateFamily::Direct) => 295,
+            (RenderLanguage::C, super::languages::BaseTemplateFamily::Helper) => 351,
+            (RenderLanguage::Cpp, super::languages::BaseTemplateFamily::Direct) => 294,
+            (RenderLanguage::Cpp, super::languages::BaseTemplateFamily::Helper) => 349,
+            (RenderLanguage::Rust, super::languages::BaseTemplateFamily::Direct) => 292,
+            (RenderLanguage::Rust, super::languages::BaseTemplateFamily::Helper) => 346,
+            (RenderLanguage::Go, super::languages::BaseTemplateFamily::Direct) => 288,
+            (RenderLanguage::Go, super::languages::BaseTemplateFamily::Helper) => 351,
+            (RenderLanguage::Java, super::languages::BaseTemplateFamily::Direct) => 295,
+            (RenderLanguage::Java, super::languages::BaseTemplateFamily::Helper) => 352,
+            (RenderLanguage::Pseudocode, super::languages::BaseTemplateFamily::Direct) => 288,
+            (RenderLanguage::Pseudocode, super::languages::BaseTemplateFamily::Helper) => 341,
         }
     }
 

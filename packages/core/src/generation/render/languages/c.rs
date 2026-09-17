@@ -1,25 +1,23 @@
 use super::super::emitter::bounded_parts;
 use super::super::error::RenderError;
-use super::super::model::TemplateFamily;
+use super::BaseTemplateFamily;
 
 pub(super) fn emit_assignment(
-    family: TemplateFamily,
+    family: BaseTemplateFamily,
     output: &str,
     local: &str,
     expression: &str,
 ) -> Result<String, RenderError> {
     match family {
-        TemplateFamily::Direct | TemplateFamily::AliasChain | TemplateFamily::Guarded => {
-            bounded_parts(&[
-                "bytes ",
-                output,
-                " = ",
-                expression,
-                ";  // exports ",
-                output,
-            ])
-        }
-        TemplateFamily::Helper => bounded_parts(&[
+        BaseTemplateFamily::Direct => bounded_parts(&[
+            "bytes ",
+            output,
+            " = ",
+            expression,
+            ";  // exports ",
+            output,
+        ]),
+        BaseTemplateFamily::Helper => bounded_parts(&[
             "bytes ",
             local,
             "() { return ",
