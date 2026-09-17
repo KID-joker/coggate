@@ -1,18 +1,20 @@
 use super::super::emitter::bounded_parts;
 use super::super::error::RenderError;
-use super::BaseTemplateFamily;
+use super::super::model::TemplateFamily;
 
 pub(super) fn emit_assignment(
-    family: BaseTemplateFamily,
+    family: TemplateFamily,
     output: &str,
     local: &str,
     expression: &str,
+    guard_value: u8,
+    decoy_expression: &str,
 ) -> Result<String, RenderError> {
     match family {
-        BaseTemplateFamily::Direct => {
+        TemplateFamily::Direct => {
             bounded_parts(&[output, " := ", expression, " // exports ", output])
         }
-        BaseTemplateFamily::Helper => bounded_parts(&[
+        TemplateFamily::Helper => bounded_parts(&[
             local,
             " := func() bytes { return ",
             expression,
@@ -23,5 +25,38 @@ pub(super) fn emit_assignment(
             "() // exports ",
             output,
         ]),
+        TemplateFamily::AliasChain => bounded_parts(&[
+            local,
+            " := ",
+            expression,
+            "\n",
+            output,
+            " := ",
+            local,
+            " // exports ",
+            output,
+        ]),
+        TemplateFamily::Guarded => {
+            let guard = guard_value.to_string();
+            bounded_parts(&[
+                "var ",
+                output,
+                " bytes\nif (((uint32(",
+                &guard,
+                ")*uint32(",
+                &guard,
+                "))+uint32(",
+                &guard,
+                "))&1)==0 {\n",
+                output,
+                " = ",
+                expression,
+                "\n} else {\n",
+                local,
+                " := ",
+                decoy_expression,
+                "\n}",
+            ])
+        }
     }
 }

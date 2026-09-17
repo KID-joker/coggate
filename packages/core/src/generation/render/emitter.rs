@@ -12,7 +12,7 @@ use super::model::{
 
 pub(super) const MAX_STEP_BYTES: usize = 512;
 
-const BYTE_SEMANTICS_PREAMBLE: &str = "Treat every value as a byte array. Indices are zero-based and slices use half-open [start,end) ranges. Addition and subtraction use wrapping u8 arithmetic modulo 256. Rotate amounts are reduced modulo the nonempty current array length. Hex is lowercase. Base64url is unpadded base64url. The names below are per-question aliases with the stated mathematical semantics. Parenthesized additions and subtractions are nonnegative integer expressions evaluated mathematically before use.\n\n";
+const BYTE_SEMANTICS_PREAMBLE: &str = "Treat every value as a byte array. Indices are zero-based and slices use half-open [start,end) ranges. Addition and subtraction use wrapping u8 arithmetic modulo 256. Rotate amounts are reduced modulo the nonempty current array length. Hex is lowercase. Base64url is unpadded base64url. The names below are per-question aliases with the stated mathematical semantics. Parenthesized additions and subtractions are nonnegative integer expressions evaluated mathematically before use. Guard predicates use mathematical arithmetic rendered in a widened integer type; the effective answer follows the true branch.\n\n";
 const DEPENDENCY_CLUES_HEADER: &str = "Dependency clues:\n";
 const DISPLAY_ORDER_WARNING: &str = "Display order is not evaluation order.\n";
 const OUTPUT_REQUEST_PREFIX: &str = "The requested result is output label ";
@@ -353,13 +353,7 @@ pub(super) fn emit_operation(
         .validate_arity(inputs.len())
         .map_err(|_| RenderError::InvalidPlan)?;
     let expression = operation_expression(operation, inputs, step.numeric_style, profile)?;
-    languages::emit_assignment(
-        language,
-        step.template,
-        &step.output_label,
-        &step.local_name,
-        &expression,
-    )
+    emit_step_assignment(language, step, profile, &expression)
 }
 
 pub(super) fn emit_fragment(
@@ -377,12 +371,35 @@ pub(super) fn emit_fragment(
     let literal_plan = step.literal_plan.as_ref().ok_or(RenderError::InvalidPlan)?;
     let expression =
         fragment_expression(language, value, literal_plan, step.numeric_style, profile)?;
+    emit_step_assignment(language, step, profile, &expression)
+}
+
+fn emit_step_assignment(
+    language: RenderLanguage,
+    step: &DisplayStep,
+    profile: &ObfuscationProfile,
+    expression: &str,
+) -> Result<String, RenderError> {
+    let decoy_expression = match (step.template, step.guard_value) {
+        (TemplateFamily::Guarded, Some(_)) => {
+            let bytes_alias = profile
+                .alias(HelperSemantic::BytesAscii)
+                .ok_or(RenderError::InvalidPlan)?;
+            Some(bytes_call(bytes_alias, b"A")?)
+        }
+        (TemplateFamily::Direct | TemplateFamily::Helper | TemplateFamily::AliasChain, None) => {
+            None
+        }
+        _ => return Err(RenderError::InvalidPlan),
+    };
     languages::emit_assignment(
         language,
         step.template,
         &step.output_label,
         &step.local_name,
-        &expression,
+        expression,
+        step.guard_value,
+        decoy_expression.as_deref(),
     )
 }
 
@@ -390,20 +407,31 @@ pub(super) fn declared_template_max_bytes(
     language: RenderLanguage,
     family: TemplateFamily,
 ) -> usize {
-    let family = languages::base_template_family(family);
     match (language, family) {
-        (RenderLanguage::C, languages::BaseTemplateFamily::Direct) => 416,
-        (RenderLanguage::C, languages::BaseTemplateFamily::Helper) => 464,
-        (RenderLanguage::Cpp, languages::BaseTemplateFamily::Direct) => 416,
-        (RenderLanguage::Cpp, languages::BaseTemplateFamily::Helper) => 464,
-        (RenderLanguage::Rust, languages::BaseTemplateFamily::Direct) => 400,
-        (RenderLanguage::Rust, languages::BaseTemplateFamily::Helper) => 448,
-        (RenderLanguage::Go, languages::BaseTemplateFamily::Direct) => 400,
-        (RenderLanguage::Go, languages::BaseTemplateFamily::Helper) => 464,
-        (RenderLanguage::Java, languages::BaseTemplateFamily::Direct) => 416,
-        (RenderLanguage::Java, languages::BaseTemplateFamily::Helper) => 480,
-        (RenderLanguage::Pseudocode, languages::BaseTemplateFamily::Direct) => 400,
-        (RenderLanguage::Pseudocode, languages::BaseTemplateFamily::Helper) => 448,
+        (RenderLanguage::C, TemplateFamily::Direct) => 416,
+        (RenderLanguage::C, TemplateFamily::Helper) => 464,
+        (RenderLanguage::C, TemplateFamily::AliasChain) => 464,
+        (RenderLanguage::C, TemplateFamily::Guarded) => 496,
+        (RenderLanguage::Cpp, TemplateFamily::Direct) => 416,
+        (RenderLanguage::Cpp, TemplateFamily::Helper) => 464,
+        (RenderLanguage::Cpp, TemplateFamily::AliasChain) => 464,
+        (RenderLanguage::Cpp, TemplateFamily::Guarded) => 512,
+        (RenderLanguage::Rust, TemplateFamily::Direct) => 400,
+        (RenderLanguage::Rust, TemplateFamily::Helper) => 448,
+        (RenderLanguage::Rust, TemplateFamily::AliasChain) => 448,
+        (RenderLanguage::Rust, TemplateFamily::Guarded) => 496,
+        (RenderLanguage::Go, TemplateFamily::Direct) => 400,
+        (RenderLanguage::Go, TemplateFamily::Helper) => 464,
+        (RenderLanguage::Go, TemplateFamily::AliasChain) => 432,
+        (RenderLanguage::Go, TemplateFamily::Guarded) => 512,
+        (RenderLanguage::Java, TemplateFamily::Direct) => 416,
+        (RenderLanguage::Java, TemplateFamily::Helper) => 480,
+        (RenderLanguage::Java, TemplateFamily::AliasChain) => 464,
+        (RenderLanguage::Java, TemplateFamily::Guarded) => 512,
+        (RenderLanguage::Pseudocode, TemplateFamily::Direct) => 400,
+        (RenderLanguage::Pseudocode, TemplateFamily::Helper) => 448,
+        (RenderLanguage::Pseudocode, TemplateFamily::AliasChain) => 432,
+        (RenderLanguage::Pseudocode, TemplateFamily::Guarded) => 496,
     }
 }
 
@@ -712,10 +740,13 @@ mod tests {
     }
 
     fn operation_profile(operation: &Operation) -> ObfuscationProfile {
-        ObfuscationProfile::new(BTreeMap::from([(
-            HelperSemantic::Operation(OperationKind::from(operation)),
-            operation_alias(operation).to_owned(),
-        )]))
+        ObfuscationProfile::new(BTreeMap::from([
+            (HelperSemantic::BytesAscii, "bytes_ascii".to_owned()),
+            (
+                HelperSemantic::Operation(OperationKind::from(operation)),
+                operation_alias(operation).to_owned(),
+            ),
+        ]))
     }
 
     fn operation_step(
@@ -1011,19 +1042,20 @@ mod tests {
     }
 
     fn expected_stable_longest(language: RenderLanguage, family: TemplateFamily) -> usize {
-        match (language, super::languages::base_template_family(family)) {
-            (RenderLanguage::C, super::languages::BaseTemplateFamily::Direct) => 295,
-            (RenderLanguage::C, super::languages::BaseTemplateFamily::Helper) => 351,
-            (RenderLanguage::Cpp, super::languages::BaseTemplateFamily::Direct) => 294,
-            (RenderLanguage::Cpp, super::languages::BaseTemplateFamily::Helper) => 349,
-            (RenderLanguage::Rust, super::languages::BaseTemplateFamily::Direct) => 292,
-            (RenderLanguage::Rust, super::languages::BaseTemplateFamily::Helper) => 346,
-            (RenderLanguage::Go, super::languages::BaseTemplateFamily::Direct) => 288,
-            (RenderLanguage::Go, super::languages::BaseTemplateFamily::Helper) => 351,
-            (RenderLanguage::Java, super::languages::BaseTemplateFamily::Direct) => 295,
-            (RenderLanguage::Java, super::languages::BaseTemplateFamily::Helper) => 352,
-            (RenderLanguage::Pseudocode, super::languages::BaseTemplateFamily::Direct) => 288,
-            (RenderLanguage::Pseudocode, super::languages::BaseTemplateFamily::Helper) => 341,
+        match (language, family) {
+            (RenderLanguage::C, TemplateFamily::Direct) => 295,
+            (RenderLanguage::C, TemplateFamily::Helper) => 351,
+            (RenderLanguage::Cpp, TemplateFamily::Direct) => 294,
+            (RenderLanguage::Cpp, TemplateFamily::Helper) => 349,
+            (RenderLanguage::Rust, TemplateFamily::Direct) => 292,
+            (RenderLanguage::Rust, TemplateFamily::Helper) => 346,
+            (RenderLanguage::Go, TemplateFamily::Direct) => 288,
+            (RenderLanguage::Go, TemplateFamily::Helper) => 351,
+            (RenderLanguage::Java, TemplateFamily::Direct) => 295,
+            (RenderLanguage::Java, TemplateFamily::Helper) => 352,
+            (RenderLanguage::Pseudocode, TemplateFamily::Direct) => 288,
+            (RenderLanguage::Pseudocode, TemplateFamily::Helper) => 341,
+            (_, TemplateFamily::AliasChain | TemplateFamily::Guarded) => 0,
         }
     }
 
@@ -1416,10 +1448,10 @@ mod tests {
     }
 
     #[test]
-    fn future_surface_templates_temporarily_emit_the_exact_direct_scaffold() {
+    fn alias_chain_and_guarded_templates_have_real_distinct_syntax_in_every_language() {
         let inputs = ["source_0".to_owned()];
         for language in RenderLanguage::ALL {
-            let direct_operation = emit_operation(
+            let direct = emit_operation(
                 language,
                 TemplateFamily::Direct,
                 "result_0",
@@ -1428,37 +1460,304 @@ mod tests {
                 &inputs,
             )
             .unwrap();
-            let direct_fragment = emit_fragment(
+            let alias_chain = emit_operation(
                 language,
-                TemplateFamily::Direct,
+                TemplateFamily::AliasChain,
                 "result_0",
                 "local_0",
-                b"Ab1",
+                &Operation::Reverse,
+                &inputs,
+            )
+            .unwrap();
+            let mut guarded_step = operation_step(
+                TemplateFamily::Guarded,
+                "result_0",
+                "local_0",
+                &Operation::Reverse,
+            );
+            guarded_step.guard_value = Some(255);
+            let guarded = emit_operation_step(
+                language,
+                &guarded_step,
+                &operation_profile(&Operation::Reverse),
+                &inputs,
             )
             .unwrap();
 
-            for family in [TemplateFamily::AliasChain, TemplateFamily::Guarded] {
-                assert_eq!(
-                    emit_operation(
+            assert_ne!(alias_chain, direct, "{language:?}");
+            assert_ne!(guarded, direct, "{language:?}");
+            assert_ne!(guarded, alias_chain, "{language:?}");
+            let expression = "reverse(source_0)";
+            let local_assignment = alias_chain.find(expression).unwrap();
+            let export = alias_chain.rfind("result_0").unwrap();
+            assert!(
+                alias_chain.contains("local_0"),
+                "{language:?}: {alias_chain}"
+            );
+            assert!(local_assignment < export, "{language:?}: {alias_chain}");
+            assert!(guarded.contains("if "), "{language:?}: {guarded}");
+            assert!(guarded.contains("else"), "{language:?}: {guarded}");
+            assert!(guarded.contains("255"), "{language:?}: {guarded}");
+            assert!(guarded.contains(expression), "{language:?}: {guarded}");
+            assert!(
+                guarded.contains("bytes_ascii(\"A\")"),
+                "{language:?}: {guarded}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_language_operation_and_template_preserves_the_effective_inputs_and_names() {
+        let families = [
+            TemplateFamily::Direct,
+            TemplateFamily::Helper,
+            TemplateFamily::AliasChain,
+            TemplateFamily::Guarded,
+        ];
+
+        for language in RenderLanguage::ALL {
+            for operation in operations() {
+                let input_count = operation.arity().unwrap_or(3);
+                let inputs = ["alpha_input", "bravo_input", "charlie_input"]
+                    .into_iter()
+                    .take(input_count)
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>();
+                for family in families {
+                    let rendered = emit_operation(
                         language,
                         family,
-                        "result_0",
-                        "local_0",
-                        &Operation::Reverse,
+                        "result_final",
+                        "planned_local",
+                        &operation,
                         &inputs,
                     )
-                    .unwrap(),
-                    direct_operation
+                    .unwrap();
+
+                    for input in &inputs {
+                        assert_eq!(
+                            rendered.matches(input).count(),
+                            1,
+                            "{language:?} {family:?} {operation:?}: {rendered}"
+                        );
+                    }
+                    assert_eq!(
+                        rendered.matches(operation_alias(&operation)).count(),
+                        1,
+                        "{language:?} {family:?} {operation:?}: {rendered}"
+                    );
+                    let expected_local_count = match family {
+                        TemplateFamily::Direct => 0,
+                        TemplateFamily::Helper | TemplateFamily::AliasChain => 2,
+                        TemplateFamily::Guarded => 1,
+                    };
+                    assert_eq!(
+                        rendered.matches("planned_local").count(),
+                        expected_local_count,
+                        "{language:?} {family:?} {operation:?}: {rendered}"
+                    );
+                    assert!(
+                        rendered.contains("result_final"),
+                        "{language:?} {family:?} {operation:?}: {rendered}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_language_fragment_and_template_uses_the_profile_bytes_alias() {
+        for language in RenderLanguage::ALL {
+            for family in [
+                TemplateFamily::Direct,
+                TemplateFamily::Helper,
+                TemplateFamily::AliasChain,
+                TemplateFamily::Guarded,
+            ] {
+                let rendered =
+                    emit_fragment(language, family, "result_final", "planned_local", b"Ab1")
+                        .unwrap();
+                assert!(
+                    rendered.contains("bytes_ascii(\"Ab1\")"),
+                    "{language:?} {family:?}: {rendered}"
                 );
                 assert_eq!(
-                    emit_fragment(language, family, "result_0", "local_0", b"Ab1").unwrap(),
-                    direct_fragment
-                );
-                assert_eq!(
-                    declared_template_max_bytes(language, family),
-                    declared_template_max_bytes(language, TemplateFamily::Direct)
+                    rendered.matches("planned_local").count(),
+                    match family {
+                        TemplateFamily::Direct => 0,
+                        TemplateFamily::Helper | TemplateFamily::AliasChain => 2,
+                        TemplateFamily::Guarded => 1,
+                    },
+                    "{language:?} {family:?}: {rendered}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn every_guard_value_uses_a_language_specific_widened_constant_predicate() {
+        for language in RenderLanguage::ALL {
+            for guard in u8::MIN..=u8::MAX {
+                let mut step = operation_step(
+                    TemplateFamily::Guarded,
+                    "result_final",
+                    "decoy_local",
+                    &Operation::Reverse,
+                );
+                step.guard_value = Some(guard);
+                let rendered = emit_operation_step(
+                    language,
+                    &step,
+                    &operation_profile(&Operation::Reverse),
+                    &["source".to_owned()],
+                )
+                .unwrap();
+                let widened = match language {
+                    RenderLanguage::C | RenderLanguage::Cpp => format!("{guard}UL"),
+                    RenderLanguage::Rust => format!("{guard}_u32"),
+                    RenderLanguage::Go => format!("uint32({guard})"),
+                    RenderLanguage::Java => format!("{guard}L"),
+                    RenderLanguage::Pseudocode => format!("u32({guard})"),
+                };
+                assert!(
+                    rendered.matches(&widened).count() >= 3,
+                    "{language:?} guard {guard}: {rendered}"
+                );
+                assert!(rendered.contains("&") || rendered.contains("bitand"));
+                assert!(rendered.contains("=="));
+            }
+        }
+    }
+
+    fn false_branch(language: RenderLanguage, emitted: &str) -> &str {
+        let false_and_suffix = emitted.split_once("else").unwrap().1;
+        match language {
+            RenderLanguage::Pseudocode => false_and_suffix.split_once("end if").unwrap().0,
+            RenderLanguage::C
+            | RenderLanguage::Cpp
+            | RenderLanguage::Rust
+            | RenderLanguage::Go
+            | RenderLanguage::Java => false_and_suffix.split_once('}').unwrap().0,
+        }
+    }
+
+    #[test]
+    fn guarded_false_branch_is_an_isolated_display_only_decoy() {
+        let inputs = ["source_alpha".to_owned(), "source_beta".to_owned()];
+        for language in RenderLanguage::ALL {
+            let operation = Operation::AddModulo;
+            let mut step = operation_step(
+                TemplateFamily::Guarded,
+                "result_final",
+                "decoy_local",
+                &operation,
+            );
+            step.guard_value = Some(173);
+            let emitted =
+                emit_operation_step(language, &step, &operation_profile(&operation), &inputs)
+                    .unwrap();
+            let false_branch = false_branch(language, &emitted);
+            let tokens = false_branch
+                .split(|character: char| !(character.is_ascii_alphanumeric() || character == '_'))
+                .filter(|token| !token.is_empty())
+                .collect::<BTreeSet<_>>();
+
+            assert!(
+                tokens.contains("decoy_local"),
+                "{language:?}: {false_branch}"
+            );
+            assert!(
+                tokens.contains("bytes_ascii"),
+                "{language:?}: {false_branch}"
+            );
+            assert!(tokens.contains("A"), "{language:?}: {false_branch}");
+            for forbidden in [
+                "result_final",
+                "source_alpha",
+                "source_beta",
+                "other_effective_local",
+                "add_u8",
+            ] {
+                assert!(
+                    !tokens.contains(forbidden),
+                    "{language:?}: false branch leaked {forbidden}: {false_branch}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn emitter_rejects_guard_fields_that_do_not_match_the_template_family() {
+        for language in RenderLanguage::ALL {
+            for family in [
+                TemplateFamily::Direct,
+                TemplateFamily::Helper,
+                TemplateFamily::AliasChain,
+            ] {
+                let mut step = operation_step(family, "output", "local", &Operation::Reverse);
+                step.guard_value = Some(7);
+                assert_eq!(
+                    emit_operation_step(
+                        language,
+                        &step,
+                        &operation_profile(&Operation::Reverse),
+                        &["source".to_owned()],
+                    ),
+                    Err(RenderError::InvalidPlan),
+                    "{language:?} {family:?}"
+                );
+            }
+
+            let mut step = operation_step(
+                TemplateFamily::Guarded,
+                "output",
+                "local",
+                &Operation::Reverse,
+            );
+            step.guard_value = None;
+            assert_eq!(
+                emit_operation_step(
+                    language,
+                    &step,
+                    &operation_profile(&Operation::Reverse),
+                    &["source".to_owned()],
+                ),
+                Err(RenderError::InvalidPlan),
+                "{language:?} guarded without value"
+            );
+        }
+    }
+
+    #[test]
+    fn question_preamble_explains_guarded_branch_semantics_without_runtime_ambiguity() {
+        let mut plan = RenderPlan {
+            fragments: vec![DisplayFragment {
+                heading: "section".to_owned(),
+                language: RenderLanguage::Rust,
+                steps: vec![DisplayStep {
+                    node: NodeId(0),
+                    output_label: "result".to_owned(),
+                    local_name: "decoy".to_owned(),
+                    template: TemplateFamily::Guarded,
+                    numeric_style: NumericStyle::Decimal,
+                    literal_plan: Some(FragmentLiteralPlan::Whole),
+                    guard_value: Some(255),
+                    kind: DisplayStepKind::Fragment { index: 0 },
+                }],
+                distractor: false,
+            }],
+            output: NodeId(0),
+            profile: ObfuscationProfile::new(BTreeMap::from([(
+                HelperSemantic::BytesAscii,
+                "mkbytes".to_owned(),
+            )])),
+        };
+
+        for language in RenderLanguage::ALL {
+            plan.fragments[0].language = language;
+            let question = emit_question(&plan, &[b"Ab".to_vec()]).unwrap();
+            assert!(question.contains("widened integer"));
+            assert!(question.contains("effective answer follows the true branch"));
         }
     }
 
@@ -1608,6 +1907,7 @@ mod tests {
             },
         ];
         let value = b"ABCDEFGHIJKLMNOP";
+        let mut matrix = Vec::new();
 
         for language in RenderLanguage::ALL {
             for family in families {
@@ -1621,12 +1921,18 @@ mod tests {
                             &operation,
                         );
                         step.numeric_style = style;
-                        let profile = ObfuscationProfile::new(BTreeMap::from([(
-                            HelperSemantic::Operation(OperationKind::from(&operation)),
-                            "aaaaaaaaaaaaaaaa".to_owned(),
-                        )]));
-                        let emitted =
-                            emit_operation_step(language, &step, &profile, &inputs).unwrap();
+                        step.guard_value = (family == TemplateFamily::Guarded).then_some(u8::MAX);
+                        let profile = ObfuscationProfile::new(BTreeMap::from([
+                            (HelperSemantic::BytesAscii, "bbbbbbbbbbbbbbbb".to_owned()),
+                            (
+                                HelperSemantic::Operation(OperationKind::from(&operation)),
+                                "aaaaaaaaaaaaaaaa".to_owned(),
+                            ),
+                        ]));
+                        let emitted = emit_operation_step(language, &step, &profile, &inputs)
+                            .unwrap_or_else(|error| {
+                                panic!("{language:?} {family:?} {style:?} {operation:?}: {error:?}")
+                            });
                         longest = longest.max(emitted.len());
                     }
 
@@ -1638,7 +1944,7 @@ mod tests {
                             template: family,
                             numeric_style: style,
                             literal_plan: Some(literal_plan.clone()),
-                            guard_value: (family == TemplateFamily::Guarded).then_some(0),
+                            guard_value: (family == TemplateFamily::Guarded).then_some(u8::MAX),
                             kind: DisplayStepKind::Fragment { index: 0 },
                         };
                         let profile = ObfuscationProfile::new(BTreeMap::from([
@@ -1648,20 +1954,31 @@ mod tests {
                                 "cccccccccccccccc".to_owned(),
                             ),
                         ]));
-                        let emitted = emit_fragment_step(language, &step, &profile, value).unwrap();
+                        let emitted = emit_fragment_step(language, &step, &profile, value)
+                            .unwrap_or_else(|error| {
+                                panic!(
+                                    "{language:?} {family:?} {style:?} {literal_plan:?}: {error:?}"
+                                )
+                            });
                         longest = longest.max(emitted.len());
                     }
                 }
 
                 let expected = longest.div_ceil(16) * 16;
-                assert_eq!(
-                    declared_template_max_bytes(language, family),
-                    expected,
-                    "{language:?} {family:?}: observed maximum {longest}"
-                );
+                matrix.push((language, family, expected, longest));
                 assert!(expected <= MAX_STEP_BYTES);
             }
         }
+        let mismatches = matrix
+            .iter()
+            .filter(|(language, family, expected, _)| {
+                declared_template_max_bytes(*language, *family) != *expected
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            mismatches.is_empty(),
+            "tight bound mismatches: {mismatches:?}"
+        );
     }
 
     #[test]

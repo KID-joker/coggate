@@ -49,16 +49,16 @@ fn test_operation(
             template: family,
             numeric_style: NumericStyle::Decimal,
             literal_plan: None,
-            guard_value: None,
+            guard_value: (family == TemplateFamily::Guarded).then_some(255),
             kind: DisplayStepKind::Operation {
                 operation,
                 inputs: Vec::new(),
             },
         },
-        ObfuscationProfile::new(BTreeMap::from([(
-            HelperSemantic::Operation(kind),
-            alias.to_owned(),
-        )])),
+        ObfuscationProfile::new(BTreeMap::from([
+            (HelperSemantic::BytesAscii, "bytes_ascii".to_owned()),
+            (HelperSemantic::Operation(kind), alias.to_owned()),
+        ])),
     )
 }
 
@@ -174,6 +174,102 @@ fn dense_legal_dependencies_render_for_every_stream_within_fixed_bounds() {
             expected
         );
     }
+}
+
+#[test]
+fn deterministic_surface_matrix_emits_all_four_visibly_distinct_template_families() {
+    let (graph, fragments) = boundary_fixture(5, 8);
+    let mut reached = BTreeSet::new();
+
+    for seed in 0_u8..=127 {
+        let mut first_random = DeterministicRandom::new([seed; 32]);
+        let first = plan_rendering(&graph, &fragments, &mut first_random).unwrap();
+        let mut repeated_random = DeterministicRandom::new([seed; 32]);
+        let repeated = plan_rendering(&graph, &fragments, &mut repeated_random).unwrap();
+        assert_eq!(first, repeated, "seed {seed}");
+        assert_eq!(
+            emitter::emit_question(&first, &fragments).unwrap(),
+            emitter::emit_question(&repeated, &fragments).unwrap(),
+            "seed {seed}"
+        );
+
+        let labels = first
+            .fragments
+            .iter()
+            .filter(|fragment| !fragment.distractor)
+            .flat_map(|fragment| &fragment.steps)
+            .map(|step| (step.node, step.output_label.clone()))
+            .collect::<BTreeMap<_, _>>();
+        for fragment in first
+            .fragments
+            .iter()
+            .filter(|fragment| !fragment.distractor)
+        {
+            for step in &fragment.steps {
+                reached.insert(step.template);
+                let emitted = match &step.kind {
+                    DisplayStepKind::Fragment { index } => emitter::emit_fragment(
+                        fragment.language,
+                        step,
+                        &first.profile,
+                        &fragments[*index],
+                    )
+                    .unwrap(),
+                    DisplayStepKind::Operation { inputs, .. } => {
+                        let inputs = inputs
+                            .iter()
+                            .map(|input| labels[input].clone())
+                            .collect::<Vec<_>>();
+                        emitter::emit_operation(fragment.language, step, &first.profile, &inputs)
+                            .unwrap()
+                    }
+                };
+                let local_count = emitted
+                    .split(|character: char| {
+                        !(character.is_ascii_alphanumeric() || character == '_')
+                    })
+                    .filter(|token| *token == step.local_name)
+                    .count();
+                match step.template {
+                    TemplateFamily::Direct => {
+                        assert_eq!(local_count, 0, "seed {seed}: {emitted}");
+                        assert!(!emitted.contains("if "), "seed {seed}: {emitted}");
+                    }
+                    TemplateFamily::Helper => {
+                        assert_eq!(local_count, 2, "seed {seed}: {emitted}");
+                        assert!(
+                            emitted.contains(&format!("{}()", step.local_name)),
+                            "seed {seed}: {emitted}"
+                        );
+                        assert!(!emitted.contains("if "), "seed {seed}: {emitted}");
+                    }
+                    TemplateFamily::AliasChain => {
+                        assert_eq!(local_count, 2, "seed {seed}: {emitted}");
+                        assert!(
+                            !emitted.contains(&format!("{}()", step.local_name)),
+                            "seed {seed}: {emitted}"
+                        );
+                        assert!(!emitted.contains("if "), "seed {seed}: {emitted}");
+                    }
+                    TemplateFamily::Guarded => {
+                        assert_eq!(local_count, 1, "seed {seed}: {emitted}");
+                        assert!(emitted.contains("if "), "seed {seed}: {emitted}");
+                        assert!(emitted.contains("else"), "seed {seed}: {emitted}");
+                    }
+                }
+            }
+        }
+    }
+
+    assert_eq!(
+        reached,
+        BTreeSet::from([
+            TemplateFamily::Direct,
+            TemplateFamily::Helper,
+            TemplateFamily::AliasChain,
+            TemplateFamily::Guarded,
+        ])
+    );
 }
 
 #[test]
@@ -706,8 +802,8 @@ fn dense_exact_accounting_question_fits_actual_fragment_and_question_limits() {
 
     let question = emitter::emit_question(&plan, &fragments).unwrap();
     let expected_question_bytes = match usize::BITS {
-        64 => 4_830,
-        32 => 4_810,
+        64 => 4_957,
+        32 => 4_937,
         width => panic!("unsupported usize width {width}"),
     };
     assert_eq!(question.len(), expected_question_bytes);
@@ -810,8 +906,8 @@ fn maximum_dynamic_common_question_text_fits_the_validator_reservation() {
         maximum = maximum.max(common_question_bytes(&profile));
     }
 
-    assert_eq!(maximum, 1_528);
-    assert_eq!(COMMON_QUESTION_BUDGET - maximum, 520);
+    assert_eq!(maximum, 1_655);
+    assert_eq!(COMMON_QUESTION_BUDGET - maximum, 393);
     assert!(maximum <= COMMON_QUESTION_BUDGET);
 }
 
@@ -857,10 +953,10 @@ fn declared_budgets_compositionally_bound_every_legal_question() {
         })
         .max()
         .unwrap();
-    assert_eq!(declared_step_max, 480);
+    assert_eq!(declared_step_max, 512);
 
     let legal_bound = checked_compositional_question_bound(declared_step_max).unwrap();
-    assert_eq!(legal_bound, 11_756);
+    assert_eq!(legal_bound, 12_172);
     assert!(legal_bound <= MAX_QUESTION_BYTES);
 
     let inflated_step_budget = declared_step_max.checked_add(64).unwrap();
@@ -903,7 +999,12 @@ fn maximum_legal_v1_slice_index_fits_every_template_declaration() {
         end: MAX_LEGAL_SLICE_INDEX,
     };
     for language in RenderLanguage::ALL {
-        for family in [TemplateFamily::Direct, TemplateFamily::Helper] {
+        for family in [
+            TemplateFamily::Direct,
+            TemplateFamily::Helper,
+            TemplateFamily::AliasChain,
+            TemplateFamily::Guarded,
+        ] {
             let (step, profile) = test_operation(family, operation.clone());
             let emitted = emitter::emit_operation(language, &step, &profile, &input).unwrap();
             assert!(emitted.contains("1003976272, 1003976272"));

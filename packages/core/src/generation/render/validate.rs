@@ -200,8 +200,13 @@ fn validate_obfuscation(
         .filter(|fragment| !fragment.distractor)
         .flat_map(|fragment| &fragment.steps)
     {
-        if step.guard_value.is_some() != (step.template == TemplateFamily::Guarded) {
-            return Err(RenderError::InvalidPlan);
+        match (step.template, step.guard_value) {
+            (TemplateFamily::Guarded, Some(guard)) if widened_guard_predicate(guard) => {}
+            (
+                TemplateFamily::Direct | TemplateFamily::Helper | TemplateFamily::AliasChain,
+                None,
+            ) => {}
+            _ => return Err(RenderError::InvalidPlan),
         }
         if let NumericStyle::IdentityOffset { delta } = step.numeric_style {
             if !(1..=15).contains(&delta) {
@@ -219,6 +224,11 @@ fn validate_obfuscation(
         }
     }
     Ok(())
+}
+
+pub(super) fn widened_guard_predicate(guard: u8) -> bool {
+    let widened = u32::from(guard);
+    (((widened * widened) + widened) & 1) == 0
 }
 
 fn expected_helper_semantics(
@@ -585,6 +595,7 @@ mod tests {
 
     use super::{
         emitted_step_bytes, expected_helper_semantics, index_effective_steps, validate_plan,
+        widened_guard_predicate,
     };
 
     fn fixture() -> (ValidatedSemanticGraph, Vec<Vec<u8>>) {
@@ -657,6 +668,13 @@ mod tests {
         let (graph, fragments, plan) = fixture_plan();
 
         assert_eq!(validate_plan(&graph, &fragments, &plan), Ok(()));
+    }
+
+    #[test]
+    fn widened_guard_predicate_is_true_for_every_stored_byte() {
+        for guard in u8::MIN..=u8::MAX {
+            assert!(widened_guard_predicate(guard), "guard {guard}");
+        }
     }
 
     #[test]
@@ -769,10 +787,16 @@ mod tests {
                 .unwrap(),
         ];
         for language in RenderLanguage::ALL {
-            for family in [TemplateFamily::Direct, TemplateFamily::Helper] {
+            for family in [
+                TemplateFamily::Direct,
+                TemplateFamily::Helper,
+                TemplateFamily::AliasChain,
+                TemplateFamily::Guarded,
+            ] {
                 for representative in representative_steps {
                     let mut step = representative.clone();
                     step.template = family;
+                    step.guard_value = (family == TemplateFamily::Guarded).then_some(255);
                     let actual = match &step.kind {
                         DisplayStepKind::Fragment { index } => {
                             crate::generation::render::emitter::emit_fragment(
@@ -1115,14 +1139,21 @@ mod tests {
             Err(RenderError::InvalidPlan)
         );
 
-        let (_, _, mut plan) = fixture_plan();
-        let step = &mut effective_fragments(&mut plan)[0].steps[0];
-        step.template = TemplateFamily::Direct;
-        step.guard_value = Some(7);
-        assert_eq!(
-            validate_plan(&graph, &fragments, &plan),
-            Err(RenderError::InvalidPlan)
-        );
+        for family in [
+            TemplateFamily::Direct,
+            TemplateFamily::Helper,
+            TemplateFamily::AliasChain,
+        ] {
+            let (_, _, mut plan) = fixture_plan();
+            let step = &mut effective_fragments(&mut plan)[0].steps[0];
+            step.template = family;
+            step.guard_value = Some(7);
+            assert_eq!(
+                validate_plan(&graph, &fragments, &plan),
+                Err(RenderError::InvalidPlan),
+                "{family:?}"
+            );
+        }
     }
 
     #[test]
