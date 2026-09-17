@@ -256,9 +256,9 @@ impl ProcessWorkspace<'_> {
                 terminate_group(&mut child, &stdout_reader, &stderr_reader)
                     .map(|()| Completion::Exited(status))
             }
-            Ok(Completion::OutputLimit) => kill_and_wait(&mut child)
-                .map(|_| Completion::OutputLimit)
-                .map_err(|cleanup| resolve_process_error(Some(ProcessError::OutputLimit), cleanup)),
+            Ok(Completion::OutputLimit) => {
+                kill_and_wait(&mut child).map(|_| Completion::OutputLimit)
+            }
             Ok(Completion::TimedOut) => kill_and_wait(&mut child).map(|status| match status {
                 Termination::Killed => Completion::TimedOut,
                 Termination::AlreadyExited(status) => Completion::Exited(status),
@@ -419,10 +419,6 @@ fn kill_and_wait(child: &mut GroupChild) -> Result<Termination, ProcessError> {
     }
 }
 
-fn resolve_process_error(primary: Option<ProcessError>, cleanup: ProcessError) -> ProcessError {
-    primary.unwrap_or(cleanup)
-}
-
 struct CaptureBudget {
     remaining: AtomicUsize,
     overflowed: AtomicBool,
@@ -533,25 +529,4 @@ pub enum ProcessError {
     OutputLimit,
     #[error("benchmark process cleanup failed")]
     Cleanup,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{ProcessError, resolve_process_error};
-
-    #[test]
-    fn primary_process_error_wins_over_cleanup_error() {
-        assert_eq!(
-            resolve_process_error(Some(ProcessError::OutputLimit), ProcessError::Kill),
-            ProcessError::OutputLimit
-        );
-    }
-
-    #[test]
-    fn cleanup_error_is_reported_without_a_primary_error() {
-        assert_eq!(
-            resolve_process_error(None, ProcessError::Kill),
-            ProcessError::Kill
-        );
-    }
 }
