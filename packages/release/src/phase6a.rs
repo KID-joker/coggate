@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::{
-    canonical::{MAX_METADATA_BYTES, parse_strict_json, validate_sha256},
+    canonical::{CanonicalError, MAX_METADATA_BYTES, parse_strict_json, validate_sha256},
     receipt::ReportRole,
 };
 
@@ -21,8 +21,10 @@ const MAX_TOOL_FIELD_BYTES: usize = 128;
 const MAX_CASE_DURATION_MS: u64 = 3_600_000;
 const RELEASE_CASES: usize = 1_000;
 
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Eq, PartialEq)]
 pub enum Phase6aError {
+    #[error("Phase 6A report exceeds the metadata byte limit")]
+    InputTooLarge,
     #[error("invalid Phase 6A report")]
     Invalid,
     #[error("Phase 6A report is not canonical")]
@@ -192,7 +194,7 @@ struct Limits {
 
 /// Verifies a canonical Phase 6A report without loading producer crates.
 pub fn verify_phase6a_report(bytes: &[u8]) -> Result<VerifiedReport, Phase6aError> {
-    let value = parse_strict_json(bytes, MAX_METADATA_BYTES).map_err(|_| Phase6aError::Invalid)?;
+    let value = parse_strict_json(bytes, MAX_METADATA_BYTES).map_err(map_json_error)?;
     let report: Report = serde_json::from_value(value).map_err(|_| Phase6aError::Invalid)?;
     if serde_json::to_vec(&report).map_err(|_| Phase6aError::Invalid)? != bytes {
         return Err(Phase6aError::NonCanonical);
@@ -215,6 +217,13 @@ pub fn verify_phase6a_report(bytes: &[u8]) -> Result<VerifiedReport, Phase6aErro
         qualified: report.summary.qualified,
         kind: report.binding.kind,
     })
+}
+
+fn map_json_error(error: CanonicalError) -> Phase6aError {
+    match error {
+        CanonicalError::InputTooLarge { .. } => Phase6aError::InputTooLarge,
+        _ => Phase6aError::Invalid,
+    }
 }
 
 fn tracked_suite() -> Result<Manifest, Phase6aError> {
