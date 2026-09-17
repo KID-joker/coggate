@@ -23,7 +23,7 @@ pub const MAX_WRITTEN_RECEIPT_BYTES: usize = MAX_METADATA_BYTES + 1;
 /// The fixed number of bound sidecar files for a Phase 5D artifact receipt.
 pub const PHASE5D_ARTIFACT_FILE_COUNT: usize = 2;
 /// The fixed number of bound sidecar files for a Phase 5D sanitizer receipt.
-pub const PHASE5D_SANITIZER_FILE_COUNT: usize = 1;
+pub const PHASE5D_SANITIZER_FILE_COUNT: usize = 0;
 /// The fixed number of bound sidecar files for a Phase 6A report receipt.
 pub const PHASE6A_REPORT_FILE_COUNT: usize = 2;
 
@@ -58,6 +58,8 @@ pub struct Phase5dBinding {
     pub profile: String,
     pub artifact_name: String,
     pub manifest_version: String,
+    pub abi_version: u32,
+    pub tree_digest: String,
     pub manifest_digest: String,
 }
 
@@ -65,10 +67,11 @@ pub struct Phase5dBinding {
 #[serde(deny_unknown_fields)]
 pub struct SanitizerBinding {
     pub platform: String,
+    pub target: String,
     pub profile: String,
-    pub report_version: String,
-    pub payload_digest: String,
-    pub qualified: bool,
+    pub rust_version: String,
+    pub clang_version: String,
+    pub passed: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -468,24 +471,39 @@ fn receipt_parent(path: &Path) -> &Path {
 fn validate_evidence(evidence: &EvidenceBinding) -> Result<(), ReceiptError> {
     match evidence {
         EvidenceBinding::Phase5dArtifact(binding) => {
-            valid_identifier(&binding.platform)?;
-            valid_identifier(&binding.target)?;
-            valid_identifier(&binding.profile)?;
-            valid_identifier(&binding.artifact_name)?;
-            valid_version(&binding.manifest_version)?;
+            if !matches!(
+                (binding.platform.as_str(), binding.target.as_str()),
+                ("Linux", "x86_64-unknown-linux-gnu")
+                    | ("Darwin", "x86_64-apple-darwin")
+                    | ("Windows", "x86_64-pc-windows-msvc")
+            ) || binding.profile != "release"
+                || binding.artifact_name != "agentgate"
+                || binding.manifest_version != "0.1.0"
+                || binding.abi_version != 1
+            {
+                return Err(ReceiptError::Invalid);
+            }
+            valid_hash(&binding.tree_digest)?;
             valid_hash(&binding.manifest_digest)
         }
         EvidenceBinding::Phase5dSanitizer(binding) => {
-            valid_identifier(&binding.platform)?;
-            valid_identifier(&binding.profile)?;
-            valid_version(&binding.report_version)?;
-            valid_hash(&binding.payload_digest)
+            if binding.platform != "linux"
+                || binding.target != "x86_64"
+                || binding.profile != "release"
+                || !binding.passed
+            {
+                return Err(ReceiptError::Invalid);
+            }
+            valid_numeric_dot_version(&binding.rust_version)?;
+            valid_numeric_dot_version(&binding.clang_version)
         }
         EvidenceBinding::Phase6aReport(binding) => {
             valid_version(&binding.suite_version)?;
             valid_version(&binding.generator_version)?;
             valid_hash(&binding.manifest_digest)?;
-            valid_identifier(&binding.profile)?;
+            if binding.profile != "release" {
+                return Err(ReceiptError::Invalid);
+            }
             valid_identifier(&binding.subject_id)?;
             valid_hash(&binding.payload_digest)
         }
@@ -507,6 +525,21 @@ fn valid_identifier(value: &str) -> Result<(), ReceiptError> {
 
 fn valid_version(value: &str) -> Result<(), ReceiptError> {
     valid_identifier(value)
+}
+
+fn valid_numeric_dot_version(value: &str) -> Result<(), ReceiptError> {
+    if value.is_empty()
+        || value.len() > 32
+        || value.starts_with('.')
+        || value.ends_with('.')
+        || value
+            .split('.')
+            .any(|segment| segment.is_empty() || !segment.bytes().all(|byte| byte.is_ascii_digit()))
+    {
+        Err(ReceiptError::Invalid)
+    } else {
+        Ok(())
+    }
 }
 
 fn valid_hash(value: &str) -> Result<(), ReceiptError> {

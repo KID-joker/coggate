@@ -42,11 +42,13 @@ fn phase5d_artifact() -> Receipt {
     Receipt::new_phase5d_artifact(
         COMMIT,
         Phase5dBinding {
-            platform: "linux".into(),
+            platform: "Linux".into(),
             target: "x86_64-unknown-linux-gnu".into(),
             profile: "release".into(),
             artifact_name: "agentgate".into(),
-            manifest_version: "1.0".into(),
+            manifest_version: "0.1.0".into(),
+            abi_version: 1,
+            tree_digest: "b".repeat(64),
             manifest_digest: "a".repeat(64),
         },
         files(&["artifact-manifest.json", "artifact.bin"]),
@@ -59,12 +61,13 @@ fn phase5d_sanitizer() -> Receipt {
         COMMIT,
         SanitizerBinding {
             platform: "linux".into(),
+            target: "x86_64".into(),
             profile: "release".into(),
-            report_version: "1.0".into(),
-            payload_digest: "b".repeat(64),
-            qualified: true,
+            rust_version: "1.85.0".into(),
+            clang_version: "17.0.0".into(),
+            passed: true,
         },
-        files(&["sanitizer-report.json"]),
+        vec![],
     )
     .unwrap()
 }
@@ -111,7 +114,7 @@ fn all_evidence_kinds_have_fixed_producers_and_exact_file_counts() {
 
     for (receipt, expected_producer, expected_count, expected_kind) in [
         (&artifact, "phase5d", 2, "phase5d_artifact"),
-        (&sanitizer, "phase5d", 1, "phase5d_sanitizer"),
+        (&sanitizer, "phase5d", 0, "phase5d_sanitizer"),
         (&report, "phase6a", 2, "phase6a_report"),
     ] {
         let encoded = receipt.to_canonical_json().unwrap();
