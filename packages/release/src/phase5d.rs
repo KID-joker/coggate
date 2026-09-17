@@ -283,6 +283,23 @@ fn identity_for_open_file(file: &File, metadata: &Metadata) -> Result<Identity, 
     }
 }
 
+fn open_read_locked(path: &Path) -> Result<File, Phase5dError> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
+        std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(path)
+            .map_err(|_| Phase5dError::Io)
+    }
+    #[cfg(not(windows))]
+    {
+        File::open(path).map_err(|_| Phase5dError::Io)
+    }
+}
+
 #[cfg(windows)]
 fn windows_identity_for_path(path: &Path, metadata: &Metadata) -> Result<Identity, Phase5dError> {
     use std::os::windows::ffi::OsStrExt;
@@ -663,7 +680,7 @@ fn read_checked(
     {
         return Err(Phase5dError::Changed);
     }
-    let mut opened = File::open(&file.path).map_err(|_| Phase5dError::Io)?;
+    let mut opened = open_read_locked(&file.path)?;
     let opened_metadata = opened.metadata().map_err(|_| Phase5dError::Io)?;
     if !opened_metadata.is_file()
         || identity_for_open_file(&opened, &opened_metadata)? != file.identity
@@ -710,7 +727,7 @@ fn hash_checked(
     {
         return Err(Phase5dError::Changed);
     }
-    let mut opened = File::open(&file.path).map_err(|_| Phase5dError::Io)?;
+    let mut opened = open_read_locked(&file.path)?;
     let opened_metadata = opened.metadata().map_err(|_| Phase5dError::Io)?;
     if !opened_metadata.is_file()
         || identity_for_open_file(&opened, &opened_metadata)? != file.identity
@@ -745,8 +762,34 @@ fn hash_checked(
     {
         return Err(Phase5dError::Changed);
     }
-    verify_directories(root, directories)?;
+    verify_current_ancestors(root, &file.path, directories)?;
     Ok((seen, hex::encode(digest.finalize())))
+}
+
+fn verify_current_ancestors(
+    root: &Path,
+    file: &Path,
+    directories: &[(PathBuf, Identity)],
+) -> Result<(), Phase5dError> {
+    let mut current = file.parent();
+    while let Some(path) = current {
+        let (_, identity) = directories
+            .iter()
+            .find(|(known, _)| known == path)
+            .ok_or(Phase5dError::Changed)?;
+        let metadata = fs::symlink_metadata(path).map_err(|_| Phase5dError::Io)?;
+        if is_link_or_reparse(&metadata)
+            || !metadata.is_dir()
+            || identity_for_path(path, &metadata)? != *identity
+        {
+            return Err(Phase5dError::Changed);
+        }
+        if path == root {
+            break;
+        }
+        current = path.parent();
+    }
+    Ok(())
 }
 
 fn verify_directories(
