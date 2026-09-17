@@ -210,7 +210,7 @@ fn helper_semantic_definition(semantic: HelperSemantic) -> &'static str {
             "(text): the bytes represented by the escaped ASCII literal text."
         }
         HelperSemantic::Operation(OperationKind::Reverse) => {
-            "(x): the bytes of x in reverse order."
+            "(x): returns the input bytes in opposite positional order."
         }
         HelperSemantic::Operation(OperationKind::RotateLeft) => {
             "(x, n): cyclically rotate x left by n modulo len(x); x must be nonempty."
@@ -228,7 +228,7 @@ fn helper_semantic_definition(semantic: HelperSemantic) -> &'static str {
             "(x, p): output byte j is x at index p[j]."
         }
         HelperSemantic::Operation(OperationKind::Slice) => {
-            "(x, start, end): the half-open byte range of x from start through end."
+            "(x, start, end): returns x[i] in increasing index order for start <= i < end."
         }
         HelperSemantic::Operation(OperationKind::Xor) => {
             "(x, key): output byte i is x[i] XOR key[i modulo len(key)]."
@@ -670,7 +670,7 @@ fn validate_emitted_chunks(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
 
     use super::{
         MAX_STEP_BYTES, bounded_parts, declared_template_max_bytes,
@@ -683,6 +683,7 @@ mod tests {
         DisplayFragment, DisplayStep, DisplayStepKind, FragmentLiteralPlan, HelperSemantic,
         NumericStyle, ObfuscationProfile, RenderLanguage, RenderPlan, TemplateFamily,
     };
+    use crate::generation::render::names::LEGACY_HELPER_IDENTIFIERS;
     use crate::generation::{
         MAX_CONCAT_INPUTS, MAX_PERMUTATION_LENGTH, NodeId, Operation, OperationKind,
     };
@@ -921,8 +922,19 @@ mod tests {
         ];
         assert_eq!(cases.len(), OperationKind::ALL.len() + 1);
         for (semantic, parameters) in cases {
-            assert!(helper_semantic_definition(semantic).starts_with(parameters));
+            let definition = helper_semantic_definition(semantic);
+            assert!(definition.starts_with(parameters));
+            let tokens = definition
+                .split(|character: char| !(character.is_ascii_alphanumeric() || character == '_'))
+                .collect::<BTreeSet<_>>();
+            for legacy in LEGACY_HELPER_IDENTIFIERS {
+                assert!(!tokens.contains(legacy), "{semantic:?} leaked {legacy}");
+            }
         }
+
+        let slice = helper_semantic_definition(HelperSemantic::Operation(OperationKind::Slice));
+        assert!(slice.contains("start <= i < end"));
+        assert!(!slice.contains("through end"));
     }
 
     fn operations() -> Vec<Operation> {

@@ -38,6 +38,7 @@ mod tests {
             MAX_QUESTION_BYTES, NumericStyle, ObfuscationProfile, RenderLanguage, RenderPlan,
             TemplateFamily,
         },
+        names::LEGACY_HELPER_IDENTIFIERS,
         planner::plan_rendering,
         render_with,
     };
@@ -126,38 +127,43 @@ mod tests {
 
     #[test]
     fn generated_seed_matrix_never_leaks_fixed_helper_identifiers() {
-        let semantics = planned_fixture();
-        let forbidden = [
-            "bytes_ascii(",
-            "reverse(",
-            "rotate_left(",
-            "rotate_right(",
-            "xor_repeat(",
-            "even_bytes(",
-            "odd_bytes(",
-            "permute(",
-            "slice(",
-            "concat(",
-            "add_u8(",
-            "sub_u8(",
-            "hex_lower(",
-            "hex_decode_lower(",
-            "base64url_no_pad(",
-            "base64url_decode_no_pad(",
-            "sha256_prefix(",
-            "rotate_left_derived(",
-            "conditional_order(",
-        ];
+        let fragments = vec![b"A0".to_vec(), b"B1".to_vec(), b"C2".to_vec()];
+        let mut builder = SemanticGraphBuilder::new(vec![2, 2, 2]);
+        let first = builder.fragment(0).unwrap();
+        let second = builder.fragment(1).unwrap();
+        let third = builder.fragment(2).unwrap();
+        let reversed = builder.operation(Operation::Reverse, vec![first]);
+        let rotated = builder.operation(Operation::RotateLeft(1), vec![second]);
+        let xored = builder.operation(Operation::Xor(vec![7]), vec![third]);
+        let output = builder.operation(Operation::Concat, vec![reversed, rotated, xored]);
+        builder.output(output);
+        let graph = builder.validate().unwrap();
+        let mut observed_languages = BTreeSet::new();
 
         for seed in 0_u8..=127 {
-            let rendered = render_graph(semantics.graph(), semantics.fragments(), seed);
-            for identifier in forbidden {
+            let rendered = render_graph(&graph, &fragments, seed);
+            observed_languages.extend(rendered.metadata().languages().iter().copied());
+            let tokens = rendered
+                .question()
+                .split(|character: char| !(character.is_ascii_alphanumeric() || character == '_'))
+                .filter(|token| {
+                    token
+                        .as_bytes()
+                        .first()
+                        .is_some_and(|first| first.is_ascii_alphabetic() || *first == b'_')
+                })
+                .collect::<BTreeSet<_>>();
+            for identifier in LEGACY_HELPER_IDENTIFIERS {
                 assert!(
-                    !rendered.question().contains(identifier),
+                    !tokens.contains(*identifier),
                     "seed {seed} leaked {identifier}"
                 );
             }
         }
+        assert_eq!(
+            observed_languages,
+            RenderLanguage::ALL.into_iter().collect()
+        );
     }
 
     #[test]

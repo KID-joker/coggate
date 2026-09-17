@@ -502,8 +502,8 @@ fn worst_case_assembled_question_fits_actual_fragment_and_question_limits() {
 
     let question = emitter::emit_question(&plan, &fragments).unwrap();
     let expected_question_bytes = match usize::BITS {
-        64 => 4_802,
-        32 => 4_782,
+        64 => 4_830,
+        32 => 4_810,
         width => panic!("unsupported usize width {width}"),
     };
     assert_eq!(question.len(), expected_question_bytes);
@@ -606,8 +606,8 @@ fn maximum_dynamic_common_question_text_fits_the_validator_reservation() {
         maximum = maximum.max(common_question_bytes(&profile));
     }
 
-    assert_eq!(maximum, 1_521);
-    assert_eq!(COMMON_QUESTION_BUDGET - maximum, 527);
+    assert_eq!(maximum, 1_528);
+    assert_eq!(COMMON_QUESTION_BUDGET - maximum, 520);
     assert!(maximum <= COMMON_QUESTION_BUDGET);
 }
 

@@ -11,6 +11,28 @@ const FIRST_ALPHABET: [u8; 52] = *b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqr
 const CONTINUATION_ALPHABET: [u8; 63] =
     *b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_";
 
+pub(super) const LEGACY_HELPER_IDENTIFIERS: &[&str] = &[
+    "bytes_ascii",
+    "reverse",
+    "rotate_left",
+    "rotate_right",
+    "xor_repeat",
+    "even_bytes",
+    "odd_bytes",
+    "permute",
+    "slice",
+    "concat",
+    "add_u8",
+    "sub_u8",
+    "hex_lower",
+    "hex_decode_lower",
+    "base64url_no_pad",
+    "base64url_decode_no_pad",
+    "sha256_prefix",
+    "rotate_left_derived",
+    "conditional_order",
+];
+
 // Union of reserved words and reserved identifiers in C, C++, Rust, Go, and Java.
 const RESERVED_WORDS: &[&str] = &[
     "Self",
@@ -266,12 +288,15 @@ impl NameAllocator {
             return Err(RenderError::NameExhausted);
         }
 
-        for _ in 0..=RESERVED_WORDS.len() {
+        for _ in 0..=RESERVED_WORDS.len() + LEGACY_HELPER_IDENTIFIERS.len() {
             let ordinal = self.next_ordinal;
             let next_ordinal = ordinal.checked_add(1).ok_or(RenderError::NameExhausted)?;
             let candidate = encode_candidate(&self.profile, ordinal)?;
             self.next_ordinal = next_ordinal;
-            if !is_reserved_word(&candidate) && !is_structurally_reserved(&candidate) {
+            if !is_reserved_word(&candidate)
+                && !is_legacy_helper_identifier(&candidate)
+                && !is_structurally_reserved(&candidate)
+            {
                 self.allocated_count = self
                     .allocated_count
                     .checked_add(1)
@@ -378,6 +403,10 @@ fn checked_power(base: usize, exponent: usize) -> Option<usize> {
 
 fn is_reserved_word(candidate: &str) -> bool {
     RESERVED_WORDS.contains(&candidate)
+}
+
+fn is_legacy_helper_identifier(candidate: &str) -> bool {
+    LEGACY_HELPER_IDENTIFIERS.contains(&candidate)
 }
 
 fn is_structurally_reserved(candidate: &str) -> bool {
@@ -879,6 +908,21 @@ mod tests {
         assert_eq!(second.allocate_identifier().unwrap(), expected);
         assert_eq!(first.next_ordinal, 2);
         assert_eq!(first.allocated_count, 1);
+    }
+
+    #[test]
+    fn legacy_helper_identifier_is_skipped_like_a_reserved_word() {
+        let mut profile = identity_profile();
+        profile.salt = b"sli".to_vec();
+        profile.minimum_body_width = 2;
+        move_to_front(&mut profile.first_alphabet, b'c');
+        move_to_front(&mut profile.continuation_alphabet, b'e');
+        assert_eq!(encode_candidate(&profile, 0).unwrap(), "slice");
+
+        let mut allocator = NameAllocator::from_profile(profile);
+        assert_ne!(allocator.allocate_identifier().unwrap(), "slice");
+        assert_eq!(allocator.next_ordinal, 2);
+        assert_eq!(allocator.allocated_count, 1);
     }
 
     #[test]
