@@ -1,19 +1,24 @@
 //! Canonical, self-authenticating release evidence receipts.
 
-use std::{fs, io::Write, path::Path};
+use std::{
+    fs,
+    io::{Seek, SeekFrom, Write},
+    path::Path,
+};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::canonical::{
-    MAX_METADATA_BYTES, canonical_compact, parse_strict_json, safe_relative_path, sha256_hex,
-    validate_sha256,
+    MAX_METADATA_BYTES, canonical_compact, parse_strict_json, read_bounded, safe_relative_path,
+    sha256_hex, validate_sha256,
 };
 
 const SCHEMA_VERSION: u8 = 1;
 const RECEIPT_DOMAIN: &[u8] = b"agentgate-release-receipt-v1";
 const VERIFIER_ID: &str = "phase6b-receipt-v1";
 const MAX_IDENTIFIER_BYTES: usize = 128;
+pub const MAX_WRITTEN_RECEIPT_BYTES: usize = MAX_METADATA_BYTES + 1;
 
 /// The fixed number of bound sidecar files for a Phase 5D artifact receipt.
 pub const PHASE5D_ARTIFACT_FILE_COUNT: usize = 2;
@@ -92,8 +97,7 @@ pub enum EvidenceBinding {
     Phase6aReport(Phase6aBinding),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct FileBinding {
     path: String,
     size: u64,
@@ -134,8 +138,7 @@ impl FileBinding {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Producer {
     id: String,
     verifier: String,
@@ -169,8 +172,7 @@ impl Producer {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Receipt {
     schema_version: u8,
     commit: String,
@@ -247,13 +249,28 @@ impl Receipt {
 
     pub fn parse_and_verify(bytes: &[u8]) -> Result<Self, ReceiptError> {
         let value = parse_strict_json(bytes, MAX_METADATA_BYTES).map_err(|_| ReceiptError::Json)?;
-        let receipt: Self = serde_json::from_value(value).map_err(|_| ReceiptError::Json)?;
+        let raw: RawReceipt = serde_json::from_value(value).map_err(|_| ReceiptError::Json)?;
+        let receipt = Self::from_raw(raw);
         receipt.validate()?;
         let canonical = receipt.to_canonical_json()?;
         if canonical != bytes {
             return Err(ReceiptError::NonCanonical);
         }
         Ok(receipt)
+    }
+
+    /// Verifies bytes read from a receipt sidecar written by [`write_receipt`].
+    ///
+    /// The persisted wire format is canonical JSON followed by exactly one line-feed byte.
+    pub fn parse_written_and_verify(bytes: &[u8]) -> Result<Self, ReceiptError> {
+        if bytes.len() > MAX_WRITTEN_RECEIPT_BYTES {
+            return Err(ReceiptError::Invalid);
+        }
+        let canonical = bytes.strip_suffix(b"\n").ok_or(ReceiptError::Invalid)?;
+        if canonical.ends_with(b"\n") || canonical.ends_with(b"\r") {
+            return Err(ReceiptError::Invalid);
+        }
+        Self::parse_and_verify(canonical)
     }
 
     fn new(
@@ -274,6 +291,28 @@ impl Receipt {
         receipt.evidence_digest = receipt.computed_digest()?;
         receipt.validate()?;
         Ok(receipt)
+    }
+
+    fn from_raw(raw: RawReceipt) -> Self {
+        Self {
+            schema_version: raw.schema_version,
+            commit: raw.commit,
+            producer: Producer {
+                id: raw.producer.id,
+                verifier: raw.producer.verifier,
+            },
+            evidence: raw.evidence,
+            files: raw
+                .files
+                .into_iter()
+                .map(|file| FileBinding {
+                    path: file.path,
+                    size: file.size,
+                    hash: file.hash,
+                })
+                .collect(),
+            evidence_digest: raw.evidence_digest,
+        }
     }
 
     fn computed_digest(&self) -> Result<String, ReceiptError> {
@@ -321,6 +360,32 @@ impl Receipt {
     }
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawReceipt {
+    schema_version: u8,
+    commit: String,
+    producer: RawProducer,
+    evidence: EvidenceBinding,
+    files: Vec<RawFileBinding>,
+    evidence_digest: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawProducer {
+    id: String,
+    verifier: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawFileBinding {
+    path: String,
+    size: u64,
+    hash: String,
+}
+
 #[derive(Serialize)]
 struct ReceiptPayload<'a> {
     schema_version: u8,
@@ -342,12 +407,13 @@ impl<'a> From<&'a Receipt> for ReceiptPayload<'a> {
     }
 }
 
+/// Atomically publishes a receipt sidecar without replacing an existing destination.
+///
+/// The parent/output directory is trusted and must not be concurrently replaced. This provides
+/// atomic visibility and no-clobber publication, not portable power-loss durability.
 pub fn write_receipt(path: &Path, receipt: &Receipt) -> Result<(), ReceiptError> {
     receipt.validate()?;
-    let parent = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .ok_or(ReceiptError::InvalidParent)?;
+    let parent = receipt_parent(path);
     let parent_metadata = fs::symlink_metadata(parent).map_err(|_| ReceiptError::InvalidParent)?;
     if parent_metadata.file_type().is_symlink() || !parent_metadata.is_dir() {
         return Err(ReceiptError::InvalidParent);
@@ -371,12 +437,14 @@ pub fn write_receipt(path: &Path, receipt: &Receipt) -> Result<(), ReceiptError>
         .sync_all()
         .map_err(|_| ReceiptError::Io)?;
 
-    let actual = fs::read(temporary.path()).map_err(|_| ReceiptError::Io)?;
+    let file = temporary.as_file_mut();
+    file.seek(SeekFrom::Start(0))
+        .map_err(|_| ReceiptError::Io)?;
+    let actual = read_bounded(file, MAX_WRITTEN_RECEIPT_BYTES).map_err(|_| ReceiptError::Io)?;
     if actual != expected || !actual.ends_with(b"\n") {
         return Err(ReceiptError::Io);
     }
-    let without_newline = actual.strip_suffix(b"\n").ok_or(ReceiptError::Io)?;
-    if Receipt::parse_and_verify(without_newline)? != *receipt {
+    if Receipt::parse_written_and_verify(&actual)? != *receipt {
         return Err(ReceiptError::Invalid);
     }
 
@@ -388,6 +456,13 @@ pub fn write_receipt(path: &Path, receipt: &Receipt) -> Result<(), ReceiptError>
         }
     })?;
     Ok(())
+}
+
+fn receipt_parent(path: &Path) -> &Path {
+    match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    }
 }
 
 fn validate_evidence(evidence: &EvidenceBinding) -> Result<(), ReceiptError> {
@@ -443,4 +518,15 @@ fn valid_commit(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::receipt_parent;
+    use std::path::Path;
+
+    #[test]
+    fn lexical_empty_parent_uses_current_directory() {
+        assert_eq!(receipt_parent(Path::new("receipt.json")), Path::new("."));
+    }
 }

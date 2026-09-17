@@ -310,3 +310,30 @@ fn writer_is_atomic_and_never_clobbers_an_existing_destination() {
     ));
     assert_eq!(fs::read(&destination).unwrap(), first);
 }
+
+#[test]
+fn persisted_receipt_wire_format_requires_exactly_one_terminal_lf() {
+    let directory = tempfile::tempdir().unwrap();
+    let destination = directory.path().join("receipt.json");
+    let receipt = phase6a();
+    write_receipt(&destination, &receipt).unwrap();
+    let written = fs::read(&destination).unwrap();
+
+    let parsed = Receipt::parse_written_and_verify(&written).unwrap();
+    assert_eq!(parsed.digest(), receipt.digest());
+
+    let canonical = receipt.to_canonical_json().unwrap();
+    assert!(Receipt::parse_written_and_verify(&canonical).is_err());
+
+    let mut double_lf = written.clone();
+    double_lf.push(b'\n');
+    assert!(Receipt::parse_written_and_verify(&double_lf).is_err());
+
+    let mut crlf = canonical.clone();
+    crlf.extend_from_slice(b"\r\n");
+    assert!(Receipt::parse_written_and_verify(&crlf).is_err());
+
+    let mut trailing = written;
+    trailing.extend_from_slice(b"trailing\n");
+    assert!(Receipt::parse_written_and_verify(&trailing).is_err());
+}
