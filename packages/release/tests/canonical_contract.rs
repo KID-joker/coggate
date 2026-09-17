@@ -81,6 +81,45 @@ fn relative_paths_are_bounded_and_unambiguous() {
 }
 
 #[test]
+fn relative_paths_reject_windows_unsafe_components_on_every_host() {
+    for value in [
+        "file<name",
+        "file>name",
+        "file:stream",
+        "file\"name",
+        "file|name",
+        "file?name",
+        "file*name",
+        "NUL",
+        "con.txt",
+        "Com1.LOG",
+        "lPt9",
+        "file.",
+        "file ",
+        "nested/PRN.csv",
+    ] {
+        assert!(safe_relative_path(value).is_err(), "{value:?}");
+    }
+}
+
+#[test]
+fn canonical_errors_do_not_echo_untrusted_input() {
+    let duplicate_key = "k".repeat(4 * 1024);
+    let duplicate_json = format!("{{\"{duplicate_key}\":1,\"{duplicate_key}\":2}}");
+    let duplicate_diagnostic = parse_strict_json(duplicate_json.as_bytes(), MAX_METADATA_BYTES)
+        .unwrap_err()
+        .to_string();
+    assert!(!duplicate_diagnostic.contains(&duplicate_key));
+    assert!(duplicate_diagnostic.len() < 256);
+
+    let rejected_path = format!("{}\u{001f}attack", "x".repeat(300));
+    let path_diagnostic = safe_relative_path(&rejected_path).unwrap_err().to_string();
+    assert!(!path_diagnostic.contains(&rejected_path));
+    assert!(!path_diagnostic.contains('\u{001f}'));
+    assert!(path_diagnostic.len() < 256);
+}
+
+#[test]
 fn nested_duplicate_json_keys_are_rejected() {
     assert!(parse_strict_json(br#"{"outer":{"a":1,"a":2}}"#, 64).is_err());
 }

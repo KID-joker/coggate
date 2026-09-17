@@ -25,8 +25,8 @@ pub enum CanonicalError {
     Json(#[from] serde_json::Error),
     #[error("invalid SHA-256 hex value")]
     InvalidSha256,
-    #[error("path must be a non-empty, safe relative path: {0}")]
-    UnsafePath(String),
+    #[error("path is not a safe relative path")]
+    UnsafePath,
 }
 
 pub fn read_bounded(reader: impl Read, maximum: usize) -> Result<Vec<u8>, CanonicalError> {
@@ -91,19 +91,26 @@ pub fn safe_relative_path(value: &str) -> Result<PathBuf, CanonicalError> {
         || has_windows_drive_prefix
         || Path::new(value).is_absolute()
     {
-        return Err(CanonicalError::UnsafePath(value.to_owned()));
+        return Err(CanonicalError::UnsafePath);
     }
 
     let mut depth = 0usize;
     for segment in value.split('/') {
-        if segment.is_empty() || matches!(segment, "." | "..") {
-            return Err(CanonicalError::UnsafePath(value.to_owned()));
+        if segment.is_empty()
+            || matches!(segment, "." | "..")
+            || matches!(segment.as_bytes().last(), Some(b' ' | b'.'))
+            || segment
+                .chars()
+                .any(|character| matches!(character, '<' | '>' | ':' | '"' | '|' | '?' | '*'))
+            || is_windows_reserved_device_name(segment)
+        {
+            return Err(CanonicalError::UnsafePath);
         }
         depth += 1;
     }
 
     if depth > 16 {
-        return Err(CanonicalError::UnsafePath(value.to_owned()));
+        return Err(CanonicalError::UnsafePath);
     }
 
     Ok(PathBuf::from(value))
@@ -205,14 +212,29 @@ impl<'de> Visitor<'de> for StrictJsonVisitor {
         let mut values = serde_json::Map::new();
         while let Some((key, value)) = map.next_entry::<String, StrictJsonValue>()? {
             if values.contains_key(&key) {
-                return Err(de::Error::custom(format!(
-                    "duplicate JSON object key: {key}"
-                )));
+                return Err(de::Error::custom("duplicate JSON object key"));
             }
             values.insert(key, value.0);
         }
         Ok(StrictJsonValue(Value::Object(values)))
     }
+}
+
+fn is_windows_reserved_device_name(component: &str) -> bool {
+    let basename = component.split('.').next().unwrap_or(component);
+    let bytes = basename.as_bytes();
+
+    basename.eq_ignore_ascii_case("CON")
+        || basename.eq_ignore_ascii_case("PRN")
+        || basename.eq_ignore_ascii_case("AUX")
+        || basename.eq_ignore_ascii_case("NUL")
+        || (matches!(bytes, [_, _, _, b'1'..=b'9'])
+            && ((bytes[0].eq_ignore_ascii_case(&b'C')
+                && bytes[1].eq_ignore_ascii_case(&b'O')
+                && bytes[2].eq_ignore_ascii_case(&b'M'))
+                || (bytes[0].eq_ignore_ascii_case(&b'L')
+                    && bytes[1].eq_ignore_ascii_case(&b'P')
+                    && bytes[2].eq_ignore_ascii_case(&b'T'))))
 }
 
 #[derive(Serialize)]
