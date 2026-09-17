@@ -358,9 +358,18 @@ pub fn verify_phase5d_artifact(
     root: &Path,
     expected: Target,
 ) -> Result<VerifiedArtifact, Phase5dError> {
+    verify_phase5d_artifact_inner(root, expected, |_| {})
+}
+
+fn verify_phase5d_artifact_inner(
+    root: &Path,
+    expected: Target,
+    after_snapshot: impl FnOnce(&Path),
+) -> Result<VerifiedArtifact, Phase5dError> {
     let root_identity = require_directory(root)?;
     let mut directories = vec![(root.to_path_buf(), root_identity)];
     let disk = walk_tree(root, &mut directories)?;
+    after_snapshot(root);
 
     let manifest_disk = disk.get(MANIFEST).ok_or(Phase5dError::Invalid)?;
     let checksum_disk = disk.get(CHECKSUMS).ok_or(Phase5dError::Invalid)?;
@@ -977,6 +986,8 @@ fn tree_digest(files: &[VerifiedFile]) -> Result<String, Phase5dError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use tempfile::TempDir;
 
     #[test]
     fn exact_limits_and_path_depth_are_enforced_before_payload_reads() {
@@ -1013,5 +1024,71 @@ mod tests {
             validate_payload_path(&std::iter::repeat_n("a", 17).collect::<Vec<_>>().join("/")),
             Err(Phase5dError::Invalid)
         );
+    }
+
+    #[test]
+    fn post_snapshot_regular_file_replacement_is_changed_not_hash_mismatch() {
+        let root = minimal_linux_artifact();
+        let result = verify_phase5d_artifact_inner(&root, Target::LinuxX86_64, |root| {
+            let payload = root.join("include/agentgate.h");
+            let replacement = root.join("include/replacement.h");
+            fs::write(&replacement, b"x").unwrap();
+            fs::rename(replacement, payload).unwrap();
+        });
+        assert_eq!(result, Err(Phase5dError::Changed));
+    }
+
+    fn minimal_linux_artifact() -> std::path::PathBuf {
+        let root = TempDir::new().unwrap().keep().join("artifact");
+        fs::create_dir(&root).unwrap();
+        let paths = [
+            "include/agentgate.h",
+            "native/libagentgate_ffi.so",
+            "native/libagentgate_ffi.a",
+            "go/go.mod",
+            "go/agentgate/a.go",
+            "go/examples/complete/a.go",
+            "java/agentgate-java-0.1.0-SNAPSHOT.jar",
+            "java/libagentgate_jni.so",
+            "java/libagentgate_ffi.so",
+            "java/examples/Complete.java",
+            "node/package.json",
+            "node/lib/a.js",
+            "node/examples/complete.js",
+            "node/build/Release/agentgate.node",
+            "node/build/Release/libagentgate_ffi.so",
+            "smoke/abi_probe.c",
+            "smoke/abi_probe.cpp",
+        ];
+        for path in paths {
+            let full = root.join(path);
+            fs::create_dir_all(full.parent().unwrap()).unwrap();
+            fs::write(full, b"x").unwrap();
+        }
+        let tools = TOOL_KEYS
+            .into_iter()
+            .map(|key| (key.to_owned(), Value::String("1".into())))
+            .collect();
+        let mut sorted_paths = paths.to_vec();
+        sorted_paths.sort();
+        let files: Vec<_> = sorted_paths.into_iter().map(|path| serde_json::json!({"path":path,"kind":artifact_kind(path),"size":1,"sha256":hex::encode(Sha256::digest(b"x"))})).collect();
+        let manifest = serde_json::json!({"schema_version":1,"agentgate_version":VERSION,"abi_version":1,"target":{"os":"Linux","arch":"x86_64","triple":"x86_64-unknown-linux-gnu"},"tools":Value::Object(tools),"files":files});
+        let manifest = canonical_pretty_sorted(&manifest).unwrap();
+        fs::write(root.join(MANIFEST), &manifest).unwrap();
+        let mut entries = paths
+            .into_iter()
+            .map(|path| (path, hex::encode(Sha256::digest(b"x"))))
+            .collect::<Vec<_>>();
+        entries.push((MANIFEST, hex::encode(Sha256::digest(&manifest))));
+        entries.sort_by_key(|(path, _)| *path);
+        let mut checksums = String::new();
+        for (path, digest) in entries {
+            checksums.push_str(&digest);
+            checksums.push_str("  ");
+            checksums.push_str(path);
+            checksums.push('\n');
+        }
+        fs::write(root.join(CHECKSUMS), checksums).unwrap();
+        root
     }
 }
