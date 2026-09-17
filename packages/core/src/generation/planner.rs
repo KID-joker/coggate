@@ -110,7 +110,7 @@ fn analyze_v1_shape(graph: &ValidatedSemanticGraph) -> Result<V1Shape, Generatio
                 shape.operation_count += 1;
                 let kind = OperationKind::from(operation);
                 shape.operation_families.insert(kind.family());
-                shape.has_nonlegacy_operation |= is_nonlegacy(kind);
+                shape.has_nonlegacy_operation |= !kind.is_legacy();
 
                 if kind.family() != OperationFamily::Composition {
                     for input in inputs {
@@ -139,19 +139,6 @@ fn analyze_v1_shape(graph: &ValidatedSemanticGraph) -> Result<V1Shape, Generatio
     }
 
     Ok(shape)
-}
-
-fn is_nonlegacy(kind: OperationKind) -> bool {
-    !matches!(
-        kind,
-        OperationKind::Reverse
-            | OperationKind::RotateLeft
-            | OperationKind::RotateRight
-            | OperationKind::Xor
-            | OperationKind::Sha256Prefix
-            | OperationKind::Concat
-            | OperationKind::RotateLeftDerived
-    )
 }
 
 #[cfg(test)]

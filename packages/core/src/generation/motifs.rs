@@ -824,22 +824,6 @@ mod tests {
         transformed
     }
 
-    fn is_nonlegacy(kind: OperationKind) -> bool {
-        matches!(
-            kind,
-            OperationKind::EvenBytes
-                | OperationKind::OddBytes
-                | OperationKind::Permute
-                | OperationKind::Slice
-                | OperationKind::AddModulo
-                | OperationKind::SubModulo
-                | OperationKind::HexEncode
-                | OperationKind::HexDecode
-                | OperationKind::Base64UrlEncode
-                | OperationKind::Base64UrlDecode
-        )
-    }
-
     #[test]
     fn every_named_motif_satisfies_the_graph_contract_for_supported_fragment_counts() {
         for motif in PlanMotif::ALL {
@@ -870,7 +854,7 @@ mod tests {
                         2
                     );
                     assert!(cross_fragment_operation_count(&graph) >= 2);
-                    assert!(kinds.iter().copied().any(is_nonlegacy));
+                    assert!(kinds.iter().any(|kind| !kind.is_legacy()));
                     assert_eq!(directly_transformed_fragments(&graph).len(), count);
 
                     let fragment_slices = fragments.iter().map(Vec::as_slice).collect::<Vec<_>>();

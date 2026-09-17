@@ -32,6 +32,19 @@ macro_rules! define_operation_kind_catalog {
                     )+
                 }
             }
+
+            pub(crate) const fn is_legacy(self) -> bool {
+                matches!(
+                    self,
+                    Self::Reverse
+                        | Self::RotateLeft
+                        | Self::RotateRight
+                        | Self::Xor
+                        | Self::Sha256Prefix
+                        | Self::Concat
+                        | Self::RotateLeftDerived
+                )
+            }
         }
     };
 }
@@ -212,5 +225,51 @@ mod tests {
                 1
             );
         }
+    }
+
+    #[test]
+    fn legacy_policy_is_exact_and_treats_every_other_kind_as_nonlegacy() {
+        let expected_legacy = [
+            OperationKind::Reverse,
+            OperationKind::RotateLeft,
+            OperationKind::RotateRight,
+            OperationKind::Xor,
+            OperationKind::Sha256Prefix,
+            OperationKind::Concat,
+            OperationKind::RotateLeftDerived,
+        ];
+        let expected_nonlegacy = [
+            OperationKind::EvenBytes,
+            OperationKind::OddBytes,
+            OperationKind::Permute,
+            OperationKind::Slice,
+            OperationKind::AddModulo,
+            OperationKind::SubModulo,
+            OperationKind::HexEncode,
+            OperationKind::HexDecode,
+            OperationKind::Base64UrlEncode,
+            OperationKind::Base64UrlDecode,
+            OperationKind::ConditionalOrder,
+        ];
+
+        assert_eq!(
+            expected_legacy.len() + expected_nonlegacy.len(),
+            OperationKind::ALL.len()
+        );
+        assert_eq!(
+            OperationKind::ALL
+                .into_iter()
+                .filter(|kind| kind.is_legacy())
+                .collect::<Vec<_>>(),
+            expected_legacy
+        );
+        assert_eq!(
+            OperationKind::ALL
+                .into_iter()
+                .filter(|kind| !kind.is_legacy())
+                .collect::<Vec<_>>(),
+            expected_nonlegacy
+        );
+        assert!(!OperationKind::ConditionalOrder.is_legacy());
     }
 }
