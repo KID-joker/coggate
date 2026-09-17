@@ -22,8 +22,11 @@ const ABI_VERSION: u32 = 1;
 const MANIFEST: &str = "manifest.json";
 const CHECKSUMS: &str = "SHA256SUMS";
 const MAX_FILES: usize = 256;
-const MAX_DIRECTORIES: usize = 256;
-const MAX_ENTRIES: usize = 512;
+const MAX_PATH_DEPTH: usize = 16;
+const METADATA_FILE_OVERHEAD: usize = 2;
+const MAX_REGULAR_FILES: usize = MAX_FILES + METADATA_FILE_OVERHEAD;
+const MAX_DIRECTORIES: usize = MAX_FILES * (MAX_PATH_DEPTH - 1) + 1;
+const MAX_ENTRIES: usize = MAX_REGULAR_FILES + MAX_DIRECTORIES;
 const MAX_PAYLOAD_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_TOTAL_PAYLOAD_BYTES: u64 = 1024 * 1024 * 1024;
 const TREE_DOMAIN: &[u8] = b"agentgate-phase5d-tree-v1";
@@ -169,6 +172,8 @@ pub enum Phase5dError {
     SizeLimit,
     #[error("Phase 5D artifact has an unlisted directory")]
     UnexpectedDirectory,
+    #[error("Phase 5D artifact file hash does not match")]
+    HashMismatch,
 }
 
 #[derive(Clone)]
@@ -187,6 +192,10 @@ struct Identity {
     creation_time: u64,
     #[cfg(windows)]
     last_write_time: u64,
+    #[cfg(windows)]
+    volume_serial: u32,
+    #[cfg(windows)]
+    file_index: u64,
 }
 
 impl Identity {
@@ -212,6 +221,8 @@ impl Identity {
                 attributes: metadata.file_attributes(),
                 creation_time: metadata.creation_time(),
                 last_write_time: metadata.last_write_time(),
+                volume_serial: 0,
+                file_index: 0,
             }
         }
         #[cfg(all(not(unix), not(windows)))]
@@ -222,6 +233,71 @@ impl Identity {
             }
         }
     }
+}
+
+fn identity_for_path(path: &Path, metadata: &Metadata) -> Result<Identity, Phase5dError> {
+    #[cfg(windows)]
+    {
+        windows_identity_for_path(path, metadata)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+        Ok(Identity::from_metadata(metadata))
+    }
+}
+
+#[cfg(windows)]
+fn windows_identity_for_path(path: &Path, metadata: &Metadata) -> Result<Identity, Phase5dError> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::{
+        Foundation::{CloseHandle, GENERIC_READ, INVALID_HANDLE_VALUE},
+        Storage::FileSystem::{
+            BY_HANDLE_FILE_INFORMATION, CreateFileW, FILE_FLAG_BACKUP_SEMANTICS,
+            FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+            GetFileInformationByHandle, OPEN_EXISTING,
+        },
+    };
+    let wide = path
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    // SAFETY: NUL-terminated path is owned for the call; no security attributes/template handle.
+    let handle = unsafe {
+        CreateFileW(
+            wide.as_ptr(),
+            GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+            0,
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(Phase5dError::Io);
+    }
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: `handle` is valid until CloseHandle and `info` is a valid writable buffer.
+    let ok = unsafe { GetFileInformationByHandle(handle, &mut info) } != 0;
+    // SAFETY: handle was returned by CreateFileW exactly once above.
+    unsafe {
+        CloseHandle(handle);
+    }
+    if !ok || (info.dwFileAttributes & 0x400) != 0 {
+        return Err(Phase5dError::Invalid);
+    }
+    use std::os::windows::fs::MetadataExt;
+    Ok(Identity {
+        len: metadata.len(),
+        modified: metadata.modified().ok(),
+        attributes: info.dwFileAttributes,
+        creation_time: metadata.creation_time(),
+        last_write_time: metadata.last_write_time(),
+        volume_serial: info.dwVolumeSerialNumber,
+        file_index: (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+    })
 }
 
 impl PartialEq for Identity {
@@ -242,6 +318,8 @@ impl PartialEq for Identity {
                 self.attributes == other.attributes
                     && self.creation_time == other.creation_time
                     && self.last_write_time == other.last_write_time
+                    && self.volume_serial == other.volume_serial
+                    && self.file_index == other.file_index
             }
         }
     }
@@ -254,8 +332,7 @@ fn is_link_or_reparse(metadata: &Metadata) -> bool {
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;
-        // Rust 1.85 exposes file attributes but not a stable volume-serial/file-index pair.
-        // Reparse points must nevertheless be rejected before any handle is opened.
+        // Reparse points must be rejected before any handle is opened.
         (metadata.file_attributes() & 0x400) != 0
     }
     #[cfg(not(windows))]
@@ -321,8 +398,11 @@ pub fn verify_phase5d_artifact(
     for file in &files {
         let disk_file = disk.get(&file.path).ok_or(Phase5dError::Invalid)?;
         let (size, digest) = hash_checked(disk_file, root, &directories, MAX_PAYLOAD_BYTES)?;
-        if size != file.size || digest != file.sha256 {
+        if size != file.size {
             return Err(Phase5dError::Invalid);
+        }
+        if digest != file.sha256 {
+            return Err(Phase5dError::HashMismatch);
         }
         verified.push(VerifiedFile {
             path: file.path.clone(),
@@ -382,7 +462,7 @@ fn require_directory(path: &Path) -> Result<Identity, Phase5dError> {
     if is_link_or_reparse(&metadata) || !metadata.is_dir() {
         return Err(Phase5dError::Invalid);
     }
-    Ok(Identity::from_metadata(&metadata))
+    identity_for_path(path, &metadata)
 }
 
 fn validate_size_limits(sizes: impl IntoIterator<Item = u64>) -> Result<(), Phase5dError> {
@@ -475,20 +555,15 @@ fn walk_tree(
                 if directories.len() >= MAX_DIRECTORIES {
                     return Err(Phase5dError::DirectoryLimit);
                 }
-                directories.push((path.clone(), Identity::from_metadata(&metadata)));
+                directories.push((path.clone(), identity_for_path(&path, &metadata)?));
                 pending.push((path, relative));
             } else if metadata.is_file() {
-                if files.len() >= MAX_FILES {
+                if files.len() >= MAX_REGULAR_FILES {
                     return Err(Phase5dError::FileLimit);
                 }
+                let identity = identity_for_path(&path, &metadata)?;
                 if files
-                    .insert(
-                        relative,
-                        DiskFile {
-                            path,
-                            identity: Identity::from_metadata(&metadata),
-                        },
-                    )
+                    .insert(relative, DiskFile { path, identity })
                     .is_some()
                 {
                     return Err(Phase5dError::Invalid);
@@ -523,14 +598,14 @@ fn read_checked(
     let before = fs::symlink_metadata(&file.path).map_err(|_| Phase5dError::Io)?;
     if is_link_or_reparse(&before)
         || !before.is_file()
-        || Identity::from_metadata(&before) != file.identity
+        || identity_for_path(&file.path, &before)? != file.identity
     {
         return Err(Phase5dError::Changed);
     }
     let mut opened = File::open(&file.path).map_err(|_| Phase5dError::Io)?;
     let opened_metadata = opened.metadata().map_err(|_| Phase5dError::Io)?;
     if !opened_metadata.is_file()
-        || Identity::from_metadata(&opened_metadata) != file.identity
+        || identity_for_path(&file.path, &opened_metadata)? != file.identity
         || opened_metadata.len() > maximum
     {
         return Err(Phase5dError::Changed);
@@ -548,8 +623,8 @@ fn read_checked(
     let after = fs::symlink_metadata(&file.path).map_err(|_| Phase5dError::Io)?;
     let after_open = opened.metadata().map_err(|_| Phase5dError::Io)?;
     if is_link_or_reparse(&after)
-        || Identity::from_metadata(&after) != file.identity
-        || Identity::from_metadata(&after_open) != file.identity
+        || identity_for_path(&file.path, &after)? != file.identity
+        || identity_for_path(&file.path, &after_open)? != file.identity
     {
         return Err(Phase5dError::Changed);
     }
@@ -569,7 +644,7 @@ fn hash_checked(
     let before = fs::symlink_metadata(&file.path).map_err(|_| Phase5dError::Io)?;
     if is_link_or_reparse(&before)
         || !before.is_file()
-        || Identity::from_metadata(&before) != file.identity
+        || identity_for_path(&file.path, &before)? != file.identity
         || before.len() > maximum
     {
         return Err(Phase5dError::Changed);
@@ -577,7 +652,7 @@ fn hash_checked(
     let mut opened = File::open(&file.path).map_err(|_| Phase5dError::Io)?;
     let opened_metadata = opened.metadata().map_err(|_| Phase5dError::Io)?;
     if !opened_metadata.is_file()
-        || Identity::from_metadata(&opened_metadata) != file.identity
+        || identity_for_path(&file.path, &opened_metadata)? != file.identity
         || opened_metadata.len() > maximum
     {
         return Err(Phase5dError::Changed);
@@ -604,8 +679,8 @@ fn hash_checked(
     let after = fs::symlink_metadata(&file.path).map_err(|_| Phase5dError::Io)?;
     let after_open = opened.metadata().map_err(|_| Phase5dError::Io)?;
     if is_link_or_reparse(&after)
-        || Identity::from_metadata(&after) != file.identity
-        || Identity::from_metadata(&after_open) != file.identity
+        || identity_for_path(&file.path, &after)? != file.identity
+        || identity_for_path(&file.path, &after_open)? != file.identity
     {
         return Err(Phase5dError::Changed);
     }
@@ -621,7 +696,7 @@ fn verify_directories(
         let metadata = fs::symlink_metadata(path).map_err(|_| Phase5dError::Io)?;
         if is_link_or_reparse(&metadata)
             || !metadata.is_dir()
-            || Identity::from_metadata(&metadata) != *identity
+            || identity_for_path(path, &metadata)? != *identity
         {
             return Err(Phase5dError::Changed);
         }

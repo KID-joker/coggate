@@ -427,7 +427,12 @@ fn rejects_payload_checksum_and_layout_mutations() {
                     .replace('\n', "\r\n");
                 write(&root, "SHA256SUMS", text.as_bytes());
             }
-            "content" => write(&root, "include/agentgate.h", b"mutated content"),
+            "content" => {
+                let original = fs::read(root.join("include/agentgate.h")).expect("payload");
+                let replacement = vec![b'X'; original.len()];
+                assert_eq!(replacement.len(), original.len(), "same-length corruption");
+                write(&root, "include/agentgate.h", &replacement);
+            }
             "replacement" => {
                 fs::remove_file(root.join("include/agentgate.h")).expect("remove regular file");
                 write(&root, "include/agentgate.h", b"replacement regular file");
@@ -446,8 +451,26 @@ fn rejects_payload_checksum_and_layout_mutations() {
             }
             _ => unreachable!(),
         }
-        assert_rejected(&root, Target::LinuxX86_64);
+        if mutation == "content" {
+            assert_eq!(
+                verify_phase5d_artifact(&root, Target::LinuxX86_64),
+                Err(Phase5dError::HashMismatch)
+            );
+        } else {
+            assert_rejected(&root, Target::LinuxX86_64);
+        }
     }
+}
+
+#[test]
+fn accepts_contract_valid_artifact_with_more_than_256_directories() {
+    let (_tmp, root) = fixture(Target::LinuxX86_64);
+    let additions = 256 - paths_for(Target::LinuxX86_64).len();
+    for index in 0..additions {
+        write(&root, &format!("node/lib/deep-{index}/entry.js"), b"x");
+    }
+    write_metadata(&root, Target::LinuxX86_64);
+    assert!(verify_phase5d_artifact(&root, Target::LinuxX86_64).is_ok());
 }
 
 #[test]
@@ -515,13 +538,15 @@ fn rejects_file_count_and_sparse_size_limits_before_reading_payloads() {
         256
     );
     write(&root, "node/lib/one-too-many.js", b"x");
+    write(&root, "node/lib/two-too-many.js", b"x");
+    write(&root, "node/lib/three-too-many.js", b"x");
     assert_eq!(
         verify_phase5d_artifact(&root, Target::LinuxX86_64),
         Err(Phase5dError::FileLimit)
     );
 
     let (_tmp, root) = fixture(Target::LinuxX86_64);
-    for index in 0..257 {
+    for index in 0..3842 {
         fs::create_dir(root.join(format!("empty-{index}"))).expect("create empty directory");
     }
     assert_eq!(
