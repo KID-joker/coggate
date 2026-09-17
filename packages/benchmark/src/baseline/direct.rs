@@ -189,7 +189,6 @@ fn run_fragment(
             match result.outcome() {
                 ProcessOutcome::Exited(0) => {}
                 ProcessOutcome::Exited(_) | ProcessOutcome::TimedOut => return Ok(None),
-                ProcessOutcome::OutputLimit => return Err(crate::process::ProcessError::Output),
             }
             let run_spec = CommandSpec::local(artifact, std::iter::empty::<&str>())?;
             candidate_from_result(workspace.run(&run_spec)?)
@@ -275,7 +274,6 @@ fn candidate_from_result(
     match result.outcome() {
         ProcessOutcome::Exited(0) => {}
         ProcessOutcome::Exited(_) | ProcessOutcome::TimedOut => return Ok(None),
-        ProcessOutcome::OutputLimit => return Err(crate::process::ProcessError::Output),
     }
     let stdout = std::str::from_utf8(result.stdout())
         .map_err(|_| crate::process::ProcessError::Output)?

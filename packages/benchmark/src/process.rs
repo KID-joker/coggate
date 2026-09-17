@@ -1,11 +1,15 @@
 use std::{
     collections::BTreeMap,
     ffi::{OsStr, OsString},
-    fmt,
-    fs::{self, File},
+    fmt, fs,
+    io::{self, Read},
     path::{Component, Path, PathBuf},
-    process::{Command, Stdio},
-    thread,
+    process::{Child, Command, ExitStatus, Stdio},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
+    thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
 
@@ -128,7 +132,6 @@ impl ProcessRunner {
         Ok(ProcessWorkspace {
             runner: self,
             directory: Some(directory),
-            sequence: 0,
         })
     }
 }
@@ -148,7 +151,6 @@ impl fmt::Debug for ProcessRunner {
 pub struct ProcessWorkspace<'a> {
     runner: &'a ProcessRunner,
     directory: Option<tempfile::TempDir>,
-    sequence: usize,
 }
 
 impl ProcessWorkspace<'_> {
@@ -190,65 +192,89 @@ impl ProcessWorkspace<'_> {
         program: &Path,
         spec: &CommandSpec,
     ) -> Result<ProcessResult, ProcessError> {
-        self.sequence = self
-            .sequence
-            .checked_add(1)
-            .ok_or(ProcessError::InvalidCommand)?;
-        let stdout_path = self.path().join(format!("stdout-{}", self.sequence));
-        let stderr_path = self.path().join(format!("stderr-{}", self.sequence));
-        let stdout = File::create(&stdout_path).map_err(|_| ProcessError::Workspace)?;
-        let stderr = File::create(&stderr_path).map_err(|_| ProcessError::Workspace)?;
-
         let mut child = Command::new(program)
             .args(&spec.arguments)
             .current_dir(self.path())
             .stdin(Stdio::null())
-            .stdout(Stdio::from(stdout))
-            .stderr(Stdio::from(stderr))
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .spawn()
             .map_err(|_| ProcessError::Spawn)?;
 
+        let Some(stdout) = child.stdout.take() else {
+            let _ = kill_and_wait(&mut child);
+            return Err(ProcessError::Output);
+        };
+        let Some(stderr) = child.stderr.take() else {
+            let _ = kill_and_wait(&mut child);
+            return Err(ProcessError::Output);
+        };
+        let budget = Arc::new(CaptureBudget::new(self.runner.output_limit));
+        let stdout_reader = match spawn_reader(stdout, Arc::clone(&budget)) {
+            Ok(reader) => reader,
+            Err(error) => {
+                let _ = kill_and_wait(&mut child);
+                return Err(error);
+            }
+        };
+        let stderr_reader = match spawn_reader(stderr, Arc::clone(&budget)) {
+            Ok(reader) => reader,
+            Err(error) => {
+                let _ = kill_and_wait(&mut child);
+                let _ = stdout_reader.join();
+                return Err(error);
+            }
+        };
+
         let started = Instant::now();
-        let status = loop {
-            if let Some(status) = child.try_wait().map_err(|_| ProcessError::Wait)? {
-                break Some(status);
+        let completion = loop {
+            if budget.overflowed() {
+                break Ok(Completion::OutputLimit);
+            }
+            match child.try_wait() {
+                Ok(Some(status)) => break Ok(Completion::Exited(status)),
+                Ok(None) => {}
+                Err(_) => break Err(ProcessError::Wait),
+            }
+            if budget.overflowed() {
+                break Ok(Completion::OutputLimit);
             }
             if started.elapsed() >= self.runner.timeout {
-                child.kill().map_err(|_| ProcessError::Kill)?;
-                child.wait().map_err(|_| ProcessError::Wait)?;
-                break None;
+                break Ok(Completion::TimedOut);
             }
             thread::sleep(Duration::from_millis(5));
         };
 
-        let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-        let Some(status) = status else {
-            return Ok(ProcessResult {
-                outcome: ProcessOutcome::TimedOut,
-                stdout: Vec::new(),
-                stderr: Vec::new(),
-                duration_ms,
-            });
+        let completion = match completion {
+            Ok(Completion::Exited(status)) => Ok(Completion::Exited(status)),
+            Ok(Completion::OutputLimit) => {
+                kill_and_wait(&mut child).map(|_| Completion::OutputLimit)
+            }
+            Ok(Completion::TimedOut) => kill_and_wait(&mut child).map(|status| match status {
+                Termination::Killed => Completion::TimedOut,
+                Termination::AlreadyExited(status) => Completion::Exited(status),
+            }),
+            Err(error) => {
+                let _ = kill_and_wait(&mut child);
+                Err(error)
+            }
         };
-
-        let stdout_length = file_length(&stdout_path)?;
-        let stderr_length = file_length(&stderr_path)?;
-        let combined = stdout_length
-            .checked_add(stderr_length)
-            .ok_or(ProcessError::Output)?;
-        if combined > self.runner.output_limit {
-            return Ok(ProcessResult {
-                outcome: ProcessOutcome::OutputLimit,
-                stdout: Vec::new(),
-                stderr: Vec::new(),
-                duration_ms,
-            });
+        let captured = join_readers(stdout_reader, stderr_reader);
+        let completion = completion?;
+        let (stdout, stderr) = captured?;
+        let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        if budget.overflowed() || completion == Completion::OutputLimit {
+            return Err(ProcessError::OutputLimit);
         }
 
         Ok(ProcessResult {
-            outcome: ProcessOutcome::Exited(status.code().unwrap_or(-1)),
-            stdout: fs::read(stdout_path).map_err(|_| ProcessError::Output)?,
-            stderr: fs::read(stderr_path).map_err(|_| ProcessError::Output)?,
+            outcome: match completion {
+                Completion::Exited(status) => ProcessOutcome::Exited(status.code().unwrap_or(-1)),
+                Completion::TimedOut => ProcessOutcome::TimedOut,
+                Completion::OutputLimit => unreachable!("output overflow returned above"),
+            },
+            stdout,
+            stderr,
             duration_ms,
         })
     }
@@ -267,7 +293,6 @@ impl fmt::Debug for ProcessWorkspace<'_> {
         formatter
             .debug_struct("ProcessWorkspace")
             .field("path", &"[REDACTED]")
-            .field("sequence", &self.sequence)
             .finish()
     }
 }
@@ -276,7 +301,6 @@ impl fmt::Debug for ProcessWorkspace<'_> {
 pub enum ProcessOutcome {
     Exited(i32),
     TimedOut,
-    OutputLimit,
 }
 
 pub struct ProcessResult {
@@ -329,9 +353,117 @@ fn validate_file_name(name: &str) -> Result<(), ProcessError> {
     }
 }
 
-fn file_length(path: &Path) -> Result<usize, ProcessError> {
-    let length = fs::metadata(path).map_err(|_| ProcessError::Output)?.len();
-    usize::try_from(length).map_err(|_| ProcessError::Output)
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum Completion {
+    Exited(ExitStatus),
+    TimedOut,
+    OutputLimit,
+}
+
+enum Termination {
+    Killed,
+    AlreadyExited(ExitStatus),
+}
+
+fn kill_and_wait(child: &mut Child) -> Result<Termination, ProcessError> {
+    match child.kill() {
+        Ok(()) => {
+            child.wait().map_err(|_| ProcessError::Wait)?;
+            Ok(Termination::Killed)
+        }
+        Err(_) => match child.try_wait().map_err(|_| ProcessError::Wait)? {
+            Some(status) => Ok(Termination::AlreadyExited(status)),
+            None => Err(ProcessError::Kill),
+        },
+    }
+}
+
+struct CaptureBudget {
+    remaining: AtomicUsize,
+    overflowed: AtomicBool,
+}
+
+impl CaptureBudget {
+    fn new(limit: usize) -> Self {
+        Self {
+            remaining: AtomicUsize::new(limit),
+            overflowed: AtomicBool::new(false),
+        }
+    }
+
+    fn claim(&self, requested: usize) -> usize {
+        let mut remaining = self.remaining.load(Ordering::Acquire);
+        loop {
+            let claimed = requested.min(remaining);
+            match self.remaining.compare_exchange_weak(
+                remaining,
+                remaining - claimed,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return claimed,
+                Err(current) => remaining = current,
+            }
+        }
+    }
+
+    fn overflow(&self) {
+        self.overflowed.store(true, Ordering::Release);
+    }
+
+    fn overflowed(&self) -> bool {
+        self.overflowed.load(Ordering::Acquire)
+    }
+}
+
+type Reader = JoinHandle<Result<Vec<u8>, ProcessError>>;
+
+fn spawn_reader<R>(reader: R, budget: Arc<CaptureBudget>) -> Result<Reader, ProcessError>
+where
+    R: Read + Send + 'static,
+{
+    thread::Builder::new()
+        .spawn(move || capture(reader, &budget))
+        .map_err(|_| ProcessError::Output)
+}
+
+fn capture<R>(mut reader: R, budget: &CaptureBudget) -> Result<Vec<u8>, ProcessError>
+where
+    R: Read,
+{
+    let mut output = Vec::new();
+    let mut buffer = [0_u8; 8_192];
+    loop {
+        let read_limit = budget
+            .remaining
+            .load(Ordering::Acquire)
+            .saturating_add(1)
+            .min(buffer.len());
+        let count = match reader.read(&mut buffer[..read_limit]) {
+            Ok(0) => return Ok(output),
+            Ok(count) => count,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(_) => return Err(ProcessError::Output),
+        };
+        let claimed = budget.claim(count);
+        output
+            .try_reserve_exact(claimed)
+            .map_err(|_| ProcessError::Output)?;
+        output.extend_from_slice(&buffer[..claimed]);
+        if claimed < count {
+            budget.overflow();
+            return Ok(output);
+        }
+    }
+}
+
+fn join_readers(stdout: Reader, stderr: Reader) -> Result<(Vec<u8>, Vec<u8>), ProcessError> {
+    let stdout = stdout.join();
+    let stderr = stderr.join();
+    match (stdout, stderr) {
+        (Ok(Ok(stdout)), Ok(Ok(stderr))) => Ok((stdout, stderr)),
+        _ => Err(ProcessError::Output),
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
@@ -352,6 +484,8 @@ pub enum ProcessError {
     Kill,
     #[error("benchmark process output failed")]
     Output,
+    #[error("benchmark process output limit exceeded")]
+    OutputLimit,
     #[error("benchmark process cleanup failed")]
     Cleanup,
 }
