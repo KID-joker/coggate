@@ -49,6 +49,8 @@ pub enum BundleError {
     InvalidInput,
     #[error("release bundle destination already exists")]
     DestinationExists,
+    #[error("release bundle infrastructure operation failed")]
+    Infrastructure,
     #[error("release bundle operation failed")]
     Internal,
 }
@@ -460,19 +462,19 @@ fn copy_tree(
         return Err(BundleError::InvalidInput);
     }
     let parent = destination.parent().ok_or(BundleError::Internal)?;
-    let parent_metadata = fs::symlink_metadata(parent).map_err(|_| BundleError::Internal)?;
+    let parent_metadata = fs::symlink_metadata(parent).map_err(|_| BundleError::Infrastructure)?;
     if link_or_reparse(&parent_metadata) || !parent_metadata.is_dir() {
-        return Err(BundleError::Internal);
+        return Err(BundleError::Infrastructure);
     }
     match fs::create_dir(destination) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-        Err(_) => return Err(BundleError::Internal),
+        Err(_) => return Err(BundleError::Infrastructure),
     }
     let destination_metadata =
-        fs::symlink_metadata(destination).map_err(|_| BundleError::Internal)?;
+        fs::symlink_metadata(destination).map_err(|_| BundleError::Infrastructure)?;
     if link_or_reparse(&destination_metadata) || !destination_metadata.is_dir() {
-        return Err(BundleError::Internal);
+        return Err(BundleError::Infrastructure);
     }
     assert_owned(staging, identity)?;
     for entry in fs::read_dir(source).map_err(|_| BundleError::InvalidInput)? {
@@ -607,19 +609,19 @@ fn write_file(
 ) -> Result<(), BundleError> {
     assert_owned(staging, identity)?;
     let parent = path.parent().ok_or(BundleError::Internal)?;
-    fs::create_dir_all(parent).map_err(|_| BundleError::Internal)?;
-    let parent_metadata = fs::symlink_metadata(parent).map_err(|_| BundleError::Internal)?;
+    fs::create_dir_all(parent).map_err(|_| BundleError::Infrastructure)?;
+    let parent_metadata = fs::symlink_metadata(parent).map_err(|_| BundleError::Infrastructure)?;
     if link_or_reparse(&parent_metadata) || !parent_metadata.is_dir() {
-        return Err(BundleError::Internal);
+        return Err(BundleError::Infrastructure);
     }
     let mut file = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(path)
-        .map_err(|_| BundleError::Internal)?;
+        .map_err(|_| BundleError::Infrastructure)?;
     file.write_all(bytes)
         .and_then(|_| file.sync_all())
-        .map_err(|_| BundleError::Internal)?;
+        .map_err(|_| BundleError::Infrastructure)?;
     assert_owned(staging, identity)
 }
 
@@ -692,9 +694,9 @@ struct StagingIdentity {
     index: u64,
 }
 fn staging_identity(path: &Path) -> Result<StagingIdentity, BundleError> {
-    let metadata = fs::symlink_metadata(path).map_err(|_| BundleError::Internal)?;
+    let metadata = fs::symlink_metadata(path).map_err(|_| BundleError::Infrastructure)?;
     if link_or_reparse(&metadata) || !metadata.is_dir() {
-        return Err(BundleError::Internal);
+        return Err(BundleError::Infrastructure);
     }
     #[cfg(unix)]
     {
@@ -721,15 +723,15 @@ fn staging_identity(path: &Path) -> Result<StagingIdentity, BundleError> {
                 .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
                 .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
                 .open(path)
-                .map_err(|_| BundleError::Internal)?;
+                .map_err(|_| BundleError::Infrastructure)?;
             let mut info = BY_HANDLE_FILE_INFORMATION::default();
             // SAFETY: `file` owns a live directory handle and `info` is writable.
             if unsafe { GetFileInformationByHandle(file.as_raw_handle() as HANDLE, &mut info) } == 0
             {
-                return Err(BundleError::Internal);
+                return Err(BundleError::Infrastructure);
             }
             if (info.dwFileAttributes & 0x400) != 0 {
-                return Err(BundleError::Internal);
+                return Err(BundleError::Infrastructure);
             }
             Ok(StagingIdentity {
                 volume: info.dwVolumeSerialNumber,
@@ -745,7 +747,7 @@ fn staging_identity(path: &Path) -> Result<StagingIdentity, BundleError> {
 fn create_staging(parent: &Path) -> Result<(PathBuf, StagingIdentity), BundleError> {
     for _ in 0..32 {
         let mut token = [0u8; 16];
-        random_fill(&mut token).map_err(|_| BundleError::Internal)?;
+        random_fill(&mut token).map_err(|_| BundleError::Infrastructure)?;
         let path = parent.join(format!(".bundle.tmp-{}", hex::encode(token)));
         match fs::create_dir(&path) {
             Ok(()) => {
@@ -753,10 +755,10 @@ fn create_staging(parent: &Path) -> Result<(PathBuf, StagingIdentity), BundleErr
                 return Ok((path, identity));
             }
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(_) => return Err(BundleError::Internal),
+            Err(_) => return Err(BundleError::Infrastructure),
         }
     }
-    Err(BundleError::Internal)
+    Err(BundleError::Infrastructure)
 }
 fn cleanup_owned(path: &Path, identity: &StagingIdentity) {
     if staging_identity(path).ok().as_ref() == Some(identity) {
@@ -782,41 +784,43 @@ fn assert_ancestors(ancestors: &[(PathBuf, StagingIdentity)]) -> Result<(), Bund
     Ok(())
 }
 fn remove_owned_tree(path: &Path) -> Result<(), BundleError> {
-    let metadata = fs::symlink_metadata(path).map_err(|_| BundleError::Internal)?;
+    let metadata = fs::symlink_metadata(path).map_err(|_| BundleError::Infrastructure)?;
     if link_or_reparse(&metadata) || !metadata.is_dir() {
-        return Err(BundleError::Internal);
+        return Err(BundleError::Infrastructure);
     }
-    for entry in fs::read_dir(path).map_err(|_| BundleError::Internal)? {
-        let entry = entry.map_err(|_| BundleError::Internal)?;
-        let metadata = fs::symlink_metadata(entry.path()).map_err(|_| BundleError::Internal)?;
+    for entry in fs::read_dir(path).map_err(|_| BundleError::Infrastructure)? {
+        let entry = entry.map_err(|_| BundleError::Infrastructure)?;
+        let metadata =
+            fs::symlink_metadata(entry.path()).map_err(|_| BundleError::Infrastructure)?;
         if link_or_reparse(&metadata) {
-            return Err(BundleError::Internal);
+            return Err(BundleError::Infrastructure);
         }
         if metadata.is_dir() {
             remove_owned_tree(&entry.path())?;
         } else if metadata.is_file() {
-            fs::remove_file(entry.path()).map_err(|_| BundleError::Internal)?;
+            fs::remove_file(entry.path()).map_err(|_| BundleError::Infrastructure)?;
         } else {
-            return Err(BundleError::Internal);
+            return Err(BundleError::Infrastructure);
         }
     }
-    fs::remove_dir(path).map_err(|_| BundleError::Internal)
+    fs::remove_dir(path).map_err(|_| BundleError::Infrastructure)
 }
 fn sync_tree(root: &Path) -> Result<(), BundleError> {
     for path in walk_regular(root)?.keys() {
         File::open(root.join(path))
             .and_then(|file| file.sync_all())
-            .map_err(|_| BundleError::Internal)?;
+            .map_err(|_| BundleError::Infrastructure)?;
     }
     sync_directories(root)?;
     Ok(())
 }
 fn sync_directories(directory: &Path) -> Result<(), BundleError> {
-    for entry in fs::read_dir(directory).map_err(|_| BundleError::Internal)? {
-        let entry = entry.map_err(|_| BundleError::Internal)?;
-        let metadata = fs::symlink_metadata(entry.path()).map_err(|_| BundleError::Internal)?;
+    for entry in fs::read_dir(directory).map_err(|_| BundleError::Infrastructure)? {
+        let entry = entry.map_err(|_| BundleError::Infrastructure)?;
+        let metadata =
+            fs::symlink_metadata(entry.path()).map_err(|_| BundleError::Infrastructure)?;
         if link_or_reparse(&metadata) {
-            return Err(BundleError::Internal);
+            return Err(BundleError::Infrastructure);
         }
         if metadata.is_dir() {
             sync_directories(&entry.path())?;
@@ -825,7 +829,7 @@ fn sync_directories(directory: &Path) -> Result<(), BundleError> {
     #[cfg(unix)]
     File::open(directory)
         .and_then(|file| file.sync_all())
-        .map_err(|_| BundleError::Internal)?;
+        .map_err(|_| BundleError::Infrastructure)?;
     Ok(())
 }
 
@@ -836,17 +840,17 @@ fn publish_no_replace(staging: &Path, destination: &Path) -> Result<(), BundleEr
         unsafe extern "C" {
             fn renamex_np(from: *const i8, to: *const i8, flags: u32) -> i32;
         }
-        let from =
-            CString::new(staging.as_os_str().as_bytes()).map_err(|_| BundleError::Internal)?;
-        let to =
-            CString::new(destination.as_os_str().as_bytes()).map_err(|_| BundleError::Internal)?;
+        let from = CString::new(staging.as_os_str().as_bytes())
+            .map_err(|_| BundleError::Infrastructure)?;
+        let to = CString::new(destination.as_os_str().as_bytes())
+            .map_err(|_| BundleError::Infrastructure)?;
         let result = unsafe { renamex_np(from.as_ptr(), to.as_ptr(), 0x0000_0004) };
         if result == 0 {
             Ok(())
         } else if fs::symlink_metadata(destination).is_ok() {
             Err(BundleError::DestinationExists)
         } else {
-            Err(BundleError::Internal)
+            Err(BundleError::Infrastructure)
         }
     }
     #[cfg(all(
@@ -863,10 +867,10 @@ fn publish_no_replace(staging: &Path, destination: &Path) -> Result<(), BundleEr
         unsafe extern "C" {
             fn syscall(number: std::ffi::c_long, ...) -> std::ffi::c_long;
         }
-        let from =
-            CString::new(staging.as_os_str().as_bytes()).map_err(|_| BundleError::Internal)?;
-        let to =
-            CString::new(destination.as_os_str().as_bytes()).map_err(|_| BundleError::Internal)?;
+        let from = CString::new(staging.as_os_str().as_bytes())
+            .map_err(|_| BundleError::Infrastructure)?;
+        let to = CString::new(destination.as_os_str().as_bytes())
+            .map_err(|_| BundleError::Infrastructure)?;
         #[cfg(target_arch = "x86_64")]
         const RENAMEAT2_SYSCALL: std::ffi::c_long = 316;
         #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
@@ -888,7 +892,7 @@ fn publish_no_replace(staging: &Path, destination: &Path) -> Result<(), BundleEr
         } else if fs::symlink_metadata(destination).is_ok() {
             Err(BundleError::DestinationExists)
         } else {
-            Err(BundleError::Internal)
+            Err(BundleError::Infrastructure)
         }
     }
     #[cfg(windows)]
@@ -912,7 +916,7 @@ fn publish_no_replace(staging: &Path, destination: &Path) -> Result<(), BundleEr
         } else if fs::symlink_metadata(destination).is_ok() {
             Err(BundleError::DestinationExists)
         } else {
-            Err(BundleError::Internal)
+            Err(BundleError::Infrastructure)
         }
     }
     #[cfg(not(any(
@@ -937,7 +941,7 @@ fn publish_no_replace(staging: &Path, destination: &Path) -> Result<(), BundleEr
 
 #[cfg(test)]
 mod tests {
-    use super::{cleanup_owned, create_staging};
+    use super::{BundleError, cleanup_owned, create_staging};
     use std::fs;
 
     #[test]
@@ -950,5 +954,16 @@ mod tests {
         fs::write(staging.join("preserve"), b"replacement").unwrap();
         cleanup_owned(&staging, &identity);
         assert_eq!(fs::read(staging.join("preserve")).unwrap(), b"replacement");
+    }
+
+    #[test]
+    fn staging_filesystem_failures_are_infrastructure_errors() {
+        let parent = tempfile::tempdir().unwrap();
+        let not_a_directory = parent.path().join("not-a-directory");
+        fs::write(&not_a_directory, b"file").unwrap();
+        assert!(matches!(
+            create_staging(&not_a_directory),
+            Err(BundleError::Infrastructure)
+        ));
     }
 }

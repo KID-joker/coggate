@@ -1,5 +1,6 @@
 pub mod bundle;
 pub mod canonical;
+pub mod cli;
 pub mod evidence;
 pub mod phase5d;
 pub mod phase6a;
