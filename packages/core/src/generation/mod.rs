@@ -2,6 +2,7 @@ mod answer;
 mod candidate;
 mod error;
 mod graph;
+mod motifs;
 mod operation;
 mod operation_kind;
 mod partition;
