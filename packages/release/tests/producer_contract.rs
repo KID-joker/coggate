@@ -268,8 +268,8 @@ fn phase6a_producer_binds_verified_report_and_safe_summary() {
         }
         _ => panic!("wrong receipt evidence"),
     }
-    assert_eq!(receipt.files()[0].path(), "direct-release.json");
-    assert_eq!(receipt.files()[1].path(), "direct-release.md");
+    assert_eq!(receipt.files()[0].path(), "report.json");
+    assert_eq!(receipt.files()[1].path(), "report.md");
 }
 
 #[test]

@@ -105,8 +105,8 @@ pub fn create_phase6a_receipt(
     let report_size = u64::try_from(report_bytes.len()).map_err(|_| ProducerError::Invalid)?;
     let summary_size = u64::try_from(summary_bytes.len()).map_err(|_| ProducerError::Invalid)?;
     let mut files = vec![
-        file_binding(&report_name, report_size, &sha256_hex(&report_bytes))?,
-        file_binding(&summary_name, summary_size, &sha256_hex(&summary_bytes))?,
+        file_binding("report.json", report_size, &sha256_hex(&report_bytes))?,
+        file_binding("report.md", summary_size, &sha256_hex(&summary_bytes))?,
     ];
     files.sort_by(|left, right| left.path().cmp(right.path()));
 
@@ -282,7 +282,7 @@ fn windows_identity_for_path(
     Ok(identity)
 }
 
-fn read_stable_regular(path: &Path, maximum: usize) -> Result<Vec<u8>, ProducerError> {
+pub(crate) fn read_stable_regular(path: &Path, maximum: usize) -> Result<Vec<u8>, ProducerError> {
     let before = fs::symlink_metadata(path).map_err(|_| ProducerError::Io)?;
     if is_link_or_reparse(&before) || !before.is_file() || before.len() > maximum as u64 {
         return Err(ProducerError::Invalid);
@@ -353,7 +353,7 @@ fn logical_name(path: &Path) -> Result<String, ProducerError> {
     Ok(name.to_owned())
 }
 
-fn validate_summary(bytes: &[u8]) -> Result<(), ProducerError> {
+pub(crate) fn validate_summary(bytes: &[u8]) -> Result<(), ProducerError> {
     let text = std::str::from_utf8(bytes).map_err(|_| ProducerError::Invalid)?;
     let lower = text.to_ascii_lowercase();
     if ["answer", "question", "prompt", "response", "environment"]
