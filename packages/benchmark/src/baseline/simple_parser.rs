@@ -4,7 +4,7 @@ use agentgate_core::generation::{MAX_CONCAT_INPUTS, MAX_QUESTION_BYTES, Operatio
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use zeroize::Zeroizing;
 
-use super::{Baseline, NoGuessReason, Prediction};
+use super::{Baseline, BaselineError, NoGuessReason, Prediction};
 use crate::corpus::CorpusCase;
 
 const MAX_TOKENS: usize = 256;
@@ -60,8 +60,8 @@ impl Baseline for SimpleParserBaseline {
         "simple_parser"
     }
 
-    fn predict(&self, case: &CorpusCase) -> Prediction {
-        self.predict_text(case.question())
+    fn predict(&self, case: &CorpusCase) -> Result<Prediction, BaselineError> {
+        Ok(self.predict_text(case.question()))
     }
 }
 

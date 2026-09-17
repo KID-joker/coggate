@@ -12,7 +12,7 @@ use crate::{
     llm::{export_llm_file, score_llm_results},
     manifest::{ProfileName, SuiteManifest},
     process::{CommandSpec, ProcessOutcome, ProcessRunner, ToolId},
-    qualification::qualify_baselines,
+    qualification::{QualificationError, qualify_baselines},
     report::{QualificationReport, verify_report, write_report_bundle},
 };
 
@@ -237,7 +237,7 @@ fn run_baselines(
     let (runner, versions) = production_runner(suite)?;
     let direct = DirectBaseline::new(runner);
     let reports = qualify_baselines(suite, profile, &corpus, &direct, versions)
-        .map_err(|_| CliError::Internal)?;
+        .map_err(cli_error_for_qualification)?;
     for report in &reports {
         write_report_bundle(output, report).map_err(|_| CliError::InputOrInfrastructure)?;
     }
@@ -247,6 +247,20 @@ fn run_baselines(
         qualified,
         format!("phase6a: baselines=COMPLETE qualified={qualified}\n"),
     ))
+}
+
+fn cli_error_for_qualification(error: QualificationError) -> CliError {
+    match qualification_error_exit_code(error) {
+        EXIT_INPUT_OR_INFRASTRUCTURE => CliError::InputOrInfrastructure,
+        _ => CliError::Internal,
+    }
+}
+
+pub const fn qualification_error_exit_code(error: QualificationError) -> u8 {
+    match error {
+        QualificationError::Baseline(_) => EXIT_INPUT_OR_INFRASTRUCTURE,
+        QualificationError::InvalidCorpus | QualificationError::Composition => EXIT_INTERNAL,
+    }
 }
 
 fn production_runner(

@@ -6,7 +6,7 @@ use agentgate_core::{
 use regex::Regex;
 use zeroize::Zeroizing;
 
-use super::{Baseline, NoGuessReason, Prediction};
+use super::{Baseline, BaselineError, NoGuessReason, Prediction};
 use crate::corpus::CorpusCase;
 
 const MAX_MATCHES: usize = 16;
@@ -64,8 +64,8 @@ impl Baseline for RegexBaseline {
         "regex"
     }
 
-    fn predict(&self, case: &CorpusCase) -> Prediction {
-        self.predict_text(case.question())
+    fn predict(&self, case: &CorpusCase) -> Result<Prediction, BaselineError> {
+        Ok(self.predict_text(case.question()))
     }
 }
 

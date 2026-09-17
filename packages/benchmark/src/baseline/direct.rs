@@ -5,7 +5,7 @@ use agentgate_core::{
 };
 use zeroize::Zeroizing;
 
-use super::{Baseline, NoGuessReason, Prediction};
+use super::{Baseline, BaselineError, NoGuessReason, Prediction};
 use crate::{
     corpus::CorpusCase,
     process::{CommandSpec, ProcessOutcome, ProcessRunner, ProcessWorkspace, ToolId},
@@ -55,46 +55,47 @@ impl DirectBaseline {
         Self { runner }
     }
 
-    pub fn predict_text(&self, question: &str) -> Prediction {
+    pub fn predict_text(&self, question: &str) -> Result<Prediction, BaselineError> {
         if question.len() > MAX_QUESTION_BYTES {
-            return Prediction::NoGuess(NoGuessReason::Unsupported);
+            return Ok(Prediction::NoGuess(NoGuessReason::Unsupported));
         }
         let Ok(fragments) = extract_fragments(question) else {
-            return Prediction::NoGuess(NoGuessReason::ParseFailed);
+            return Ok(Prediction::NoGuess(NoGuessReason::ParseFailed));
         };
         let executable = fragments
             .iter()
             .filter(|fragment| fragment.language != FragmentLanguage::Pseudocode)
             .collect::<Vec<_>>();
         if executable.is_empty() {
-            return Prediction::NoGuess(NoGuessReason::Unsupported);
+            return Ok(Prediction::NoGuess(NoGuessReason::Unsupported));
         }
 
         let mut candidate: Option<Zeroizing<String>> = None;
         for fragment in executable {
-            let Ok(mut workspace) = self.runner.workspace() else {
-                return Prediction::NoGuess(NoGuessReason::ToolRejected);
-            };
+            let mut workspace = self
+                .runner
+                .workspace()
+                .map_err(|_| BaselineError::Infrastructure)?;
             let result = run_fragment(&mut workspace, fragment);
-            if workspace.close().is_err() {
-                return Prediction::NoGuess(NoGuessReason::ToolRejected);
-            }
-            let Ok(Some(value)) = result else {
+            let cleanup = workspace.close();
+            let value = result.map_err(|_| BaselineError::Infrastructure)?;
+            cleanup.map_err(|_| BaselineError::Infrastructure)?;
+            let Some(value) = value else {
                 continue;
             };
             if let Some(existing) = &candidate {
                 if existing.as_str() != value.as_str() {
-                    return Prediction::NoGuess(NoGuessReason::Ambiguous);
+                    return Ok(Prediction::NoGuess(NoGuessReason::Ambiguous));
                 }
             } else {
                 candidate = Some(value);
             }
         }
 
-        candidate.map_or(
+        Ok(candidate.map_or(
             Prediction::NoGuess(NoGuessReason::ToolRejected),
             Prediction::Guess,
-        )
+        ))
     }
 }
 
@@ -103,7 +104,7 @@ impl Baseline for DirectBaseline {
         "direct"
     }
 
-    fn predict(&self, case: &CorpusCase) -> Prediction {
+    fn predict(&self, case: &CorpusCase) -> Result<Prediction, BaselineError> {
         self.predict_text(case.question())
     }
 }
@@ -185,8 +186,10 @@ fn run_fragment(
         Execution::One(spec) => candidate_from_result(workspace.run(&spec)?),
         Execution::Compile { spec, artifact } => {
             let result = workspace.run(&spec)?;
-            if result.outcome() != ProcessOutcome::Exited(0) {
-                return Ok(None);
+            match result.outcome() {
+                ProcessOutcome::Exited(0) => {}
+                ProcessOutcome::Exited(_) | ProcessOutcome::TimedOut => return Ok(None),
+                ProcessOutcome::OutputLimit => return Err(crate::process::ProcessError::Output),
             }
             let run_spec = CommandSpec::local(artifact, std::iter::empty::<&str>())?;
             candidate_from_result(workspace.run(&run_spec)?)
@@ -269,8 +272,10 @@ const fn artifact_name() -> &'static str {
 fn candidate_from_result(
     result: crate::process::ProcessResult,
 ) -> Result<Option<Zeroizing<String>>, crate::process::ProcessError> {
-    if result.outcome() != ProcessOutcome::Exited(0) {
-        return Ok(None);
+    match result.outcome() {
+        ProcessOutcome::Exited(0) => {}
+        ProcessOutcome::Exited(_) | ProcessOutcome::TimedOut => return Ok(None),
+        ProcessOutcome::OutputLimit => return Err(crate::process::ProcessError::Output),
     }
     let stdout = std::str::from_utf8(result.stdout())
         .map_err(|_| crate::process::ProcessError::Output)?

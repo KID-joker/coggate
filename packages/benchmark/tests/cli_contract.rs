@@ -1,10 +1,13 @@
 use std::{io, process::Command};
 
 use agentgate_benchmark::{
-    baseline::{NoGuessReason, Outcome},
-    cli::{EXIT_INTERNAL, run_with_io},
+    baseline::{BaselineError, NoGuessReason, Outcome},
+    cli::{
+        EXIT_INPUT_OR_INFRASTRUCTURE, EXIT_INTERNAL, qualification_error_exit_code, run_with_io,
+    },
     corpus::Corpus,
     manifest::{ProfileName, SuiteManifest},
+    qualification::QualificationError,
     report::{QualificationReport, ReportBinding, ReportCase, write_report_bundle},
 };
 
@@ -13,6 +16,22 @@ fn command(arguments: &[&str]) -> std::process::Output {
         .args(arguments)
         .output()
         .unwrap()
+}
+
+#[test]
+fn qualification_errors_map_infrastructure_separately_from_internal_failures() {
+    assert_eq!(
+        qualification_error_exit_code(QualificationError::Baseline(BaselineError::Infrastructure)),
+        EXIT_INPUT_OR_INFRASTRUCTURE
+    );
+    assert_eq!(
+        qualification_error_exit_code(QualificationError::Composition),
+        EXIT_INTERNAL
+    );
+    assert_eq!(
+        qualification_error_exit_code(QualificationError::InvalidCorpus),
+        EXIT_INTERNAL
+    );
 }
 
 fn direct_report(solved: usize) -> QualificationReport {

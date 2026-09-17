@@ -58,6 +58,7 @@ fn score_report(
     let binding = ReportBinding::baseline(suite, profile, baseline.id(), tool_versions)
         .map_err(|_| QualificationError::Composition)?;
     let cases = score_baseline(baseline, cases)
+        .map_err(QualificationError::Baseline)?
         .into_iter()
         .map(|result| {
             ReportCase::new(
@@ -76,6 +77,8 @@ fn score_report(
 pub enum QualificationError {
     #[error("invalid benchmark corpus or direct baseline")]
     InvalidCorpus,
+    #[error("baseline infrastructure failed")]
+    Baseline(#[from] crate::baseline::BaselineError),
     #[error("benchmark qualification composition failed")]
     Composition,
 }

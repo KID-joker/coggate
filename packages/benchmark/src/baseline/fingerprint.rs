@@ -4,7 +4,7 @@ use agentgate_core::generation::MAX_QUESTION_BYTES;
 use agentgate_core::{canonicalize_answer, contracts::AnswerEncoding};
 use zeroize::Zeroizing;
 
-use super::{Baseline, NoGuessReason, Prediction};
+use super::{Baseline, BaselineError, NoGuessReason, Prediction};
 use crate::corpus::CorpusCase;
 
 const PRESERVED_IDENTIFIERS: &[&str] = &[
@@ -114,8 +114,8 @@ impl Baseline for FingerprintBaseline {
         "fingerprint"
     }
 
-    fn predict(&self, case: &CorpusCase) -> Prediction {
-        self.predict_text(case.question())
+    fn predict(&self, case: &CorpusCase) -> Result<Prediction, BaselineError> {
+        Ok(self.predict_text(case.question()))
     }
 }
 

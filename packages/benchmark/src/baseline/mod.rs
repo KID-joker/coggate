@@ -15,6 +15,12 @@ pub enum Prediction {
     NoGuess(NoGuessReason),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum BaselineError {
+    #[error("baseline infrastructure failed")]
+    Infrastructure,
+}
+
 impl fmt::Debug for Prediction {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -36,7 +42,7 @@ pub enum NoGuessReason {
 
 pub trait Baseline {
     fn id(&self) -> &'static str;
-    fn predict(&self, case: &CorpusCase) -> Prediction;
+    fn predict(&self, case: &CorpusCase) -> Result<Prediction, BaselineError>;
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -72,26 +78,26 @@ impl CaseResult {
     }
 }
 
-pub fn score_baseline(baseline: &impl Baseline, cases: &[CorpusCase]) -> Vec<CaseResult> {
-    cases
-        .iter()
-        .map(|case| {
-            let started = Instant::now();
-            let prediction = baseline.predict(case);
-            let (outcome, reason) = match prediction {
-                Prediction::Guess(answer) if case.oracle_matches(&answer) => {
-                    (Outcome::Solved, None)
-                }
-                Prediction::Guess(_) => (Outcome::Unsolved, Some(NoGuessReason::NoCandidate)),
-                Prediction::NoGuess(reason) => (Outcome::Unsolved, Some(reason)),
-            };
-            let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-            CaseResult {
-                case_id: case.id().to_owned(),
-                outcome,
-                reason,
-                duration_ms,
-            }
-        })
-        .collect()
+pub fn score_baseline(
+    baseline: &impl Baseline,
+    cases: &[CorpusCase],
+) -> Result<Vec<CaseResult>, BaselineError> {
+    let mut results = Vec::with_capacity(cases.len());
+    for case in cases {
+        let started = Instant::now();
+        let prediction = baseline.predict(case)?;
+        let (outcome, reason) = match prediction {
+            Prediction::Guess(answer) if case.oracle_matches(&answer) => (Outcome::Solved, None),
+            Prediction::Guess(_) => (Outcome::Unsolved, Some(NoGuessReason::NoCandidate)),
+            Prediction::NoGuess(reason) => (Outcome::Unsolved, Some(reason)),
+        };
+        let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        results.push(CaseResult {
+            case_id: case.id().to_owned(),
+            outcome,
+            reason,
+            duration_ms,
+        });
+    }
+    Ok(results)
 }
