@@ -20,6 +20,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
       - name: Install C and C++ toolchains
         run: |
           sudo apt-get update
@@ -77,6 +79,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
       - name: Install C and C++ toolchains
         run: |
           sudo apt-get update
@@ -113,6 +117,29 @@ jobs:
           for report in target/phase6a/release/*.json; do
             cargo run -p agentgate-benchmark --bin agentgate-bench -- verify-report --input "$report"
           done
+      - name: Create release receipts
+        if: always()
+        run: |
+          for path in \
+            target/phase6a/release/direct-release.json \
+            target/phase6a/release/direct-release.md \
+            target/phase6a/release/fingerprint-release.json \
+            target/phase6a/release/fingerprint-release.md \
+            target/phase6a/release/regex-release.json \
+            target/phase6a/release/regex-release.md \
+            target/phase6a/release/simple_parser-release.json \
+            target/phase6a/release/simple_parser-release.md; do
+            test -f "$path" || exit 0
+          done
+          mkdir -p target/phase6a/release/receipts
+          test ! -e target/phase6a/release/receipts/direct.json
+          cargo run -p agentgate-release --bin agentgate-release -- receipt phase6a --commit "${{ github.sha }}" --report target/phase6a/release/direct-release.json --summary target/phase6a/release/direct-release.md --output target/phase6a/release/receipts/direct.json
+          test ! -e target/phase6a/release/receipts/fingerprint.json
+          cargo run -p agentgate-release --bin agentgate-release -- receipt phase6a --commit "${{ github.sha }}" --report target/phase6a/release/fingerprint-release.json --summary target/phase6a/release/fingerprint-release.md --output target/phase6a/release/receipts/fingerprint.json
+          test ! -e target/phase6a/release/receipts/regex.json
+          cargo run -p agentgate-release --bin agentgate-release -- receipt phase6a --commit "${{ github.sha }}" --report target/phase6a/release/regex-release.json --summary target/phase6a/release/regex-release.md --output target/phase6a/release/receipts/regex.json
+          test ! -e target/phase6a/release/receipts/simple_parser.json
+          cargo run -p agentgate-release --bin agentgate-release -- receipt phase6a --commit "${{ github.sha }}" --report target/phase6a/release/simple_parser-release.json --summary target/phase6a/release/simple_parser-release.md --output target/phase6a/release/receipts/simple_parser.json
       - name: Upload release reports
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -122,6 +149,10 @@ jobs:
           path: |
             target/phase6a/release/*.json
             target/phase6a/release/*.md
+            target/phase6a/release/receipts/direct.json
+            target/phase6a/release/receipts/fingerprint.json
+            target/phase6a/release/receipts/regex.json
+            target/phase6a/release/receipts/simple_parser.json
       - name: Enforce release qualification
         if: steps.baselines.outcome == 'failure'
         run: exit 1

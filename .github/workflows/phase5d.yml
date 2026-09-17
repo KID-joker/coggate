@@ -150,11 +150,20 @@ jobs:
           call "%ProgramFiles%\Microsoft Visual Studio\2022\Enterprise\Common7\Tools\VsDevCmd.bat" -arch=amd64
           python scripts/test-phase5d.py --ci --stage qualification --output target/phase5d/${{ matrix.target }}
 
+      - name: Create qualification receipt
+        shell: bash
+        run: |
+          mkdir -p target/phase5d/${{ matrix.target }}/receipts
+          test ! -e target/phase5d/${{ matrix.target }}/receipts/receipt.json
+          cargo run -p agentgate-release --bin agentgate-release -- receipt phase5d --commit "${{ github.sha }}" --target "${{ matrix.target }}" --artifact target/phase5d/${{ matrix.target }}/artifact --output target/phase5d/${{ matrix.target }}/receipts/receipt.json
+
       - name: Upload verified artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: agentgate-${{ matrix.target }}
-          path: target/phase5d/${{ matrix.target }}/artifact
+          path: |
+            target/phase5d/${{ matrix.target }}/artifact
+            target/phase5d/${{ matrix.target }}/receipts/receipt.json
           if-no-files-found: error
           retention-days: 14
 
@@ -235,3 +244,25 @@ jobs:
 
       - name: Run sanitizers
         run: python scripts/test-phase5d.py --ci --stage sanitizers
+
+      - name: Create sanitizer receipt
+        run: |
+          rust_version="$(rustc --version | sed -nE '1s/^rustc ([0-9]+(\.[0-9]+){0,2})( .*)?$/\1/p')"
+          clang_version="$(clang --version | sed -nE '1s/^.*clang version ([0-9]+(\.[0-9]+){0,2})( .*)?$/\1/p')"
+          case "$rust_version" in
+            ''|.*|*.|*[!0-9.]*) exit 1 ;;
+          esac
+          case "$clang_version" in
+            ''|.*|*.|*[!0-9.]*) exit 1 ;;
+          esac
+          mkdir -p target/phase5d/sanitizers/receipts
+          test ! -e target/phase5d/sanitizers/receipts/receipt.json
+          cargo run -p agentgate-release --bin agentgate-release -- receipt sanitizer --commit "${{ github.sha }}" --rust-version "$rust_version" --clang-version "$clang_version" --output target/phase5d/sanitizers/receipts/receipt.json
+
+      - name: Upload sanitizer receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: agentgate-sanitizer-receipt
+          path: target/phase5d/sanitizers/receipts/receipt.json
+          if-no-files-found: error
+          retention-days: 14

@@ -9,7 +9,7 @@ fn workflow() -> String {
 #[test]
 fn workflow_is_pinned_bounded_and_has_quick_and_manual_release_gates() {
     let source = workflow();
-    assert!(source.contains("permissions:\n  contents: read"));
+    assert!(source.contains("permissions:\n  contents: read\n\nconcurrency:"));
     assert!(source.contains("push:"));
     assert!(source.contains("pull_request:"));
     assert!(source.contains("workflow_dispatch:"));
@@ -46,8 +46,17 @@ fn workflow_is_pinned_bounded_and_has_quick_and_manual_release_gates() {
     }
     assert!(source.contains("target/phase6a/quick/*.json"));
     assert!(source.contains("target/phase6a/release/*.md"));
+    assert!(source.contains("receipt phase6a --commit \"${{ github.sha }}\""));
+    assert!(source.contains("mkdir -p target/phase6a/release/receipts"));
+    for baseline in ["direct", "fingerprint", "regex", "simple_parser"] {
+        assert!(source.contains(&format!("{baseline}-release.json")));
+        assert!(source.contains(&format!("{baseline}-release.md")));
+        assert!(source.contains(&format!("receipts/{baseline}.json")));
+    }
     assert!(!source.contains("export-llm"));
     assert!(!source.contains("prompts.jsonl"));
+    assert!(!source.contains("results.jsonl"));
+    assert!(!source.contains("secrets."));
 }
 
 #[test]

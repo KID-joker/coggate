@@ -221,6 +221,7 @@ WORKFLOW_CONTRACT_TESTS = (
     "test_workflow_qualification_matrix_and_artifact_contract_are_exact",
     "test_workflow_pins_actions_and_configures_language_caches_safely",
     "test_workflow_platform_setup_versions_and_sanitizers_are_scoped",
+    "test_workflow_receipts_bind_verified_evidence_to_commit",
 )
 
 
@@ -3173,6 +3174,7 @@ Dump of file agentgate_ffi.dll
                 "Confirm Windows tool versions",
                 "Run qualification",
                 "Run Windows qualification",
+                "Create qualification receipt",
                 "Upload verified artifact",
             ),
         )
@@ -3189,6 +3191,8 @@ Dump of file agentgate_ffi.dll
                 "Install Linux native dependencies",
                 "Confirm tool versions",
                 "Run sanitizers",
+                "Create sanitizer receipt",
+                "Upload sanitizer receipt",
             ),
         )
         qualification_shapes = {
@@ -3208,6 +3212,7 @@ Dump of file agentgate_ffi.dll
             "Confirm Windows tool versions": ("name", "if", "shell", "run"),
             "Run qualification": ("name", "if", "run"),
             "Run Windows qualification": ("name", "if", "shell", "run"),
+            "Create qualification receipt": ("name", "shell", "run"),
             "Upload verified artifact": ("name", "uses", "with"),
         }
         sanitizer_shapes = {
@@ -3221,6 +3226,8 @@ Dump of file agentgate_ffi.dll
             "Install Linux native dependencies": ("name", "run"),
             "Confirm tool versions": ("name", "run"),
             "Run sanitizers": ("name", "run"),
+            "Create sanitizer receipt": ("name", "run"),
+            "Upload sanitizer receipt": ("name", "uses", "with"),
         }
         for name, keys in qualification_shapes.items():
             self.assertEqual(
@@ -3295,10 +3302,75 @@ Dump of file agentgate_ffi.dll
         )
         self.assertEqual(
             workflow_input(upload, "path"),
-            "target/phase5d/${{ matrix.target }}/artifact",
+            (
+                "target/phase5d/${{ matrix.target }}/artifact",
+                "target/phase5d/${{ matrix.target }}/receipts/receipt.json",
+            ),
         )
         self.assertEqual(workflow_input(upload, "if-no-files-found"), "error")
         self.assertEqual(workflow_input(upload, "retention-days"), "14")
+
+    def test_workflow_receipts_bind_verified_evidence_to_commit(self):
+        source = read_phase5d_workflow()
+        jobs = workflow_block(source, "jobs")
+        qualification = workflow_block(jobs, "qualification", 2)
+        sanitizers = workflow_block(jobs, "sanitizers", 2)
+        qualification_receipt = workflow_step(
+            qualification, "Create qualification receipt"
+        )
+        receipt_command = (
+            "cargo run -p agentgate-release --bin agentgate-release -- receipt phase5d "
+            '--commit "${{ github.sha }}" --target "${{ matrix.target }}" '
+            "--artifact target/phase5d/${{ matrix.target }}/artifact "
+            "--output target/phase5d/${{ matrix.target }}/receipts/receipt.json"
+        )
+        self.assertEqual(
+            workflow_run_script(qualification_receipt),
+            "mkdir -p target/phase5d/${{ matrix.target }}/receipts\n"
+            "test ! -e target/phase5d/${{ matrix.target }}/receipts/receipt.json\n"
+            + receipt_command,
+        )
+        self.assertIn("        shell: bash\n", qualification_receipt)
+        self.assertLess(
+            qualification.index("Run qualification"),
+            qualification.index("Create qualification receipt"),
+        )
+        self.assertLess(
+            qualification.index("Run Windows qualification"),
+            qualification.index("Create qualification receipt"),
+        )
+        self.assertLess(
+            qualification.index("Create qualification receipt"),
+            qualification.index("Upload verified artifact"),
+        )
+        sanitizer_receipt = workflow_step(sanitizers, "Create sanitizer receipt")
+        sanitizer_script = workflow_run_script(sanitizer_receipt)
+        self.assertIn("rustc --version", sanitizer_script)
+        self.assertIn("clang --version", sanitizer_script)
+        self.assertIn("sed -nE", sanitizer_script)
+        self.assertIn("[0-9]+(\\.[0-9]+){0,2}", sanitizer_script)
+        self.assertIn('case "$rust_version" in', sanitizer_script)
+        self.assertIn('case "$clang_version" in', sanitizer_script)
+        self.assertIn(
+            'receipt sanitizer --commit "${{ github.sha }}" '
+            '--rust-version "$rust_version" --clang-version "$clang_version" '
+            "--output target/phase5d/sanitizers/receipts/receipt.json",
+            sanitizer_script,
+        )
+        self.assertIn("mkdir -p target/phase5d/sanitizers/receipts", sanitizer_script)
+        self.assertIn(
+            "test ! -e target/phase5d/sanitizers/receipts/receipt.json",
+            sanitizer_script,
+        )
+        self.assertLess(sanitizers.index("Run sanitizers"), sanitizers.index("Create sanitizer receipt"))
+        self.assertLess(sanitizers.index("Create sanitizer receipt"), sanitizers.index("Upload sanitizer receipt"))
+        sanitizer_upload = workflow_step(sanitizers, "Upload sanitizer receipt")
+        self.assertEqual(
+            workflow_input(sanitizer_upload, "path"),
+            "target/phase5d/sanitizers/receipts/receipt.json",
+        )
+        self.assertEqual(workflow_input(sanitizer_upload, "if-no-files-found"), "error")
+        self.assertNotIn("target/phase5d/sanitizers/artifact", sanitizer_upload)
 
     def test_workflow_pins_actions_and_configures_language_caches_safely(self):
         source = read_phase5d_workflow()
@@ -3311,7 +3383,7 @@ Dump of file agentgate_ffi.dll
             "actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
             "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
         ]
-        sanitizer_actions = qualification_actions[:-1]
+        sanitizer_actions = qualification_actions[:-1] + [qualification_actions[-1]]
         references = workflow_action_references(source)
         self.assertTrue(
             all(re.fullmatch(r"[^@]+@[0-9a-f]{40}", item) for item in references)
@@ -3450,8 +3522,11 @@ Dump of file agentgate_ffi.dll
         self.assertEqual(
             workflow_run_script(sanitizer_versions), unix_version_script
         )
-        self.assertNotIn("actions/upload-artifact@", sanitizers)
-        self.assertNotRegex(source, r"(?i)\b(publish|release)\b")
+        sanitizer_upload = workflow_step(sanitizers, "Upload sanitizer receipt")
+        self.assertEqual(
+            workflow_input(sanitizer_upload, "path"),
+            "target/phase5d/sanitizers/receipts/receipt.json",
+        )
 
     def test_workflow_contract_rejects_missing_windows_execution_details(self):
         source = read_phase5d_workflow()
