@@ -222,13 +222,15 @@ impl ProcessWorkspace<'_> {
         let stderr_reader = match spawn_reader(stderr, Arc::clone(&budget)) {
             Ok(reader) => reader,
             Err(error) => {
-                return match kill_and_wait(&mut child) {
-                    Ok(_) => match stdout_reader.join() {
-                        Ok(Ok(_)) => Err(error),
+                return Err(finish_process_cleanup(
+                    Some(error),
+                    || kill_and_wait(&mut child).map(|_| ()),
+                    || match stdout_reader.join() {
+                        Ok(Ok(_)) => Ok(()),
                         _ => Err(ProcessError::Output),
                     },
-                    Err(cleanup) => Err(cleanup),
-                };
+                )
+                .expect_err("a primary process error always fails"));
             }
         };
 
@@ -256,21 +258,25 @@ impl ProcessWorkspace<'_> {
                 terminate_group(&mut child, &stdout_reader, &stderr_reader)
                     .map(|()| Completion::Exited(status))
             }
-            Ok(Completion::OutputLimit) => kill_and_wait(&mut child)
-                .map(|_| Completion::OutputLimit)
-                .map_err(|cleanup| resolve_process_error(Some(ProcessError::OutputLimit), cleanup)),
+            Ok(Completion::OutputLimit) => {
+                return Err(finish_process_cleanup(
+                    Some(ProcessError::OutputLimit),
+                    || kill_and_wait(&mut child).map(|_| ()),
+                    || join_readers(stdout_reader, stderr_reader),
+                )
+                .expect_err("a primary process error always fails"));
+            }
             Ok(Completion::TimedOut) => kill_and_wait(&mut child).map(|status| match status {
                 Termination::Killed => Completion::TimedOut,
                 Termination::AlreadyExited(status) => Completion::Exited(status),
             }),
             Err(error) => {
-                return match kill_and_wait(&mut child) {
-                    Ok(_) => match join_readers(stdout_reader, stderr_reader) {
-                        Ok(_) => Err(error),
-                        Err(output) => Err(output),
-                    },
-                    Err(cleanup) => Err(cleanup),
-                };
+                return Err(finish_process_cleanup(
+                    Some(error),
+                    || kill_and_wait(&mut child).map(|_| ()),
+                    || join_readers(stdout_reader, stderr_reader).map(|_| ()),
+                )
+                .expect_err("a primary process error always fails"));
             }
         };
         let completion = completion?;
@@ -419,8 +425,22 @@ fn kill_and_wait(child: &mut GroupChild) -> Result<Termination, ProcessError> {
     }
 }
 
-fn resolve_process_error(primary: Option<ProcessError>, cleanup: ProcessError) -> ProcessError {
-    primary.unwrap_or(cleanup)
+fn finish_process_cleanup<T, C, F>(
+    primary: Option<ProcessError>,
+    cleanup: C,
+    finalize: F,
+) -> Result<T, ProcessError>
+where
+    C: FnOnce() -> Result<(), ProcessError>,
+    F: FnOnce() -> Result<T, ProcessError>,
+{
+    let cleanup_error = cleanup().err();
+    let finalized = finalize();
+    if let Some(error) = primary.or(cleanup_error) {
+        Err(error)
+    } else {
+        finalized
+    }
 }
 
 struct CaptureBudget {
@@ -537,21 +557,71 @@ pub enum ProcessError {
 
 #[cfg(test)]
 mod tests {
-    use super::{ProcessError, resolve_process_error};
+    use std::cell::Cell;
+
+    use super::{ProcessError, finish_process_cleanup};
 
     #[test]
-    fn primary_process_error_wins_over_cleanup_error() {
-        assert_eq!(
-            resolve_process_error(Some(ProcessError::OutputLimit), ProcessError::Kill),
-            ProcessError::OutputLimit
-        );
+    fn wait_error_survives_cleanup_failure_and_still_finalizes_readers() {
+        let cleanup_called = Cell::new(false);
+        let finalize_called = Cell::new(false);
+
+        let error = finish_process_cleanup(
+            Some(ProcessError::Wait),
+            || {
+                cleanup_called.set(true);
+                Err(ProcessError::Kill)
+            },
+            || {
+                finalize_called.set(true);
+                Err::<(), _>(ProcessError::Output)
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error, ProcessError::Wait);
+        assert!(cleanup_called.get());
+        assert!(finalize_called.get());
     }
 
     #[test]
-    fn cleanup_error_is_reported_without_a_primary_error() {
-        assert_eq!(
-            resolve_process_error(None, ProcessError::Kill),
-            ProcessError::Kill
-        );
+    fn reader_spawn_error_survives_reader_finalization_failure() {
+        let cleanup_called = Cell::new(false);
+        let finalize_called = Cell::new(false);
+
+        let error = finish_process_cleanup(
+            Some(ProcessError::Output),
+            || {
+                cleanup_called.set(true);
+                Err(ProcessError::Kill)
+            },
+            || {
+                finalize_called.set(true);
+                Err::<(), _>(ProcessError::Output)
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error, ProcessError::Output);
+        assert!(cleanup_called.get());
+        assert!(finalize_called.get());
+    }
+
+    #[test]
+    fn cleanup_failure_without_primary_is_reported_after_finalization() {
+        let finalize_called = Cell::new(false);
+
+        let error = finish_process_cleanup(
+            None,
+            || Err(ProcessError::Kill),
+            || {
+                finalize_called.set(true);
+                Ok(())
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error, ProcessError::Kill);
+        assert!(finalize_called.get());
     }
 }
