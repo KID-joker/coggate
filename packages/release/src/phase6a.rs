@@ -263,6 +263,15 @@ fn validate_report(report: &Report, suite: &Manifest) -> Result<(), Phase6aError
             {
                 return Err(Phase6aError::Invalid);
             }
+            if report.binding.subject_id == "direct" {
+                if report.binding.tool_versions.keys().collect::<Vec<_>>()
+                    != suite.tools.keys().collect::<Vec<_>>()
+                {
+                    return Err(Phase6aError::Invalid);
+                }
+            } else if !report.binding.tool_versions.is_empty() {
+                return Err(Phase6aError::Invalid);
+            }
             suite
                 .thresholds
                 .get(&report.binding.subject_id)
