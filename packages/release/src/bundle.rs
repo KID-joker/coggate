@@ -248,6 +248,7 @@ pub fn verify_bundle(root: &Path) -> Result<VerifiedBundle, BundleError> {
         return Err(BundleError::InvalidInput);
     }
     let manifest_bytes = read_regular(&root.join(MANIFEST), MAX_METADATA_BYTES as u64)?;
+    let sums_bytes = read_regular(&root.join(SUMS), MAX_METADATA_BYTES as u64)?;
     let manifest = parse_manifest(&manifest_bytes)?;
     validate_manifest(&manifest)?;
     let payload = all
@@ -303,7 +304,29 @@ pub fn verify_bundle(root: &Path) -> Result<VerifiedBundle, BundleError> {
     if manifest.receipts != receipts {
         return Err(BundleError::InvalidInput);
     }
+    recheck_snapshot(root, &all, &manifest_bytes, &sums_bytes, &payload)?;
     Ok(VerifiedBundle { manifest })
+}
+
+fn recheck_snapshot(
+    root: &Path,
+    all: &BTreeMap<String, u64>,
+    manifest_bytes: &[u8],
+    sums_bytes: &[u8],
+    payload: &[BundleFile],
+) -> Result<(), BundleError> {
+    if walk_regular(root)? != *all
+        || read_regular(&root.join(MANIFEST), MAX_METADATA_BYTES as u64)? != manifest_bytes
+        || read_regular(&root.join(SUMS), MAX_METADATA_BYTES as u64)? != sums_bytes
+    {
+        return Err(BundleError::InvalidInput);
+    }
+    for file in payload {
+        if hash_path(&root.join(&file.path))? != file.sha256 {
+            return Err(BundleError::InvalidInput);
+        }
+    }
+    Ok(())
 }
 
 fn parse_manifest(bytes: &[u8]) -> Result<BundleManifest, BundleError> {
@@ -941,7 +964,10 @@ fn publish_no_replace(staging: &Path, destination: &Path) -> Result<(), BundleEr
 
 #[cfg(test)]
 mod tests {
-    use super::{BundleError, cleanup_owned, create_staging};
+    use super::{
+        BundleError, BundleFile, MANIFEST, SUMS, cleanup_owned, create_staging, hash_path,
+        recheck_snapshot, walk_regular,
+    };
     use std::fs;
 
     #[test]
@@ -965,5 +991,26 @@ mod tests {
             create_staging(&not_a_directory),
             Err(BundleError::Infrastructure)
         ));
+    }
+
+    #[test]
+    fn final_snapshot_recheck_rejects_same_size_payload_mutation() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join(MANIFEST), b"manifest").unwrap();
+        fs::write(root.path().join(SUMS), b"sums").unwrap();
+        fs::write(root.path().join("payload"), b"before!").unwrap();
+        let all = walk_regular(root.path()).unwrap();
+        let payload = vec![BundleFile {
+            path: "payload".into(),
+            size: 7,
+            sha256: hash_path(&root.path().join("payload")).unwrap(),
+        }];
+
+        fs::write(root.path().join("payload"), b"changed").unwrap();
+
+        assert_eq!(
+            recheck_snapshot(root.path(), &all, b"manifest", b"sums", &payload),
+            Err(BundleError::InvalidInput)
+        );
     }
 }

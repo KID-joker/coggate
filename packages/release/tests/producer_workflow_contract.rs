@@ -103,7 +103,8 @@ fn phase6a_manual_release_binds_each_safe_report_pair_without_llm_leakage() {
         assert!(release.contains(&format!("receipts/{name}.json")));
     }
     assert!(release.contains("receipt phase6a --commit \"${{ github.sha }}\""));
-    assert!(release.contains("test -f \"$path\" || exit 0"));
+    assert!(release.contains("test -f \"$path\" || exit 1"));
+    assert!(!release.contains("test -f \"$path\" || exit 0"));
     assert!(release.contains("test ! -e target/phase6a/release/receipts/direct.json"));
     assert!(release.contains("target/phase6a/release/receipts/direct.json"));
     for forbidden in [

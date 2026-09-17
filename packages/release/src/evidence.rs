@@ -39,12 +39,12 @@ const RECEIPT_FILES: [&str; 9] = [
     "simple_parser.json",
     "llm.json",
 ];
-const REPORTS: [(&str, &str, ReportRole); 5] = [
-    ("direct", "direct", ReportRole::Direct),
-    ("fingerprint", "fingerprint", ReportRole::Direct),
-    ("regex", "regex", ReportRole::Direct),
-    ("simple_parser", "simple_parser", ReportRole::Direct),
-    ("llm", "llm-model", ReportRole::Indirect),
+const REPORTS: [(&str, Option<&str>, ReportRole); 5] = [
+    ("direct", Some("direct"), ReportRole::Direct),
+    ("fingerprint", Some("fingerprint"), ReportRole::Direct),
+    ("regex", Some("regex"), ReportRole::Direct),
+    ("simple_parser", Some("simple_parser"), ReportRole::Direct),
+    ("llm", None, ReportRole::Indirect),
 ];
 const ARTIFACTS: [(&str, &str, Target); 3] = [
     ("linux", "x86_64-unknown-linux-gnu", Target::LinuxX86_64),
@@ -200,7 +200,7 @@ impl EvidenceSet {
         let mut generator: Option<String> = None;
         let mut manifest: Option<String> = None;
         let mut qualified = BTreeMap::new();
-        for (directory, subject, role) in REPORTS {
+        for (directory, expected_subject, role) in REPORTS {
             let dir = root.join("phase6a").join(directory);
             let report_bytes = read_stable_regular(&dir.join("report.json"), MAX_METADATA_BYTES)
                 .map_err(|_| EvidenceError::Invalid)?;
@@ -215,14 +215,14 @@ impl EvidenceSet {
                 return Err(EvidenceError::Invalid);
             };
             if receipt.producer_id() != "phase6a"
-                || report.subject_id() != subject
+                || expected_subject.is_some_and(|subject| report.subject_id() != subject)
                 || report.role() != role
                 || binding.suite_version != report.suite_version()
                 || binding.generator_version != report.generator_version()
                 || binding.manifest_digest != report.manifest_digest()
                 || binding.profile != "release"
                 || binding.role != role
-                || binding.subject_id != subject
+                || binding.subject_id != report.subject_id()
                 || binding.payload_digest != report.payload_digest()
                 || binding.qualified != report.qualified()
             {
@@ -240,7 +240,7 @@ impl EvidenceSet {
                 ],
             )?;
             if qualified
-                .insert(subject.to_owned(), report.qualified())
+                .insert(directory.to_owned(), report.qualified())
                 .is_some()
             {
                 return Err(EvidenceError::Invalid);
@@ -266,13 +266,7 @@ impl EvidenceSet {
             .keys()
             .map(String::as_str)
             .collect::<BTreeSet<_>>()
-            != BTreeSet::from([
-                "direct",
-                "fingerprint",
-                "regex",
-                "simple_parser",
-                "llm-model",
-            ])
+            != BTreeSet::from(["direct", "fingerprint", "llm", "regex", "simple_parser"])
         {
             return Err(EvidenceError::Invalid);
         }
@@ -385,27 +379,79 @@ struct DirIdentity {
     inode: u64,
     #[cfg(unix)]
     change_ns: i128,
+    #[cfg(windows)]
+    volume_serial: u32,
+    #[cfg(windows)]
+    file_index: u64,
 }
 
-fn dir_identity(metadata: &Metadata) -> DirIdentity {
+fn dir_identity(path: &Path, metadata: &Metadata) -> Result<DirIdentity, EvidenceError> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        DirIdentity {
+        let _ = path;
+        Ok(DirIdentity {
             len: metadata.len(),
             modified: metadata.modified().ok(),
             device: metadata.dev(),
             inode: metadata.ino(),
             change_ns: i128::from(metadata.ctime()) * 1_000_000_000
                 + i128::from(metadata.ctime_nsec()),
-        }
+        })
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
-        DirIdentity {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::{
+            Foundation::{CloseHandle, INVALID_HANDLE_VALUE},
+            Storage::FileSystem::{
+                BY_HANDLE_FILE_INFORMATION, CreateFileW, FILE_FLAG_BACKUP_SEMANTICS,
+                FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+                GetFileInformationByHandle, OPEN_EXISTING,
+            },
+        };
+        let wide = path
+            .as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect::<Vec<_>>();
+        // SAFETY: `wide` is NUL-terminated and the returned handle is closed exactly once.
+        let handle = unsafe {
+            CreateFileW(
+                wide.as_ptr(),
+                0,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                std::ptr::null(),
+                OPEN_EXISTING,
+                FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+                std::ptr::null_mut(),
+            )
+        };
+        if handle == INVALID_HANDLE_VALUE {
+            return Err(EvidenceError::Invalid);
+        }
+        let mut info = BY_HANDLE_FILE_INFORMATION::default();
+        // SAFETY: `handle` is live and `info` is writable.
+        let ok = unsafe { GetFileInformationByHandle(handle, &mut info) } != 0;
+        // SAFETY: `handle` is closed exactly once.
+        unsafe { CloseHandle(handle) };
+        if !ok || (info.dwFileAttributes & 0x400) != 0 {
+            return Err(EvidenceError::Invalid);
+        }
+        Ok(DirIdentity {
             len: metadata.len(),
             modified: metadata.modified().ok(),
-        }
+            volume_serial: info.dwVolumeSerialNumber,
+            file_index: (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+        })
+    }
+    #[cfg(all(not(unix), not(windows)))]
+    {
+        let _ = path;
+        Ok(DirIdentity {
+            len: metadata.len(),
+            modified: metadata.modified().ok(),
+        })
     }
 }
 
@@ -414,7 +460,7 @@ fn watch_dir(path: &Path, watched: &mut Vec<(PathBuf, DirIdentity)>) -> Result<(
     if is_link_or_reparse(&metadata) || !metadata.is_dir() {
         return Err(EvidenceError::Invalid);
     }
-    watched.push((path.to_owned(), dir_identity(&metadata)));
+    watched.push((path.to_owned(), dir_identity(path, &metadata)?));
     Ok(())
 }
 
@@ -507,7 +553,7 @@ fn recheck_watched(watched: &[(PathBuf, DirIdentity)]) -> Result<(), EvidenceErr
         let metadata = fs::symlink_metadata(path).map_err(|_| EvidenceError::Invalid)?;
         if is_link_or_reparse(&metadata)
             || !metadata.is_dir()
-            || dir_identity(&metadata) != *identity
+            || dir_identity(path, &metadata)? != *identity
         {
             return Err(EvidenceError::Invalid);
         }

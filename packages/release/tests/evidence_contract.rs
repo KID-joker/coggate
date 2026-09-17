@@ -33,6 +33,37 @@ fn loads_the_fixed_complete_layout_and_authorizes_qualified_evidence() {
 }
 
 #[test]
+fn accepts_an_arbitrary_verified_llm_model_id_as_the_llm_role() {
+    let fixture = evidence_fixture(true);
+    let report_path = fixture.path().join("phase6a/llm/report.json");
+    let summary_path = fixture.path().join("phase6a/llm/report.md");
+    let mut report = valid_report("gpt-5.6-release", 800);
+    report["binding"]["kind"] = json!("llm");
+    report["binding"]["subject_version"] = json!("run-2026-09-17");
+    report["binding"]["threshold"] = json!({"comparison":"at_least","percent":80});
+    report["summary"]["qualified"] = json!(true);
+    report["summary"]["failed_thresholds"] = json!([]);
+    let source = fixture.path().join("gpt-5.6-release-release.json");
+    let source_summary = fixture.path().join("gpt-5.6-release-release.md");
+    fs::write(&source, signed(report)).unwrap();
+    fs::copy(&summary_path, &source_summary).unwrap();
+    let receipt = create_phase6a_receipt(COMMIT, &source, &source_summary).unwrap();
+    fs::copy(&source, &report_path).unwrap();
+    fs::remove_file(source).unwrap();
+    fs::remove_file(source_summary).unwrap();
+    fs::remove_file(fixture.path().join("receipts/llm.json")).unwrap();
+    write_receipt(&fixture.path().join("receipts/llm.json"), &receipt).unwrap();
+
+    assert!(
+        EvidenceSet::load(fixture.path(), COMMIT)
+            .unwrap()
+            .authorize()
+            .unwrap()
+            .authorized()
+    );
+}
+
+#[test]
 fn unqualified_evidence_loads_but_blocks_in_sorted_subject_order() {
     let fixture = evidence_fixture(false);
     let loaded = EvidenceSet::load(fixture.path(), COMMIT).unwrap();

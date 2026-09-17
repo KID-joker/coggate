@@ -129,7 +129,7 @@ jobs:
             target/phase6a/release/regex-release.md \
             target/phase6a/release/simple_parser-release.json \
             target/phase6a/release/simple_parser-release.md; do
-            test -f "$path" || exit 0
+            test -f "$path" || exit 1
           done
           mkdir -p target/phase6a/release/receipts
           test ! -e target/phase6a/release/receipts/direct.json
