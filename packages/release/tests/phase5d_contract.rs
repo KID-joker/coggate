@@ -2,12 +2,13 @@ use std::{
     collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
+    process::Command,
 };
 
 use coggate_release::{
     Phase5dError, Target,
     canonical::{canonical_compact, canonical_pretty_sorted, sha256_hex},
-    verify_phase5d_artifact,
+    create_phase5d_receipt, verify_phase5d_artifact,
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -91,6 +92,8 @@ fn paths_for(target: Target) -> Vec<String> {
         format!("java/{shared}"),
         "java/examples/Complete.java".to_owned(),
         "node/package.json".to_owned(),
+        "node/README.md".to_owned(),
+        "node/scripts/verify-package.mjs".to_owned(),
         "node/lib/index.js".to_owned(),
         "node/examples/complete.js".to_owned(),
         "node/build/Release/coggate.node".to_owned(),
@@ -238,6 +241,103 @@ fn fixture(target: Target) -> (TempDir, PathBuf) {
     }
     write_metadata(&root, target);
     (directory, root)
+}
+
+#[cfg(not(windows))]
+#[test]
+fn python_producer_artifact_is_accepted_by_rust_verifier_and_receipt() {
+    let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .expect("repository path must resolve");
+    let fixture_parent = repository.join("target/phase5d-contract-fixtures");
+    fs::create_dir_all(&fixture_parent).expect("fixture parent must exist");
+    let temporary = tempfile::tempdir_in(fixture_parent).expect("temporary producer fixture");
+    let source = temporary.path().join("source");
+    let output = temporary.path().join("output");
+    for relative in [
+        "packages/ffi/include/coggate.h",
+        "target/release/libcoggate_ffi.so",
+        "target/release/libcoggate_ffi.a",
+        "bindings/go/go.mod",
+        "bindings/go/coggate/bindings.go",
+        "bindings/go/examples/complete/main.go",
+        "bindings/java/target/coggate-java-0.1.0-SNAPSHOT.jar",
+        "target/phase5c/java/libcoggate_jni.so",
+        "bindings/java/examples/Complete.java",
+        "bindings/node/package.json",
+        "bindings/node/README.md",
+        "bindings/node/scripts/verify-package.mjs",
+        "bindings/node/lib/index.js",
+        "bindings/node/examples/complete.js",
+        "bindings/node/build/Release/coggate.node",
+        "bindings/node/build/Release/libcoggate_ffi.so",
+        "tests/qualification/abi_probe.c",
+        "tests/qualification/abi_probe.cpp",
+    ] {
+        write(
+            &source,
+            relative,
+            format!("fixture:{relative}\n").as_bytes(),
+        );
+    }
+
+    let program = r#"import importlib.util
+import pathlib
+import sys
+spec = importlib.util.spec_from_file_location("phase5d_contract", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+artifact = module.assemble_artifact(
+    pathlib.Path(sys.argv[2]),
+    pathlib.Path(sys.argv[3]),
+    module.Target.for_host("Linux", "x86_64"),
+    module.tool_versions_fixture(),
+)
+print(artifact)
+"#;
+    let produced = Command::new("python3")
+        .args([
+            "-I",
+            "-S",
+            "-c",
+            program,
+            repository
+                .join("scripts/test-phase5d.py")
+                .to_str()
+                .expect("script path must be UTF-8"),
+            source.to_str().expect("source path must be UTF-8"),
+            output.to_str().expect("output path must be UTF-8"),
+        ])
+        .output()
+        .expect("Python 3 must run the Phase 5D producer");
+    assert!(
+        produced.status.success(),
+        "Python producer failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&produced.stdout),
+        String::from_utf8_lossy(&produced.stderr),
+    );
+    let artifact = PathBuf::from(
+        String::from_utf8(produced.stdout)
+            .expect("producer output must be UTF-8")
+            .trim(),
+    );
+    let verified = verify_phase5d_artifact(&artifact, Target::LinuxX86_64)
+        .expect("Rust verifier must accept the Python producer manifest");
+    let paths = verified
+        .files()
+        .iter()
+        .map(|file| file.path())
+        .collect::<Vec<_>>();
+    assert!(paths.contains(&"node/README.md"));
+    assert!(paths.contains(&"node/scripts/verify-package.mjs"));
+    create_phase5d_receipt(
+        "0123456789abcdef0123456789abcdef01234567",
+        Target::LinuxX86_64,
+        &artifact,
+    )
+    .expect("receipt producer must accept the Python artifact");
 }
 
 fn expected_tree_digest(root: &Path, target: Target) -> String {

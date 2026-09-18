@@ -1,4 +1,4 @@
-name: Phase 6A adversarial qualification
+name: CogGate Phase 6A adversarial qualification
 
 on:
   push:
@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: phase6a-${{ github.workflow }}-${{ github.ref }}
+  group: coggate-phase6a-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -62,7 +62,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: phase6a-quick-reports
+          name: coggate-phase6a-quick-reports
           if-no-files-found: error
           path: |
             target/phase6a/quick/*.json
@@ -144,7 +144,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: phase6a-release-reports
+          name: coggate-phase6a-release-reports
           if-no-files-found: error
           path: |
             target/phase6a/release/*.json

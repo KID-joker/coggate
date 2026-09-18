@@ -1,4 +1,4 @@
-name: Phase 5D cross-platform qualification
+name: CogGate Phase 5D cross-platform qualification
 
 on:
   pull_request:
@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: phase5d-${{ github.workflow }}-${{ github.ref }}
+  group: coggate-phase5d-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -65,8 +65,8 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-
+          key: ${{ runner.os }}-coggate-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-coggate-cargo-
 
       - name: Install pinned toolchains
         run: |
@@ -208,8 +208,8 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-          key: linux-cargo-${{ hashFiles('Cargo.lock') }}
-          restore-keys: linux-cargo-
+          key: linux-coggate-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: linux-coggate-cargo-
 
       - name: Install pinned toolchains
         run: |

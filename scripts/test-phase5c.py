@@ -921,7 +921,7 @@ class RunnerSelfTests(unittest.TestCase):
         )
 
     def test_go_linux_plan_uses_ld_library_path_and_preserves_existing_values(self):
-        parent = Path("/opt/agent gate")
+        parent = Path("/opt/runtime fixture")
         command = build_plan(
             "go",
             NativeLibrary(

@@ -9,6 +9,10 @@ fn workflow() -> String {
 #[test]
 fn workflow_is_pinned_bounded_and_has_quick_and_manual_release_gates() {
     let source = workflow();
+    assert!(source.starts_with("name: CogGate Phase 6A adversarial qualification\n"));
+    assert!(source.contains("group: coggate-phase6a-${{ github.workflow }}-${{ github.ref }}"));
+    assert!(source.contains("name: coggate-phase6a-quick-reports"));
+    assert!(source.contains("name: coggate-phase6a-release-reports"));
     assert!(source.contains("permissions:\n  contents: read\n\nconcurrency:"));
     assert!(source.contains("push:"));
     assert!(source.contains("pull_request:"));

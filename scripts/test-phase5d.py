@@ -3561,10 +3561,10 @@ Dump of file coggate_ffi.dll
         )
         self.assertEqual(
             workflow_input(cargo, "key"),
-            "${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}",
+            "${{ runner.os }}-coggate-cargo-${{ hashFiles('Cargo.lock') }}",
         )
         self.assertEqual(
-            workflow_input(cargo, "restore-keys"), "${{ runner.os }}-cargo-"
+            workflow_input(cargo, "restore-keys"), "${{ runner.os }}-coggate-cargo-"
         )
         install = workflow_step(qualification, "Install pinned toolchains")
         self.assertEqual(
@@ -3601,10 +3601,10 @@ Dump of file coggate_ffi.dll
         )
         self.assertEqual(
             workflow_input(sanitizer_cargo, "key"),
-            "linux-cargo-${{ hashFiles('Cargo.lock') }}",
+            "linux-coggate-cargo-${{ hashFiles('Cargo.lock') }}",
         )
         self.assertEqual(
-            workflow_input(sanitizer_cargo, "restore-keys"), "linux-cargo-"
+            workflow_input(sanitizer_cargo, "restore-keys"), "linux-coggate-cargo-"
         )
         sanitizer_install = workflow_step(sanitizers, "Install pinned toolchains")
         self.assertEqual(
@@ -3814,9 +3814,9 @@ Dump of file coggate_ffi.dll
         ]
         for job_name in ("qualification", "sanitizers"):
             restore_key = (
-                "restore-keys: ${{ runner.os }}-cargo-"
+                "restore-keys: ${{ runner.os }}-coggate-cargo-"
                 if job_name == "qualification"
-                else "restore-keys: linux-cargo-"
+                else "restore-keys: linux-coggate-cargo-"
             )
             mutations.extend(
                 (

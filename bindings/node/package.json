@@ -2,6 +2,15 @@
   "name": "coggate",
   "version": "0.0.0",
   "description": "Native Node.js SDK for CogGate",
+  "homepage": "https://github.com/KID-joker/coggate",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/KID-joker/coggate.git",
+    "directory": "bindings/node"
+  },
+  "bugs": {
+    "url": "https://github.com/KID-joker/coggate/issues"
+  },
   "private": true,
   "type": "module",
   "main": "./lib/index.js",

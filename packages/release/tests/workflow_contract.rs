@@ -8,6 +8,9 @@ fn workflow() -> String {
 #[test]
 fn phase6b_workflow_is_a_pinned_offline_release_gate() {
     let source = workflow();
+    assert!(source.starts_with("name: CogGate Phase 6B release gate\n"));
+    assert!(source.contains("group: coggate-phase6b-${{ github.workflow }}-${{ github.ref }}"));
+    assert!(source.contains("name: CogGate offline release gate"));
     assert!(source.contains("on:\n  push:\n  pull_request:\n  workflow_dispatch:"));
     assert!(source.contains("permissions:\n  contents: read\n\nconcurrency:"));
     assert!(source.contains("cancel-in-progress: true"));

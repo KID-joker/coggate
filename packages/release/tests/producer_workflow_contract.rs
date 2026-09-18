@@ -64,6 +64,12 @@ fn assert_secure_workflow(source: &str) {
 fn phase5d_receipts_follow_verification_and_upload_only_bounded_evidence() {
     let source = workflow("phase5d.yml");
     assert_secure_workflow(&source);
+    assert!(source.starts_with("name: CogGate Phase 5D cross-platform qualification\n"));
+    assert!(source.contains("group: coggate-phase5d-${{ github.workflow }}-${{ github.ref }}"));
+    assert!(source.contains("key: ${{ runner.os }}-coggate-cargo-${{ hashFiles('Cargo.lock') }}"));
+    assert!(source.contains("restore-keys: ${{ runner.os }}-coggate-cargo-"));
+    assert!(source.contains("key: linux-coggate-cargo-${{ hashFiles('Cargo.lock') }}"));
+    assert!(source.contains("restore-keys: linux-coggate-cargo-"));
     let qualification_receipt = "receipt phase5d --commit \"${{ github.sha }}\" --target \"${{ matrix.target }}\" --artifact target/phase5d/${{ matrix.target }}/artifact --output target/phase5d/${{ matrix.target }}/receipts/receipt.json";
     assert!(source.contains(qualification_receipt));
     assert!(source.contains("test ! -e target/phase5d/${{ matrix.target }}/receipts/receipt.json"));
@@ -87,6 +93,8 @@ fn phase5d_receipts_follow_verification_and_upload_only_bounded_evidence() {
 fn phase6a_manual_release_binds_each_safe_report_pair_without_llm_leakage() {
     let source = workflow("phase6a.yml");
     assert_secure_workflow(&source);
+    assert!(source.contains("name: coggate-phase6a-quick-reports"));
+    assert!(source.contains("name: coggate-phase6a-release-reports"));
     let release = source.split("  release:\n").nth(1).expect("release job");
     assert!(release.contains("if: always()"));
     assert!(

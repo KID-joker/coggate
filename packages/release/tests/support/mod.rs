@@ -260,6 +260,8 @@ fn artifact_paths(target: Target) -> Vec<String> {
         format!("java/{shared}"),
         "java/examples/Complete.java".into(),
         "node/package.json".into(),
+        "node/README.md".into(),
+        "node/scripts/verify-package.mjs".into(),
         "node/lib/index.js".into(),
         "node/examples/complete.js".into(),
         "node/build/Release/coggate.node".into(),

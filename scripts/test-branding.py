@@ -15,7 +15,13 @@ import sys
 import tempfile
 
 
-RETIRED_NAME = "agent" + "gate"
+RETIRED_PARTS = ("agent", "gate")
+RETIRED_SEPARATORS = ("", " ", "-", "_", ".", "/")
+RETIRED_VARIANTS = tuple(
+    RETIRED_PARTS[0] + separator + RETIRED_PARTS[1]
+    for separator in RETIRED_SEPARATORS
+)
+RETIRED_NAME = RETIRED_VARIANTS[0]
 MAX_FILE_BYTES = 4 * 1024 * 1024
 MAX_TOTAL_READ_BYTES = 64 * 1024 * 1024
 MAX_INPUT_BYTES = 16 * 1024 * 1024
@@ -332,7 +338,7 @@ def content_lines(
     data, error = read_regular_file(root, relative, read_budget)
     if error or data is None:
         return [], error
-    needle = RETIRED_NAME.casefold()
+    needles = tuple(value.casefold() for value in RETIRED_VARIANTS)
 
     encoding: str | None = None
     encoding_label: str | None = None
@@ -360,8 +366,8 @@ def content_lines(
 
     if encoding is None and b"\x00" in data:
         lowered_data = data.lower()
-        utf16le_needle = RETIRED_NAME.encode("utf-16-le").lower()
-        utf16be_needle = RETIRED_NAME.encode("utf-16-be").lower()
+        utf16le_needles = tuple(value.encode("utf-16-le").lower() for value in RETIRED_VARIANTS)
+        utf16be_needles = tuple(value.encode("utf-16-be").lower() for value in RETIRED_VARIANTS)
 
         def has_aligned_needle(candidate: bytes) -> bool:
             offset = lowered_data.find(candidate)
@@ -371,8 +377,8 @@ def content_lines(
                 offset = lowered_data.find(candidate, offset + 1)
             return False
 
-        has_utf16le_needle = has_aligned_needle(utf16le_needle)
-        has_utf16be_needle = has_aligned_needle(utf16be_needle)
+        has_utf16le_needle = any(has_aligned_needle(value) for value in utf16le_needles)
+        has_utf16be_needle = any(has_aligned_needle(value) for value in utf16be_needles)
         if has_utf16le_needle != has_utf16be_needle:
             encoding = "utf-16-le" if has_utf16le_needle else "utf-16-be"
             encoding_label = "UTF-16LE" if has_utf16le_needle else "UTF-16BE"
@@ -385,22 +391,22 @@ def content_lines(
         except UnicodeDecodeError:
             return [], f"error: {display_path(relative)}: invalid {encoding_label} text"
         lines = text.splitlines()
-        line_needle: str | bytes = needle
+        line_needles: tuple[str | bytes, ...] = needles
     else:
         try:
             text = data.decode("utf-8-sig")
             lines = text.splitlines()
-            line_needle = needle
+            line_needles = needles
         except UnicodeDecodeError:
             if b"\x00" in data:
                 return [], f"error: {display_path(relative)}: ambiguous NUL text encoding"
             lines = data.splitlines()
-            line_needle = RETIRED_NAME.encode("ascii").lower()
+            line_needles = tuple(value.encode("ascii").lower() for value in RETIRED_VARIANTS)
 
     matches: list[int] = []
     for number, line in enumerate(lines, 1):
         normalized = line.casefold() if isinstance(line, str) else line.lower()
-        if line_needle in normalized:
+        if any(value in normalized for value in line_needles):
             if len(matches) >= max(0, match_limit):
                 return matches, "error: diagnostic limit exceeded"
             matches.append(number)
@@ -417,7 +423,7 @@ def scan(
     errors: list[str] = []
     remaining_bytes = read_budget if read_budget is not None else [MAX_TOTAL_READ_BYTES]
     limit = max(1, diagnostic_limit)
-    needle = RETIRED_NAME.casefold()
+    needles = tuple(value.casefold() for value in RETIRED_VARIANTS)
     seen: set[Path] = set()
 
     def add_diagnostic(target: list[str], diagnostic: str) -> bool:
@@ -435,8 +441,9 @@ def scan(
         if relative in seen:
             continue
         seen.add(relative)
-        if needle in relative.as_posix().casefold() or any(
-            needle in component.casefold() for component in relative.parts
+        if any(value in relative.as_posix().casefold() for value in needles) or any(
+            any(value in component.casefold() for value in needles)
+            for component in relative.parts
         ):
             if not add_diagnostic(findings, f"path match: {display_path(relative)}"):
                 break
@@ -476,6 +483,26 @@ def run_self_test() -> int:
         check(f'{display_path(Path("sample.txt"))}:2' in rendered, "line number missing")
         check(f"path match: {display_path(named)}" in rendered, "path match missing")
         check(secret not in rendered, "matching line contents leaked")
+
+        for index, separator in enumerate(RETIRED_SEPARATORS[1:]):
+            variant = (RETIRED_PARTS[0] + separator + RETIRED_PARTS[1]).swapcase()
+            variant_text = root / f"variant-text-{index}.txt"
+            variant_text.write_text(f"safe\n{variant}\n", encoding="utf-8")
+            variant_path = Path(f"variant-path-{index}") / variant
+            (root / variant_path).parent.mkdir(parents=True)
+            (root / variant_path).write_text("safe\n", encoding="utf-8")
+            variant_binary = root / f"variant-binary-{index}.dat"
+            variant_binary.write_bytes(b"\x80\x81\x82" + variant.encode("ascii"))
+            variant_findings, variant_errors = scan(
+                root,
+                [
+                    variant_text.relative_to(root),
+                    variant_path,
+                    variant_binary.relative_to(root),
+                ],
+            )
+            check(not variant_errors, f"separator {index} produced an error")
+            check(len(variant_findings) == 3, f"separator {index} match missing")
 
         at_limit = root / "at-limit.txt"
         at_limit.write_bytes(b"x" * MAX_FILE_BYTES)

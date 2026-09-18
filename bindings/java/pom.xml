@@ -9,6 +9,13 @@
   <version>0.1.0-SNAPSHOT</version>
   <name>CogGate Java SDK</name>
   <description>Java SDK and JNI bridge for CogGate</description>
+  <url>https://github.com/KID-joker/coggate</url>
+
+  <scm>
+    <connection>scm:git:https://github.com/KID-joker/coggate.git</connection>
+    <developerConnection>scm:git:ssh://git@github.com/KID-joker/coggate.git</developerConnection>
+    <url>https://github.com/KID-joker/coggate</url>
+  </scm>
 
   <properties>
     <maven.compiler.release>17</maven.compiler.release>

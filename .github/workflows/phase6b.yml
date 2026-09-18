@@ -1,4 +1,4 @@
-name: Phase 6B release gate
+name: CogGate Phase 6B release gate
 
 on:
   push:
@@ -9,11 +9,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: phase6b-${{ github.workflow }}-${{ github.ref }}
+  group: coggate-phase6b-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   release-gate:
+    name: CogGate offline release gate
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
