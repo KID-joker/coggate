@@ -1,11 +1,11 @@
-use agentgate_core::{
+use coggate_core::{
     ActiveMacKey, AttemptLimit, BeginAttemptError, ChallengeIssuedEvent, ChallengeService,
     IssueRequest, KeyProviderError, LifecycleAdapter, LifecycleAdapterError, LifecycleRejection,
     MacKey, MacKeyProvider, NoopObserver, Observer, PendingAttempt, PrivateChallengeMaterial,
     SecretLengthBucket, ServiceError, ServiceEvent, ServiceFailureEvent, ServiceStage, Submission,
     SubmissionIdentity, VerificationDisposition, VerificationEvent, VerifyRequest,
 };
-use agentgate_core::{contracts::AnswerEncoding, generation::RenderLanguage};
+use coggate_core::{contracts::AnswerEncoding, generation::RenderLanguage};
 use std::time::Duration;
 
 struct MemoryLifecycle;
@@ -27,14 +27,14 @@ impl LifecycleAdapter for MemoryLifecycle {
         _identity: SubmissionIdentity<'_>,
         _binding: &[u8],
         _server_time: i64,
-    ) -> Result<agentgate_core::PendingAttempt<Self::AttemptToken>, BeginAttemptError> {
+    ) -> Result<coggate_core::PendingAttempt<Self::AttemptToken>, BeginAttemptError> {
         Err(LifecycleRejection::NotFound.into())
     }
 
     fn finish_attempt(
         &mut self,
         _token: Self::AttemptToken,
-        _outcome: agentgate_core::AttemptOutcome,
+        _outcome: coggate_core::AttemptOutcome,
     ) -> Result<(), LifecycleAdapterError> {
         Ok(())
     }
@@ -114,11 +114,11 @@ fn public_service_contract_is_constructible_and_redacts_sensitive_values() {
         "MacKey([REDACTED])"
     );
     assert_eq!(
-        agentgate_core::ServiceError::AnswerMismatch.code(),
+        coggate_core::ServiceError::AnswerMismatch.code(),
         "answer_mismatch"
     );
     assert_eq!(
-        agentgate_core::ServiceError::InvalidConfiguration.code(),
+        coggate_core::ServiceError::InvalidConfiguration.code(),
         "invalid_configuration"
     );
 

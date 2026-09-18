@@ -75,7 +75,7 @@ pub struct BundleFile {
 pub struct BundleManifest {
     pub schema_version: u8,
     pub commit: String,
-    pub agentgate_version: String,
+    pub coggate_version: String,
     pub abi_version: u32,
     pub generator_version: String,
     pub suite_manifest_digest: String,
@@ -96,8 +96,8 @@ impl VerifiedBundle {
     pub fn commit(&self) -> &str {
         &self.manifest.commit
     }
-    pub fn agentgate_version(&self) -> &str {
-        &self.manifest.agentgate_version
+    pub fn coggate_version(&self) -> &str {
+        &self.manifest.coggate_version
     }
     pub fn abi_version(&self) -> u32 {
         self.manifest.abi_version
@@ -177,7 +177,7 @@ pub fn assemble_bundle(
         let manifest = BundleManifest {
             schema_version: 1,
             commit: decision.commit().to_owned(),
-            agentgate_version: decision.agentgate_version().to_owned(),
+            coggate_version: decision.coggate_version().to_owned(),
             abi_version: decision.abi_version(),
             generator_version: decision.generator_version().to_owned(),
             suite_manifest_digest: decision.suite_manifest_digest().to_owned(),
@@ -286,7 +286,7 @@ pub fn verify_bundle(root: &Path) -> Result<VerifiedBundle, BundleError> {
         .map_err(|_| BundleError::InvalidInput)?;
     if !manifest.authorized
         || manifest.commit != decision.commit()
-        || manifest.agentgate_version != decision.agentgate_version()
+        || manifest.coggate_version != decision.coggate_version()
         || manifest.abi_version != decision.abi_version()
         || manifest.generator_version != decision.generator_version()
         || manifest.suite_manifest_digest != decision.suite_manifest_digest()
@@ -347,7 +347,7 @@ fn validate_manifest(manifest: &BundleManifest) -> Result<(), BundleError> {
     if manifest.schema_version != 1
         || !manifest.authorized
         || !valid_commit(&manifest.commit)
-        || manifest.agentgate_version.is_empty()
+        || manifest.coggate_version.is_empty()
         || manifest.generator_version.is_empty()
     {
         return Err(BundleError::InvalidInput);

@@ -1,11 +1,11 @@
 use std::io::Cursor;
 
-use agentgate_benchmark::{
+use coggate_benchmark::{
     corpus::Corpus,
     llm::{LlmError, export_llm, export_llm_file, score_llm_results},
     manifest::{ProfileName, SuiteManifest},
 };
-use agentgate_core::generation::generate_benchmark_case;
+use coggate_core::generation::generate_benchmark_case;
 use serde_json::{Value, json};
 
 fn fixture() -> (SuiteManifest, Corpus) {

@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, fmt};
 
-use agentgate_core::generation::MAX_QUESTION_BYTES;
-use agentgate_core::{canonicalize_answer, contracts::AnswerEncoding};
+use coggate_core::generation::MAX_QUESTION_BYTES;
+use coggate_core::{canonicalize_answer, contracts::AnswerEncoding};
 use zeroize::Zeroizing;
 
 use super::{Baseline, BaselineError, NoGuessReason, Prediction};

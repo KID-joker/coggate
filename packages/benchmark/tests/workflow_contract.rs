@@ -36,7 +36,7 @@ fn workflow_is_pinned_bounded_and_has_quick_and_manual_release_gates() {
         "cargo fmt --all --check",
         "cargo clippy --workspace --all-targets -- -D warnings",
         "cargo test --workspace",
-        "cargo test -p agentgate-benchmark --test quick_qualification",
+        "cargo test -p coggate-benchmark --test quick_qualification",
         "real_quick_direct_qualification -- --ignored --exact",
         "run-baselines --profile quick --output target/phase6a/quick",
         "run-baselines --profile release --output target/phase6a/release",

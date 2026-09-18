@@ -1,4 +1,4 @@
-use agentgate_core::{
+use coggate_core::{
     CoreError, MacContext, compute_answer_mac,
     contracts::{AnswerEncoding, PrivateChallengeMaterial, Submission},
     verify_answer,
@@ -58,7 +58,16 @@ fn matches_the_independently_computed_answer_mac_vector() {
     // transcript, hashlib.sha256).hexdigest()`.
     assert_eq!(
         hex::encode(compute_answer_mac(KEY, &context(), ANSWER).unwrap()),
-        "8f2828d022652cd0c7c322cd6a6bff93605dc19e44abb35494e737d778630cf9"
+        "bcba0cdecfa6ccb1376d8b1894511e8f8d10eb1ef3c1b1aa799490330180be3f"
+    );
+    let legacy_digest = [
+        "8f2828d022652cd0c7c322cd6a6bff93",
+        "605dc19e44abb35494e737d778630cf9",
+    ]
+    .concat();
+    assert_ne!(
+        hex::encode(compute_answer_mac(KEY, &context(), ANSWER).unwrap()),
+        legacy_digest
     );
 }
 

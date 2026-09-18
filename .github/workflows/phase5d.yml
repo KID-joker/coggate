@@ -155,12 +155,12 @@ jobs:
         run: |
           mkdir -p target/phase5d/${{ matrix.target }}/receipts
           test ! -e target/phase5d/${{ matrix.target }}/receipts/receipt.json
-          cargo run -p agentgate-release --bin agentgate-release -- receipt phase5d --commit "${{ github.sha }}" --target "${{ matrix.target }}" --artifact target/phase5d/${{ matrix.target }}/artifact --output target/phase5d/${{ matrix.target }}/receipts/receipt.json
+          cargo run -p coggate-release --bin coggate-release -- receipt phase5d --commit "${{ github.sha }}" --target "${{ matrix.target }}" --artifact target/phase5d/${{ matrix.target }}/artifact --output target/phase5d/${{ matrix.target }}/receipts/receipt.json
 
       - name: Upload verified artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: agentgate-${{ matrix.target }}
+          name: coggate-${{ matrix.target }}
           path: |
             target/phase5d/${{ matrix.target }}/artifact
             target/phase5d/${{ matrix.target }}/receipts/receipt.json
@@ -257,12 +257,12 @@ jobs:
           esac
           mkdir -p target/phase5d/sanitizers/receipts
           test ! -e target/phase5d/sanitizers/receipts/receipt.json
-          cargo run -p agentgate-release --bin agentgate-release -- receipt sanitizer --commit "${{ github.sha }}" --rust-version "$rust_version" --clang-version "$clang_version" --output target/phase5d/sanitizers/receipts/receipt.json
+          cargo run -p coggate-release --bin coggate-release -- receipt sanitizer --commit "${{ github.sha }}" --rust-version "$rust_version" --clang-version "$clang_version" --output target/phase5d/sanitizers/receipts/receipt.json
 
       - name: Upload sanitizer receipt
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: agentgate-sanitizer-receipt
+          name: coggate-sanitizer-receipt
           path: target/phase5d/sanitizers/receipts/receipt.json
           if-no-files-found: error
           retention-days: 14

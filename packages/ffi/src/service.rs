@@ -3,7 +3,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-use agentgate_core::{AttemptLimit, ChallengeService, IssueRequest, ServiceError, VerifyRequest};
+use coggate_core::{AttemptLimit, ChallengeService, IssueRequest, ServiceError, VerifyRequest};
 
 use crate::{
     AgByteSlice, AgKeyCallbacks, AgLifecycleCallbacks, AgObserverCallbacks, AgOwnedBuffer,
@@ -333,7 +333,7 @@ mod tests {
         sync::atomic::Ordering,
     };
 
-    use agentgate_core::ServiceError;
+    use coggate_core::ServiceError;
 
     use super::{AgService, ag_service_create, validate_empty_output};
     use crate::{

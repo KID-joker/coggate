@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 
-use agentgate_benchmark::{
+use coggate_benchmark::{
     baseline::{
         BaselineError, NoGuessReason, Prediction,
         direct::{DirectBaseline, FragmentLanguage, extract_fragments},

@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use agentgate_release::{
+use coggate_release::{
     Phase5dError, Target,
     canonical::{canonical_compact, canonical_pretty_sorted, sha256_hex},
     verify_phase5d_artifact,
@@ -12,7 +12,7 @@ use agentgate_release::{
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
-const DOMAIN: &[u8] = b"agentgate-phase5d-tree-v1";
+const DOMAIN: &[u8] = b"coggate:phase5d-tree:v1";
 const MAX_PAYLOAD_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_TOTAL_PAYLOAD_BYTES: u64 = 1024 * 1024 * 1024;
 
@@ -32,28 +32,28 @@ fn target_details(
             "Linux",
             "x86_64",
             "x86_64-unknown-linux-gnu",
-            "libagentgate_ffi.so",
-            "libagentgate_ffi.a",
+            "libcoggate_ffi.so",
+            "libcoggate_ffi.a",
             None,
-            "libagentgate_jni.so",
+            "libcoggate_jni.so",
         ),
         Target::MacosX86_64 => (
             "Darwin",
             "x86_64",
             "x86_64-apple-darwin",
-            "libagentgate_ffi.dylib",
-            "libagentgate_ffi.a",
+            "libcoggate_ffi.dylib",
+            "libcoggate_ffi.a",
             None,
-            "libagentgate_jni.dylib",
+            "libcoggate_jni.dylib",
         ),
         Target::WindowsX86_64 => (
             "Windows",
             "x86_64",
             "x86_64-pc-windows-msvc",
-            "agentgate_ffi.dll",
-            "agentgate_ffi.lib",
-            Some("agentgate_ffi.dll.lib"),
-            "agentgate_jni.dll",
+            "coggate_ffi.dll",
+            "coggate_ffi.lib",
+            Some("coggate_ffi.dll.lib"),
+            "coggate_jni.dll",
         ),
     }
 }
@@ -80,20 +80,20 @@ fn tools() -> BTreeMap<&'static str, &'static str> {
 fn paths_for(target: Target) -> Vec<String> {
     let (_, _, _, shared, static_lib, import, jni) = target_details(target);
     let mut paths = vec![
-        "include/agentgate.h".to_owned(),
+        "include/coggate.h".to_owned(),
         format!("native/{shared}"),
         format!("native/{static_lib}"),
         "go/go.mod".to_owned(),
-        "go/agentgate/bindings.go".to_owned(),
+        "go/coggate/bindings.go".to_owned(),
         "go/examples/complete/main.go".to_owned(),
-        "java/agentgate-java-0.1.0-SNAPSHOT.jar".to_owned(),
+        "java/coggate-java-0.1.0-SNAPSHOT.jar".to_owned(),
         format!("java/{jni}"),
         format!("java/{shared}"),
         "java/examples/Complete.java".to_owned(),
         "node/package.json".to_owned(),
         "node/lib/index.js".to_owned(),
         "node/examples/complete.js".to_owned(),
-        "node/build/Release/agentgate.node".to_owned(),
+        "node/build/Release/coggate.node".to_owned(),
         format!("node/build/Release/{shared}"),
         "smoke/abi_probe.c".to_owned(),
         "smoke/abi_probe.cpp".to_owned(),
@@ -131,7 +131,7 @@ fn payload_paths(root: &Path) -> Vec<String> {
 }
 
 fn kind(path: &str) -> &'static str {
-    if path == "include/agentgate.h" {
+    if path == "include/coggate.h" {
         "header"
     } else if path.starts_with("native/") {
         "native-library"
@@ -168,7 +168,7 @@ fn manifest_value(root: &Path, target: Target) -> Value {
     }).collect::<Vec<_>>();
     json!({
         "abi_version": 1,
-        "agentgate_version": "0.1.0",
+        "coggate_version": "0.1.0",
         "files": files,
         "schema_version": 1,
         "target": {"arch": arch, "os": os, "triple": triple},
@@ -270,7 +270,7 @@ fn verifies_exact_linux_macos_and_windows_artifacts() {
         let (_tmp, root) = fixture(target);
         let artifact = verify_phase5d_artifact(&root, target).expect("valid artifact");
         assert_eq!(artifact.target(), target);
-        assert_eq!(artifact.agentgate_version(), "0.1.0");
+        assert_eq!(artifact.coggate_version(), "0.1.0");
         assert_eq!(artifact.abi_version(), 1);
         assert_eq!(artifact.target_triple(), target_details(target).2);
         assert_eq!(artifact.tool_versions().len(), 14);
@@ -284,6 +284,7 @@ fn verifies_exact_linux_macos_and_windows_artifacts() {
 fn rejects_manifest_schema_and_canonicality_mutations() {
     for mutation in [
         "unknown",
+        "legacy_version_field",
         "duplicate",
         "noncanonical",
         "wrong_kind",
@@ -303,6 +304,21 @@ fn rejects_manifest_schema_and_canonicality_mutations() {
                 value["unknown"] = json!(true);
                 String::from_utf8(
                     canonical_pretty_sorted(&value).expect("canonical unknown fixture"),
+                )
+                .expect("UTF-8 canonical manifest")
+            }
+            "legacy_version_field" => {
+                let mut value: Value =
+                    serde_json::from_str(&original).expect("parse fixture manifest");
+                let version = value
+                    .as_object_mut()
+                    .expect("manifest object")
+                    .remove("coggate_version")
+                    .expect("current version field");
+                let legacy_key = ["agent", "gate_version"].concat();
+                value[legacy_key] = version;
+                String::from_utf8(
+                    canonical_pretty_sorted(&value).expect("canonical legacy-field fixture"),
                 )
                 .expect("UTF-8 canonical manifest")
             }
@@ -418,7 +434,7 @@ fn rejects_payload_checksum_and_layout_mutations() {
             }
             "checksum_malformed" => write(&root, "SHA256SUMS", b"not a checksum\n"),
             "checksum_unicode" => {
-                let text = format!("{}\u{e9}  include/agentgate.h\n", "0".repeat(63));
+                let text = format!("{}\u{e9}  include/coggate.h\n", "0".repeat(63));
                 write(&root, "SHA256SUMS", text.as_bytes());
             }
             "checksum_crlf" => {
@@ -428,14 +444,14 @@ fn rejects_payload_checksum_and_layout_mutations() {
                 write(&root, "SHA256SUMS", text.as_bytes());
             }
             "content" => {
-                let original = fs::read(root.join("include/agentgate.h")).expect("payload");
+                let original = fs::read(root.join("include/coggate.h")).expect("payload");
                 let replacement = vec![b'X'; original.len()];
                 assert_eq!(replacement.len(), original.len(), "same-length corruption");
-                write(&root, "include/agentgate.h", &replacement);
+                write(&root, "include/coggate.h", &replacement);
             }
             "replacement" => {
-                fs::remove_file(root.join("include/agentgate.h")).expect("remove regular file");
-                write(&root, "include/agentgate.h", b"replacement regular file");
+                fs::remove_file(root.join("include/coggate.h")).expect("remove regular file");
+                write(&root, "include/coggate.h", b"replacement regular file");
             }
             "wrong_hash" => {
                 let mut value: Value = serde_json::from_slice(
@@ -523,12 +539,12 @@ fn rejects_missing_or_extra_tool_versions_and_windows_import_layout_mismatches()
                     &canonical_pretty_sorted(&value).expect("canonical manifest"),
                 );
             }
-            "windows_import_missing" => fs::remove_file(root.join("native/agentgate_ffi.dll.lib"))
+            "windows_import_missing" => fs::remove_file(root.join("native/coggate_ffi.dll.lib"))
                 .expect("remove import library"),
             "windows_import_wrong" => {
                 fs::rename(
-                    root.join("native/agentgate_ffi.dll.lib"),
-                    root.join("native/agentgate_ffi.import.lib"),
+                    root.join("native/coggate_ffi.dll.lib"),
+                    root.join("native/coggate_ffi.import.lib"),
                 )
                 .expect("rename import library");
                 write_metadata(&root, target);
@@ -571,7 +587,7 @@ fn rejects_file_count_and_sparse_size_limits_before_reading_payloads() {
     );
 
     let (_tmp, root) = fixture(Target::LinuxX86_64);
-    fs::create_dir_all(root.join("go/agentgate/unlisted-empty"))
+    fs::create_dir_all(root.join("go/coggate/unlisted-empty"))
         .expect("create extra empty directory");
     assert_eq!(
         verify_phase5d_artifact(&root, Target::LinuxX86_64),
@@ -581,7 +597,7 @@ fn rejects_file_count_and_sparse_size_limits_before_reading_payloads() {
     let (_tmp, root) = fixture(Target::LinuxX86_64);
     fs::OpenOptions::new()
         .write(true)
-        .open(root.join("include/agentgate.h"))
+        .open(root.join("include/coggate.h"))
         .expect("open sparse payload")
         .set_len(MAX_PAYLOAD_BYTES + 1)
         .expect("make sparse payload");
@@ -644,13 +660,13 @@ fn rejects_symlinked_root_directories_and_files() {
             }
             "file" => {
                 fs::rename(
-                    root.join("include/agentgate.h"),
-                    root.join("include/agentgate-real.h"),
+                    root.join("include/coggate.h"),
+                    root.join("include/coggate-real.h"),
                 )
                 .expect("move file");
                 symlink(
-                    root.join("include/agentgate-real.h"),
-                    root.join("include/agentgate.h"),
+                    root.join("include/coggate-real.h"),
+                    root.join("include/coggate.h"),
                 )
                 .expect("symlink file");
                 root.clone()
@@ -662,9 +678,9 @@ fn rejects_symlinked_root_directories_and_files() {
 }
 
 #[test]
-#[ignore = "requires AGENTGATE_PHASE5D_ARTIFACT containing a compatible Phase 5D artifact"]
+#[ignore = "requires COGGATE_PHASE5D_ARTIFACT containing a compatible Phase 5D artifact"]
 fn real_phase5d_artifact() {
-    let mut candidates = std::env::var("AGENTGATE_PHASE5D_ARTIFACT")
+    let mut candidates = std::env::var("COGGATE_PHASE5D_ARTIFACT")
         .ok()
         .map(PathBuf::from)
         .into_iter()
@@ -693,6 +709,6 @@ fn real_phase5d_artifact() {
         }
     }
     panic!(
-        "no compatible local Phase 5D artifact found; set AGENTGATE_PHASE5D_ARTIFACT or build target/phase5d/*/artifact"
+        "no compatible local Phase 5D artifact found; set COGGATE_PHASE5D_ARTIFACT or build target/phase5d/*/artifact"
     );
 }

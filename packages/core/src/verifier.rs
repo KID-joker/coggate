@@ -1,4 +1,4 @@
-use agentgate_contracts::{PrivateChallengeMaterial, Submission};
+use coggate_contracts::{PrivateChallengeMaterial, Submission};
 use subtle::ConstantTimeEq;
 
 use crate::{CoreError, MacContext, compute_answer_mac};

@@ -9,9 +9,9 @@ pub mod service;
 
 pub mod generation;
 
-pub use agentgate_contracts as contracts;
-pub use agentgate_contracts::{PrivateChallengeMaterial, Submission};
 pub use answer::canonicalize_answer;
+pub use coggate_contracts as contracts;
+pub use coggate_contracts::{PrivateChallengeMaterial, Submission};
 pub use error::CoreError;
 pub use mac::{MacContext, compute_answer_mac};
 pub use service::{

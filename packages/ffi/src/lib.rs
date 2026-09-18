@@ -28,9 +28,9 @@ pub extern "C" fn ag_abi_version() -> u32 {
     AG_ABI_VERSION_1
 }
 
-/// Returns the AgentGate core package version as borrowed UTF-8 bytes.
+/// Returns the CogGate core package version as borrowed UTF-8 bytes.
 ///
-/// The returned slice references immutable static storage while the AgentGate
+/// The returned slice references immutable static storage while the CogGate
 /// library remains loaded (normally the process lifetime). It is not
 /// NUL-terminated and must not be freed.
 #[unsafe(no_mangle)]

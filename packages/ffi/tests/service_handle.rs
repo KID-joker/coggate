@@ -1,6 +1,6 @@
 use std::{ffi::c_void, mem::size_of, ptr};
 
-use agentgate_ffi::{
+use coggate_ffi::{
     AG_ABI_VERSION_1, AgBeginStatus, AgByteSlice, AgHostBuffer, AgKeyCallbacks, AgKeyStatus,
     AgLifecycleCallbacks, AgLifecycleStatus, AgObserverCallbacks, AgService, AgStatus,
     ag_service_create, ag_service_destroy,

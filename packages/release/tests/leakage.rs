@@ -1,6 +1,6 @@
 use std::{fs, path::Path};
 
-use agentgate_release::{
+use coggate_release::{
     EvidenceSet, Receipt, assemble_bundle,
     cli::{EXIT_INPUT_OR_INFRASTRUCTURE, EXIT_SUCCESS, run_with_io},
     create_phase6a_receipt, verify_bundle, verify_phase6a_report,
@@ -108,7 +108,7 @@ fn payload_sentinels_never_reach_release_metadata_control_planes_or_public_debug
             &mut stdout,
             &mut stderr,
         ),
-        agentgate_release::cli::EXIT_BLOCKED
+        coggate_release::cli::EXIT_BLOCKED
     );
     public_text.push(String::from_utf8(stdout).unwrap());
     public_text.push(String::from_utf8(stderr).unwrap());

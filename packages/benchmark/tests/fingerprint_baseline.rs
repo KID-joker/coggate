@@ -1,4 +1,4 @@
-use agentgate_benchmark::{
+use coggate_benchmark::{
     baseline::{Baseline, NoGuessReason, Prediction, fingerprint::FingerprintBaseline},
     threshold::Threshold,
 };

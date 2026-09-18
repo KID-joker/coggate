@@ -1,16 +1,16 @@
 [package]
-name = "agentgate-benchmark"
+name = "coggate-benchmark"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "agentgate-bench"
+name = "coggate-bench"
 path = "src/main.rs"
 
 [dependencies]
-agentgate-core = { path = "../core", features = ["insecure-benchmarking"] }
+coggate-core = { path = "../core", features = ["insecure-benchmarking"] }
 base64.workspace = true
 command-group.workspace = true
 hex.workspace = true

@@ -1,4 +1,4 @@
-use agentgate_contracts::{
+use coggate_contracts::{
     CHALLENGE_TTL_SECONDS, MAX_SECRET_LENGTH, MIN_SECRET_LENGTH, fragment_count_for_secret_length,
 };
 

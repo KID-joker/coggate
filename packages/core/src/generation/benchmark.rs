@@ -1,6 +1,6 @@
 use std::fmt;
 
-use agentgate_contracts::{AnswerEncoding, GENERATOR_VERSION_V1};
+use coggate_contracts::{AnswerEncoding, GENERATOR_VERSION_V1};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use zeroize::Zeroizing;
@@ -10,7 +10,7 @@ use super::{
 };
 use crate::canonicalize_answer;
 
-const SEED_DOMAIN: &[u8] = b"agentgate-benchmark-seed-v1";
+const SEED_DOMAIN: &[u8] = b"coggate:benchmark-seed:v1";
 const MAX_SEED_NAMESPACE_BYTES: usize = 64;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]

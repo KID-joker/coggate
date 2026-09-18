@@ -28,7 +28,7 @@ const MAX_DIRECTORIES: usize = MAX_FILES * (MAX_PATH_DEPTH - 1) + 1;
 const MAX_ENTRIES: usize = MAX_FILES + MAX_DIRECTORIES;
 const MAX_PAYLOAD_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_TOTAL_PAYLOAD_BYTES: u64 = 1024 * 1024 * 1024;
-const TREE_DOMAIN: &[u8] = b"agentgate-phase5d-tree-v1";
+const TREE_DOMAIN: &[u8] = b"coggate:phase5d-tree:v1";
 const READ_BUFFER_BYTES: usize = 1024 * 1024;
 
 const TOOL_KEYS: [&str; 14] = [
@@ -66,31 +66,31 @@ impl Target {
 
     fn shared_name(self) -> &'static str {
         match self {
-            Self::LinuxX86_64 => "libagentgate_ffi.so",
-            Self::MacosX86_64 => "libagentgate_ffi.dylib",
-            Self::WindowsX86_64 => "agentgate_ffi.dll",
+            Self::LinuxX86_64 => "libcoggate_ffi.so",
+            Self::MacosX86_64 => "libcoggate_ffi.dylib",
+            Self::WindowsX86_64 => "coggate_ffi.dll",
         }
     }
 
     fn static_name(self) -> &'static str {
         match self {
-            Self::LinuxX86_64 | Self::MacosX86_64 => "libagentgate_ffi.a",
-            Self::WindowsX86_64 => "agentgate_ffi.lib",
+            Self::LinuxX86_64 | Self::MacosX86_64 => "libcoggate_ffi.a",
+            Self::WindowsX86_64 => "coggate_ffi.lib",
         }
     }
 
     fn import_name(self) -> Option<&'static str> {
         match self {
-            Self::WindowsX86_64 => Some("agentgate_ffi.dll.lib"),
+            Self::WindowsX86_64 => Some("coggate_ffi.dll.lib"),
             Self::LinuxX86_64 | Self::MacosX86_64 => None,
         }
     }
 
     fn jni_name(self) -> &'static str {
         match self {
-            Self::LinuxX86_64 => "libagentgate_jni.so",
-            Self::MacosX86_64 => "libagentgate_jni.dylib",
-            Self::WindowsX86_64 => "agentgate_jni.dll",
+            Self::LinuxX86_64 => "libcoggate_jni.so",
+            Self::MacosX86_64 => "libcoggate_jni.dylib",
+            Self::WindowsX86_64 => "coggate_jni.dll",
         }
     }
 }
@@ -117,7 +117,7 @@ impl VerifiedFile {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VerifiedArtifact {
     target: Target,
-    agentgate_version: String,
+    coggate_version: String,
     abi_version: u32,
     tool_versions: BTreeMap<String, String>,
     files: Vec<VerifiedFile>,
@@ -130,8 +130,8 @@ impl VerifiedArtifact {
     pub fn target(&self) -> Target {
         self.target
     }
-    pub fn agentgate_version(&self) -> &str {
-        &self.agentgate_version
+    pub fn coggate_version(&self) -> &str {
+        &self.coggate_version
     }
     pub fn abi_version(&self) -> u32 {
         self.abi_version
@@ -520,7 +520,7 @@ fn verify_phase5d_artifact_inner(
     let tree_digest = tree_digest(&verified)?;
     Ok(VerifiedArtifact {
         target: expected,
-        agentgate_version: VERSION.to_owned(),
+        coggate_version: VERSION.to_owned(),
         abi_version: ABI_VERSION,
         tool_versions: tools,
         files: verified,
@@ -836,7 +836,7 @@ fn validate_manifest(
     let object = value.as_object().ok_or(Phase5dError::Invalid)?;
     let keys = [
         "schema_version",
-        "agentgate_version",
+        "coggate_version",
         "abi_version",
         "target",
         "tools",
@@ -848,7 +848,7 @@ fn validate_manifest(
         return Err(Phase5dError::Invalid);
     }
     if object.get("schema_version").and_then(Value::as_u64) != Some(1)
-        || object.get("agentgate_version").and_then(Value::as_str) != Some(VERSION)
+        || object.get("coggate_version").and_then(Value::as_str) != Some(VERSION)
         || object.get("abi_version").and_then(Value::as_u64) != Some(u64::from(ABI_VERSION))
     {
         return Err(Phase5dError::Invalid);
@@ -966,7 +966,7 @@ fn validate_payload_path(path: &str) -> Result<(), Phase5dError> {
 }
 
 fn artifact_kind(path: &str) -> &'static str {
-    if path == "include/agentgate.h" {
+    if path == "include/coggate.h" {
         "header"
     } else if path.starts_with("native/") {
         "native-library"
@@ -995,17 +995,17 @@ fn validate_layout(files: &[ManifestFile], target: Target) -> Result<(), Phase5d
         .map(|file| file.path.as_str())
         .collect::<BTreeSet<_>>();
     let mut required = BTreeSet::from([
-        "include/agentgate.h".to_owned(),
+        "include/coggate.h".to_owned(),
         format!("native/{}", target.shared_name()),
         format!("native/{}", target.static_name()),
         "go/go.mod".to_owned(),
-        "java/agentgate-java-0.1.0-SNAPSHOT.jar".to_owned(),
+        "java/coggate-java-0.1.0-SNAPSHOT.jar".to_owned(),
         format!("java/{}", target.jni_name()),
         format!("java/{}", target.shared_name()),
         "java/examples/Complete.java".to_owned(),
         "node/package.json".to_owned(),
         "node/examples/complete.js".to_owned(),
-        "node/build/Release/agentgate.node".to_owned(),
+        "node/build/Release/coggate.node".to_owned(),
         format!("node/build/Release/{}", target.shared_name()),
         "smoke/abi_probe.c".to_owned(),
         "smoke/abi_probe.cpp".to_owned(),
@@ -1016,7 +1016,7 @@ fn validate_layout(files: &[ManifestFile], target: Target) -> Result<(), Phase5d
     if !required.iter().all(|path| paths.contains(path.as_str())) {
         return Err(Phase5dError::Invalid);
     }
-    let groups = ["go/agentgate/", "go/examples/complete/", "node/lib/"];
+    let groups = ["go/coggate/", "go/examples/complete/", "node/lib/"];
     if groups
         .iter()
         .any(|group| !paths.iter().any(|path| path.starts_with(group)))
@@ -1141,7 +1141,7 @@ mod tests {
     fn post_snapshot_regular_file_replacement_is_changed_not_hash_mismatch() {
         let root = minimal_linux_artifact();
         let result = verify_phase5d_artifact_inner(&root, Target::LinuxX86_64, |root| {
-            let payload = root.join("include/agentgate.h");
+            let payload = root.join("include/coggate.h");
             let replacement = root.join("include/replacement.h");
             fs::write(&replacement, b"x").unwrap();
             fs::remove_file(&payload).unwrap();
@@ -1175,21 +1175,21 @@ mod tests {
         let root = TempDir::new().unwrap().keep().join("artifact");
         fs::create_dir(&root).unwrap();
         let paths = [
-            "include/agentgate.h",
-            "native/libagentgate_ffi.so",
-            "native/libagentgate_ffi.a",
+            "include/coggate.h",
+            "native/libcoggate_ffi.so",
+            "native/libcoggate_ffi.a",
             "go/go.mod",
-            "go/agentgate/a.go",
+            "go/coggate/a.go",
             "go/examples/complete/a.go",
-            "java/agentgate-java-0.1.0-SNAPSHOT.jar",
-            "java/libagentgate_jni.so",
-            "java/libagentgate_ffi.so",
+            "java/coggate-java-0.1.0-SNAPSHOT.jar",
+            "java/libcoggate_jni.so",
+            "java/libcoggate_ffi.so",
             "java/examples/Complete.java",
             "node/package.json",
             "node/lib/a.js",
             "node/examples/complete.js",
-            "node/build/Release/agentgate.node",
-            "node/build/Release/libagentgate_ffi.so",
+            "node/build/Release/coggate.node",
+            "node/build/Release/libcoggate_ffi.so",
             "smoke/abi_probe.c",
             "smoke/abi_probe.cpp",
         ];
@@ -1205,7 +1205,7 @@ mod tests {
         let mut sorted_paths = paths.to_vec();
         sorted_paths.sort();
         let files: Vec<_> = sorted_paths.into_iter().map(|path| serde_json::json!({"path":path,"kind":artifact_kind(path),"size":1,"sha256":hex::encode(Sha256::digest(b"x"))})).collect();
-        let manifest = serde_json::json!({"schema_version":1,"agentgate_version":VERSION,"abi_version":1,"target":{"os":"Linux","arch":"x86_64","triple":"x86_64-unknown-linux-gnu"},"tools":Value::Object(tools),"files":files});
+        let manifest = serde_json::json!({"schema_version":1,"coggate_version":VERSION,"abi_version":1,"target":{"os":"Linux","arch":"x86_64","triple":"x86_64-unknown-linux-gnu"},"tools":Value::Object(tools),"files":files});
         let manifest = canonical_pretty_sorted(&manifest).unwrap();
         fs::write(root.join(MANIFEST), &manifest).unwrap();
         let mut entries = paths

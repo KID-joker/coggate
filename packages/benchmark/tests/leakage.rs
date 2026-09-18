@@ -1,6 +1,6 @@
 use std::{path::PathBuf, time::Duration};
 
-use agentgate_benchmark::{
+use coggate_benchmark::{
     baseline::direct::DirectBaseline,
     cli::run_with_io,
     corpus::Corpus,
@@ -10,7 +10,7 @@ use agentgate_benchmark::{
     qualification::qualify_baselines,
     report::write_report_bundle,
 };
-use agentgate_core::generation::generate_benchmark_case;
+use coggate_core::generation::generate_benchmark_case;
 use serde_json::Value;
 
 fn answers(suite: &SuiteManifest) -> Vec<String> {

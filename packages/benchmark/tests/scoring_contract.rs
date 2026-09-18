@@ -1,4 +1,4 @@
-use agentgate_benchmark::{
+use coggate_benchmark::{
     baseline::{Baseline, BaselineError, NoGuessReason, Outcome, Prediction, score_baseline},
     corpus::{Corpus, CorpusCase},
     manifest::{ProfileName, SuiteManifest},

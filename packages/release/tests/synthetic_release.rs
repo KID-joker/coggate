@@ -1,6 +1,6 @@
 use std::fs;
 
-use agentgate_release::{
+use coggate_release::{
     EvidenceSet, assemble_bundle,
     cli::{EXIT_BLOCKED, run_with_io},
     verify_bundle,
@@ -30,7 +30,7 @@ fn assembles_the_complete_fixed_evidence_set_reproducibly_and_verifies_from_disk
         &decision
             .receipt_digests()
             .iter()
-            .map(|(role, digest)| agentgate_release::BundleReceipt {
+            .map(|(role, digest)| coggate_release::BundleReceipt {
                 role: role.clone(),
                 digest: digest.clone()
             })

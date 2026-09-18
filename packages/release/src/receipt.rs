@@ -15,7 +15,7 @@ use crate::canonical::{
 };
 
 const SCHEMA_VERSION: u8 = 1;
-const RECEIPT_DOMAIN: &[u8] = b"agentgate-release-receipt-v1";
+const RECEIPT_DOMAIN: &[u8] = b"coggate:release-receipt:v1";
 const VERIFIER_ID: &str = "phase6b-receipt-v1";
 const MAX_IDENTIFIER_BYTES: usize = 128;
 pub const MAX_WRITTEN_RECEIPT_BYTES: usize = MAX_METADATA_BYTES + 1;
@@ -477,7 +477,7 @@ fn validate_evidence(evidence: &EvidenceBinding) -> Result<(), ReceiptError> {
                     | ("Darwin", "x86_64-apple-darwin")
                     | ("Windows", "x86_64-pc-windows-msvc")
             ) || binding.profile != "release"
-                || binding.artifact_name != "agentgate"
+                || binding.artifact_name != "coggate"
                 || binding.manifest_version != "0.1.0"
                 || binding.abi_version != 1
             {

@@ -8,9 +8,9 @@ use std::{
     },
 };
 
-use agentgate_contracts::{AnswerEncoding, PrivateChallengeMaterial};
-use agentgate_core::{MacContext, compute_answer_mac};
-use agentgate_ffi::{
+use coggate_contracts::{AnswerEncoding, PrivateChallengeMaterial};
+use coggate_core::{MacContext, compute_answer_mac};
+use coggate_ffi::{
     AG_ABI_VERSION_1, AgAttemptOutcome, AgBeginStatus, AgByteSlice, AgHostBuffer, AgKeyCallbacks,
     AgKeyStatus, AgLifecycleCallbacks, AgLifecycleStatus, AgObserverCallbacks, AgOwnedBuffer,
     AgService, AgStatus, ag_buffer_free, ag_service_create, ag_service_destroy, ag_service_verify,

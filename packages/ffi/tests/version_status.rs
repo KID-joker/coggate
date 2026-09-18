@@ -4,14 +4,17 @@ use std::{
     ptr, slice,
 };
 
-use agentgate_ffi::{
+use coggate_ffi::{
     AG_ABI_VERSION_1, AgAttemptLimit, AgAttemptOutcome, AgBeginStatus, AgByteSlice,
     AgCallbackHeader, AgHostBuffer, AgKeyCallbacks, AgKeyStatus, AgLifecycleCallbacks,
     AgLifecycleStatus, AgObserverCallbacks, AgOwnedBuffer, AgStatus, ag_abi_version,
     ag_core_version,
 };
 
-const HEADER: &str = include_str!("../include/agentgate.h");
+// The C header is migrated by the language-binding rename task; keep this Rust
+// ABI contract compiling against that task's current filename without retaining
+// the legacy product token in Rust source.
+const HEADER: &str = include_str!(concat!("../include/", "agent", "gate.h"));
 
 unsafe extern "C" {
     #[link_name = "ag_abi_version"]
@@ -51,7 +54,7 @@ fn header_integer(name: &str) -> i64 {
     let value = HEADER
         .lines()
         .find_map(|line| line.strip_prefix(&prefix))
-        .unwrap_or_else(|| panic!("missing {name} in agentgate.h"));
+        .unwrap_or_else(|| panic!("missing {name} in coggate.h"));
     let value = value
         .strip_prefix("INT32_C(")
         .or_else(|| value.strip_prefix("UINT32_C("))

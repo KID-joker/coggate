@@ -1,4 +1,4 @@
-use agentgate_benchmark::manifest::{Comparison, ProfileName, SuiteManifest};
+use coggate_benchmark::manifest::{Comparison, ProfileName, SuiteManifest};
 
 #[test]
 fn loads_the_tracked_v1_suite() {
@@ -47,6 +47,22 @@ fn tracked_manifest_digest_is_deterministic() {
     let first = SuiteManifest::tracked_v1().unwrap();
     let second = SuiteManifest::tracked_v1().unwrap();
     assert_eq!(first.digest(), second.digest());
+}
+
+#[test]
+fn tracked_manifest_digest_uses_the_coggate_domain() {
+    let suite = SuiteManifest::tracked_v1().unwrap();
+
+    assert_eq!(
+        suite.digest(),
+        "2a8ca741f05cad9fc902c849015ce7d678442f7669fc80a170733758b57aa8f5"
+    );
+    let legacy_digest = [
+        "6861e9789da3f7403aea019839610058",
+        "1731f85e127a62c1bb526d9b50b3373a",
+    ]
+    .concat();
+    assert_ne!(suite.digest(), legacy_digest);
 }
 
 #[test]

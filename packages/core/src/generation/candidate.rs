@@ -1,7 +1,7 @@
 use std::fmt;
 
-use agentgate_contracts::{MAX_SECRET_LENGTH, MIN_SECRET_LENGTH, fragment_count_for_secret_length};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use coggate_contracts::{MAX_SECRET_LENGTH, MIN_SECRET_LENGTH, fragment_count_for_secret_length};
 
 use super::{
     GenerationError,
@@ -164,8 +164,8 @@ fn validate_candidate(candidate: &ChallengeCandidate) -> Result<(), CandidateErr
 
 #[cfg(test)]
 mod tests {
-    use agentgate_contracts::fragment_count_for_secret_length;
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+    use coggate_contracts::fragment_count_for_secret_length;
 
     use super::{
         CandidateError, ChallengeCandidate, MAX_CANDIDATE_ATTEMPTS, generate_candidate_with,

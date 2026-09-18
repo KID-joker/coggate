@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, fmt::Write as _, fs, path::Path};
 
-use agentgate_release::{
+use coggate_release::{
     EvidenceBinding, Target,
     canonical::{canonical_pretty_sorted, sha256_hex},
     create_phase5d_receipt, create_phase6a_receipt, create_sanitizer_receipt,
@@ -13,7 +13,7 @@ use tempfile::TempDir;
 const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
 // Fixed verifier-compatible value for this entirely synthetic report fixture.
 const SYNTHETIC_SUITE_DIGEST: &str =
-    "6861e9789da3f7403aea0198396100581731f85e127a62c1bb526d9b50b3373a";
+    "2a8ca741f05cad9fc902c849015ce7d678442f7669fc80a170733758b57aa8f5";
 const RELEASE_SCORED_NAMESPACE: &[u8] = b"phase6a-release-scored-v1";
 
 #[test]
@@ -22,7 +22,7 @@ fn sanitizer_producer_creates_a_self_verifying_payload_free_receipt() {
     assert!(receipt.files().is_empty());
     let encoded = receipt.to_canonical_json().unwrap();
     assert_eq!(
-        agentgate_release::Receipt::parse_and_verify(&encoded).unwrap(),
+        coggate_release::Receipt::parse_and_verify(&encoded).unwrap(),
         receipt
     );
 }
@@ -52,28 +52,28 @@ fn write(root: &Path, relative: &str, bytes: &[u8]) {
 
 fn phase5d_paths() -> Vec<&'static str> {
     vec![
-        "include/agentgate.h",
-        "native/libagentgate_ffi.so",
-        "native/libagentgate_ffi.a",
+        "include/coggate.h",
+        "native/libcoggate_ffi.so",
+        "native/libcoggate_ffi.a",
         "go/go.mod",
-        "go/agentgate/bindings.go",
+        "go/coggate/bindings.go",
         "go/examples/complete/main.go",
-        "java/agentgate-java-0.1.0-SNAPSHOT.jar",
-        "java/libagentgate_jni.so",
-        "java/libagentgate_ffi.so",
+        "java/coggate-java-0.1.0-SNAPSHOT.jar",
+        "java/libcoggate_jni.so",
+        "java/libcoggate_ffi.so",
         "java/examples/Complete.java",
         "node/package.json",
         "node/lib/index.js",
         "node/examples/complete.js",
-        "node/build/Release/agentgate.node",
-        "node/build/Release/libagentgate_ffi.so",
+        "node/build/Release/coggate.node",
+        "node/build/Release/libcoggate_ffi.so",
         "smoke/abi_probe.c",
         "smoke/abi_probe.cpp",
     ]
 }
 
 fn phase5d_kind(path: &str) -> &'static str {
-    if path == "include/agentgate.h" {
+    if path == "include/coggate.h" {
         "header"
     } else if path.starts_with("native/") {
         "native-library"
@@ -123,7 +123,7 @@ fn phase5d_fixture() -> (TempDir, std::path::PathBuf) {
         json!({"kind":phase5d_kind(path),"path":path,"sha256":sha256_hex(&bytes),"size":bytes.len()})
     }).collect::<Vec<_>>();
     let manifest = json!({
-        "abi_version":1,"agentgate_version":"0.1.0","files":files,"schema_version":1,
+        "abi_version":1,"coggate_version":"0.1.0","files":files,"schema_version":1,
         "target":{"arch":"x86_64","os":"Linux","triple":"x86_64-unknown-linux-gnu"},
         "tools":phase5d_tools()
     });
@@ -187,7 +187,7 @@ fn phase5d_producer_rejects_a_symlinked_artifact_root() {
 
 fn case_id(index: usize) -> String {
     let mut hash = Sha256::new();
-    hash.update(b"agentgate-benchmark-case-v1");
+    hash.update(b"coggate:benchmark-case:v1");
     hash.update((SYNTHETIC_SUITE_DIGEST.len() as u64).to_be_bytes());
     hash.update(SYNTHETIC_SUITE_DIGEST.as_bytes());
     hash.update((b"scored".len() as u64).to_be_bytes());
@@ -242,7 +242,7 @@ fn signed_report(subject: &str, solved: usize) -> Vec<u8> {
         summary["qualified"],
         summary["failed_thresholds"]
     );
-    let mut input = b"agentgate-benchmark-report-v1".to_vec();
+    let mut input = b"coggate:benchmark-report:v1".to_vec();
     input.extend(without_digest.as_bytes());
     let digest = hex::encode(Sha256::digest(input));
     format!(

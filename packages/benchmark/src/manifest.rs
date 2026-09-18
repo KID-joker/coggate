@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 const TRACKED_V1: &str = include_str!("../../../benchmarks/suites/v1.json");
-const MANIFEST_DOMAIN: &[u8] = b"agentgate-suite-manifest-v1";
+const MANIFEST_DOMAIN: &[u8] = b"coggate:suite-manifest:v1";
 const REQUIRED_PROFILES: [&str; 2] = ["quick", "release"];
 const REQUIRED_THRESHOLDS: [&str; 5] = ["direct", "fingerprint", "llm", "regex", "simple_parser"];
 const REQUIRED_BASELINES: [&str; 4] = ["direct", "fingerprint", "regex", "simple_parser"];
@@ -190,7 +190,7 @@ impl SuiteManifest {
     fn validate(&self) -> Result<(), ManifestError> {
         if self.schema_version != 1
             || self.suite_version != "1.1"
-            || self.generator_version != agentgate_core::contracts::GENERATOR_VERSION_V1
+            || self.generator_version != coggate_core::contracts::GENERATOR_VERSION_V1
         {
             return Err(ManifestError::Invalid("unsupported suite identity"));
         }
@@ -253,7 +253,7 @@ impl SuiteManifest {
         {
             return Err(ManifestError::Invalid("invalid version or tool value"));
         }
-        if self.limits.max_question_bytes != agentgate_core::generation::MAX_QUESTION_BYTES
+        if self.limits.max_question_bytes != coggate_core::generation::MAX_QUESTION_BYTES
             || self.limits.max_result_line_bytes != 16_384
             || self.limits.process_timeout_ms != 5_000
             || self.limits.max_process_output_bytes != 65_536

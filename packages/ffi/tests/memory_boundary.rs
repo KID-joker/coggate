@@ -1,7 +1,7 @@
 use std::ptr;
 use std::slice;
 
-use agentgate_ffi::{AgByteSlice, AgHostBuffer, AgOwnedBuffer, AgStatus, ag_buffer_free};
+use coggate_ffi::{AgByteSlice, AgHostBuffer, AgOwnedBuffer, AgStatus, ag_buffer_free};
 
 const EMPTY_OWNED_BUFFER: AgOwnedBuffer = AgOwnedBuffer::empty();
 const EMPTY_HOST_BUFFER: AgHostBuffer = AgHostBuffer::empty();

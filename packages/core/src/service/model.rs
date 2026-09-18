@@ -1,6 +1,6 @@
 use std::fmt;
 
-use agentgate_contracts::{PrivateChallengeMaterial, Submission};
+use coggate_contracts::{PrivateChallengeMaterial, Submission};
 
 use super::{LifecycleRejection, ServiceError};
 
@@ -46,7 +46,7 @@ impl<'a> IssueRequest<'a> {
     /// Creates a V1 request with a one-attempt budget.
     pub fn v1(binding: &'a [u8]) -> Result<Self, ServiceError> {
         Self::new(
-            agentgate_contracts::GENERATOR_VERSION_V1,
+            coggate_contracts::GENERATOR_VERSION_V1,
             binding,
             AttemptLimit::One,
         )

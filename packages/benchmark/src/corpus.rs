@@ -1,6 +1,6 @@
 use std::{collections::BTreeSet, fmt};
 
-use agentgate_core::generation::{
+use coggate_core::generation::{
     BenchmarkCase, BenchmarkError, RenderMetadata, generate_benchmark_case,
 };
 use sha2::{Digest, Sha256};
@@ -8,8 +8,8 @@ use zeroize::Zeroizing;
 
 use crate::manifest::{ProfileName, SuiteManifest};
 
-const CASE_DOMAIN: &[u8] = b"agentgate-benchmark-case-v1";
-const QUESTION_DOMAIN: &[u8] = b"agentgate-question-v1";
+const CASE_DOMAIN: &[u8] = b"coggate:benchmark-case:v1";
+const QUESTION_DOMAIN: &[u8] = b"coggate:question:v1";
 
 pub struct CorpusCase {
     id: String,

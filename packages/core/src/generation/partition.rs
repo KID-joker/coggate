@@ -1,4 +1,4 @@
-use agentgate_contracts::fragment_count_for_secret_length;
+use coggate_contracts::fragment_count_for_secret_length;
 
 use super::GenerationError;
 use super::random::{RandomSource, shuffle};

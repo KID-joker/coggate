@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, fmt};
 
-use agentgate_core::generation::{MAX_CONCAT_INPUTS, MAX_QUESTION_BYTES, Operation};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use coggate_core::generation::{MAX_CONCAT_INPUTS, MAX_QUESTION_BYTES, Operation};
 use zeroize::Zeroizing;
 
 use super::{Baseline, BaselineError, NoGuessReason, Prediction};

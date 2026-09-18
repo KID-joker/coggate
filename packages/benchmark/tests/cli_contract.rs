@@ -1,6 +1,6 @@
 use std::{io, process::Command};
 
-use agentgate_benchmark::{
+use coggate_benchmark::{
     baseline::{NoGuessReason, Outcome},
     cli::{EXIT_INTERNAL, run_with_io},
     corpus::Corpus,
@@ -9,7 +9,7 @@ use agentgate_benchmark::{
 };
 
 fn command(arguments: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_agentgate-bench"))
+    Command::new(env!("CARGO_BIN_EXE_coggate-bench"))
         .args(arguments)
         .output()
         .unwrap()

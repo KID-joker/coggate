@@ -5,8 +5,8 @@ use std::sync::{
     atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering},
 };
 
-use agentgate_contracts::{AnswerEncoding, PrivateChallengeMaterial, Submission};
-use agentgate_core::{
+use coggate_contracts::{AnswerEncoding, PrivateChallengeMaterial, Submission};
+use coggate_core::{
     AttemptLimit, AttemptOutcome, BeginAttemptError, ChallengeService, KeyProviderError,
     LifecycleAdapter, LifecycleAdapterError, LifecycleRejection, MacKeyProvider, Observer,
     ServiceError, ServiceEvent, ServiceFailureEvent, ServiceStage, SubmissionIdentity,
@@ -812,7 +812,7 @@ fn active_key_rejects_invalid_ids_and_short_keys_with_exact_release() {
             1,
         ),
         (
-            OutputSpec::Bytes(vec![b'x'; agentgate_core::MAX_MAC_KEY_ID_BYTES + 1]),
+            OutputSpec::Bytes(vec![b'x'; coggate_core::MAX_MAC_KEY_ID_BYTES + 1]),
             OutputSpec::Bytes(vec![7; 32]),
             1,
         ),

@@ -44,19 +44,19 @@ jobs:
           cargo fmt --all --check
           cargo clippy --workspace --all-targets -- -D warnings
           cargo test --workspace
-          cargo test -p agentgate-benchmark --test quick_qualification
-          cargo test -p agentgate-benchmark --test quick_qualification real_quick_direct_qualification -- --ignored --exact
+          cargo test -p coggate-benchmark --test quick_qualification
+          cargo test -p coggate-benchmark --test quick_qualification real_quick_direct_qualification -- --ignored --exact
       - name: Run quick baseline qualification
         id: baselines
         continue-on-error: true
         run: |
           mkdir -p target/phase6a/quick
-          cargo run -p agentgate-benchmark --bin agentgate-bench -- run-baselines --profile quick --output target/phase6a/quick
+          cargo run -p coggate-benchmark --bin coggate-bench -- run-baselines --profile quick --output target/phase6a/quick
       - name: Verify quick reports
         if: always()
         run: |
           for report in target/phase6a/quick/*.json; do
-            cargo run -p agentgate-benchmark --bin agentgate-bench -- verify-report --input "$report"
+            cargo run -p coggate-benchmark --bin coggate-bench -- verify-report --input "$report"
           done
       - name: Upload quick reports
         if: always()
@@ -103,19 +103,19 @@ jobs:
           cargo fmt --all --check
           cargo clippy --workspace --all-targets -- -D warnings
           cargo test --workspace
-          cargo test -p agentgate-benchmark --test quick_qualification
-          cargo test -p agentgate-benchmark --test quick_qualification real_quick_direct_qualification -- --ignored --exact
+          cargo test -p coggate-benchmark --test quick_qualification
+          cargo test -p coggate-benchmark --test quick_qualification real_quick_direct_qualification -- --ignored --exact
       - name: Run release baseline qualification
         id: baselines
         continue-on-error: true
         run: |
           mkdir -p target/phase6a/release
-          cargo run -p agentgate-benchmark --bin agentgate-bench -- run-baselines --profile release --output target/phase6a/release
+          cargo run -p coggate-benchmark --bin coggate-bench -- run-baselines --profile release --output target/phase6a/release
       - name: Verify release reports
         if: always()
         run: |
           for report in target/phase6a/release/*.json; do
-            cargo run -p agentgate-benchmark --bin agentgate-bench -- verify-report --input "$report"
+            cargo run -p coggate-benchmark --bin coggate-bench -- verify-report --input "$report"
           done
       - name: Create release receipts
         if: always()
@@ -133,13 +133,13 @@ jobs:
           done
           mkdir -p target/phase6a/release/receipts
           test ! -e target/phase6a/release/receipts/direct.json
-          cargo run -p agentgate-release --bin agentgate-release -- receipt phase6a --commit "${{ github.sha }}" --report target/phase6a/release/direct-release.json --summary target/phase6a/release/direct-release.md --output target/phase6a/release/receipts/direct.json
+          cargo run -p coggate-release --bin coggate-release -- receipt phase6a --commit "${{ github.sha }}" --report target/phase6a/release/direct-release.json --summary target/phase6a/release/direct-release.md --output target/phase6a/release/receipts/direct.json
           test ! -e target/phase6a/release/receipts/fingerprint.json
-          cargo run -p agentgate-release --bin agentgate-release -- receipt phase6a --commit "${{ github.sha }}" --report target/phase6a/release/fingerprint-release.json --summary target/phase6a/release/fingerprint-release.md --output target/phase6a/release/receipts/fingerprint.json
+          cargo run -p coggate-release --bin coggate-release -- receipt phase6a --commit "${{ github.sha }}" --report target/phase6a/release/fingerprint-release.json --summary target/phase6a/release/fingerprint-release.md --output target/phase6a/release/receipts/fingerprint.json
           test ! -e target/phase6a/release/receipts/regex.json
-          cargo run -p agentgate-release --bin agentgate-release -- receipt phase6a --commit "${{ github.sha }}" --report target/phase6a/release/regex-release.json --summary target/phase6a/release/regex-release.md --output target/phase6a/release/receipts/regex.json
+          cargo run -p coggate-release --bin coggate-release -- receipt phase6a --commit "${{ github.sha }}" --report target/phase6a/release/regex-release.json --summary target/phase6a/release/regex-release.md --output target/phase6a/release/receipts/regex.json
           test ! -e target/phase6a/release/receipts/simple_parser.json
-          cargo run -p agentgate-release --bin agentgate-release -- receipt phase6a --commit "${{ github.sha }}" --report target/phase6a/release/simple_parser-release.json --summary target/phase6a/release/simple_parser-release.md --output target/phase6a/release/receipts/simple_parser.json
+          cargo run -p coggate-release --bin coggate-release -- receipt phase6a --commit "${{ github.sha }}" --report target/phase6a/release/simple_parser-release.json --summary target/phase6a/release/simple_parser-release.md --output target/phase6a/release/receipts/simple_parser.json
       - name: Upload release reports
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a

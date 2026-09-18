@@ -12,9 +12,9 @@ use crate::{
 };
 
 const TRACKED_V1: &str = include_str!("../../../benchmarks/suites/v1.json");
-const REPORT_DOMAIN: &[u8] = b"agentgate-benchmark-report-v1";
-const MANIFEST_DOMAIN: &[u8] = b"agentgate-suite-manifest-v1";
-const CASE_DOMAIN: &[u8] = b"agentgate-benchmark-case-v1";
+const REPORT_DOMAIN: &[u8] = b"coggate:benchmark-report:v1";
+const MANIFEST_DOMAIN: &[u8] = b"coggate:suite-manifest:v1";
+const CASE_DOMAIN: &[u8] = b"coggate:benchmark-case:v1";
 const MAX_IDENTIFIER_BYTES: usize = 128;
 const MAX_TOOL_ENTRIES: usize = 16;
 const MAX_TOOL_FIELD_BYTES: usize = 128;

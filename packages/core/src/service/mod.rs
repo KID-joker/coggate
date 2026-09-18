@@ -15,8 +15,8 @@ mod version;
 
 use std::time::{Duration, Instant};
 
-use agentgate_contracts::{AnswerEncoding, PrivateChallengeMaterial, PublicChallenge};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use coggate_contracts::{AnswerEncoding, PrivateChallengeMaterial, PublicChallenge};
 
 use crate::generation::{
     CandidateError, OsRandom, RenderMetadata, generate_candidate_with,
@@ -277,7 +277,7 @@ where
             }
         };
         let expires_at =
-            match issued_at.checked_add(i64::from(agentgate_contracts::CHALLENGE_TTL_SECONDS)) {
+            match issued_at.checked_add(i64::from(coggate_contracts::CHALLENGE_TTL_SECONDS)) {
                 Some(expires_at) => expires_at,
                 None => {
                     let error = ServiceError::InternalError;
@@ -1316,7 +1316,7 @@ mod tests {
             assert_eq!(
                 replay.fragment_count(),
                 usize::from(
-                    agentgate_contracts::fragment_count_for_secret_length(
+                    coggate_contracts::fragment_count_for_secret_length(
                         replay.secret_length() as u8,
                     )
                     .unwrap(),

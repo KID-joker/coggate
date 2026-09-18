@@ -1,6 +1,6 @@
 #![cfg(feature = "insecure-benchmarking")]
 
-use agentgate_core::generation::{BenchmarkError, generate_benchmark_case};
+use coggate_core::generation::{BenchmarkError, generate_benchmark_case};
 
 #[test]
 fn equal_version_namespace_and_index_are_reproducible() {

@@ -1,4 +1,4 @@
-use agentgate_core::{CoreError, canonicalize_answer, contracts::AnswerEncoding};
+use coggate_core::{CoreError, canonicalize_answer, contracts::AnswerEncoding};
 
 #[test]
 fn preserves_a_canonical_base64url_answer() {

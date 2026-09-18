@@ -21,9 +21,9 @@ fn phase6b_workflow_is_a_pinned_offline_release_gate() {
         "cargo fmt --all --check",
         "cargo clippy --workspace --all-targets -- -D warnings",
         "cargo test --workspace",
-        "cargo test -p agentgate-release --test synthetic_release",
-        "cargo test -p agentgate-release --test leakage",
-        "if cargo tree -p agentgate-release | rg -q 'agentgate-(benchmark|core)'; then exit 1; fi",
+        "cargo test -p coggate-release --test synthetic_release",
+        "cargo test -p coggate-release --test leakage",
+        "if cargo tree -p coggate-release | rg -q 'coggate-(benchmark|core)'; then exit 1; fi",
     ] {
         assert!(source.contains(command), "missing {command}");
     }

@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, path::PathBuf, process::Command, time::Duration};
 
-use agentgate_benchmark::{
+use coggate_benchmark::{
     baseline::direct::DirectBaseline,
     corpus::Corpus,
     manifest::{ProfileName, SuiteManifest},
@@ -59,7 +59,7 @@ fn quick_corpus_is_reproducible_and_all_four_baselines_qualify() {
 #[ignore = "requires the pinned C, C++, Rust, Go, and Java toolchains"]
 fn real_quick_direct_qualification() {
     let directory = tempfile::tempdir().unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_agentgate-bench"))
+    let output = Command::new(env!("CARGO_BIN_EXE_coggate-bench"))
         .args([
             "run-baselines",
             "--profile",

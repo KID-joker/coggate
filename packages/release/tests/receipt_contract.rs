@@ -1,7 +1,7 @@
 use std::fs;
 
-use agentgate_release::canonical::{MAX_METADATA_BYTES, canonical_compact, sha256_hex};
-use agentgate_release::receipt::{
+use coggate_release::canonical::{MAX_METADATA_BYTES, canonical_compact, sha256_hex};
+use coggate_release::receipt::{
     EvidenceBinding, FileBinding, Phase5dBinding, Phase6aBinding, Receipt, ReceiptError,
     ReportRole, SanitizerBinding, write_receipt,
 };
@@ -45,7 +45,7 @@ fn phase5d_artifact() -> Receipt {
             platform: "Linux".into(),
             target: "x86_64-unknown-linux-gnu".into(),
             profile: "release".into(),
-            artifact_name: "agentgate".into(),
+            artifact_name: "coggate".into(),
             manifest_version: "0.1.0".into(),
             abi_version: 1,
             tree_digest: "b".repeat(64),
@@ -78,7 +78,7 @@ fn receipt_value(receipt: &Receipt) -> Value {
 
 fn digest_for_payload(payload: &Value) -> String {
     let canonical_payload = canonical_compact(payload).unwrap();
-    let mut bytes = b"agentgate-release-receipt-v1".to_vec();
+    let mut bytes = b"coggate:release-receipt:v1".to_vec();
     bytes.extend_from_slice(&canonical_payload);
     sha256_hex(&bytes)
 }

@@ -1,4 +1,4 @@
-use agentgate_contracts::{
+use coggate_contracts::{
     PublicChallenge, Submission, private_material_schema, public_challenge_schema,
     submission_schema,
 };

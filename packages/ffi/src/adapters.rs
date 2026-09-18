@@ -6,7 +6,7 @@ use std::{
     },
 };
 
-use agentgate_core::{
+use coggate_core::{
     ActiveMacKey, AttemptLimit, AttemptOutcome, BeginAttemptError, KeyProviderError,
     LifecycleAdapter, LifecycleAdapterError, LifecycleRejection, MAX_MAC_KEY_ID_BYTES, MacKey,
     MacKeyProvider, Observer, PendingAttempt, SubmissionIdentity, service::ServiceEvent,
@@ -86,7 +86,7 @@ impl LifecycleAdapter for CallbackLifecycle {
 
     fn store_issued(
         &mut self,
-        material: agentgate_contracts::PrivateChallengeMaterial,
+        material: coggate_contracts::PrivateChallengeMaterial,
         binding: &[u8],
         attempt_limit: AttemptLimit,
     ) -> Result<(), LifecycleAdapterError> {

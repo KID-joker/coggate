@@ -1,13 +1,13 @@
 use std::{collections::BTreeMap, env, fs, path::PathBuf, process::Command};
 
-use agentgate_release::{Phase6aError, ReportRole, verify_phase6a_report};
+use coggate_release::{Phase6aError, ReportRole, verify_phase6a_report};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-const REPORT_DOMAIN: &[u8] = b"agentgate-benchmark-report-v1";
-const MANIFEST_DOMAIN: &[u8] = b"agentgate-suite-manifest-v1";
-const CASE_DOMAIN: &[u8] = b"agentgate-benchmark-case-v1";
+const REPORT_DOMAIN: &[u8] = b"coggate:benchmark-report:v1";
+const MANIFEST_DOMAIN: &[u8] = b"coggate:suite-manifest:v1";
+const CASE_DOMAIN: &[u8] = b"coggate:benchmark-case:v1";
 const RELEASE_SCORED_NAMESPACE: &[u8] = b"phase6a-release-scored-v1";
 
 #[derive(Deserialize, Serialize)]
@@ -287,10 +287,10 @@ fn rejects_an_independently_signed_extra_case_and_each_failed_threshold_shape() 
 #[test]
 #[ignore = "requires pinned Phase6A toolchains and scored LLM input"]
 fn real_phase6a_cli_parity() {
-    let binary = env::var_os("AGENTGATE_PHASE6A_BIN")
+    let binary = env::var_os("COGGATE_PHASE6A_BIN")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/agentgate-bench")
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/coggate-bench")
         });
     assert!(
         binary.is_file(),
@@ -313,9 +313,9 @@ fn real_phase6a_cli_parity() {
         verify_phase6a_report(&direct).unwrap().role(),
         ReportRole::Direct
     );
-    let input = env::var_os("AGENTGATE_PHASE6A_LLM_INPUT")
+    let input = env::var_os("COGGATE_PHASE6A_LLM_INPUT")
         .map(PathBuf::from)
-        .expect("AGENTGATE_PHASE6A_LLM_INPUT must name a valid 1000-case scored LLM input");
+        .expect("COGGATE_PHASE6A_LLM_INPUT must name a valid 1000-case scored LLM input");
     let llm = tempfile::tempdir().unwrap();
     let outcome = Command::new(&binary)
         .args(["score-llm", "--profile", "release", "--input"])
@@ -434,14 +434,14 @@ fn rejects_digest_json_shape_and_size_attacks() {
         assert!(verify_phase6a_report(bad.as_bytes()).is_err());
     }
     let valid = signed(valid_report("direct", 50));
-    assert!(valid.len() <= agentgate_release::canonical::MAX_METADATA_BYTES);
+    assert!(valid.len() <= coggate_release::canonical::MAX_METADATA_BYTES);
     assert!(verify_phase6a_report(&valid).is_ok());
-    let exact = vec![b' '; agentgate_release::canonical::MAX_METADATA_BYTES];
+    let exact = vec![b' '; coggate_release::canonical::MAX_METADATA_BYTES];
     assert_ne!(
         verify_phase6a_report(&exact).unwrap_err(),
         Phase6aError::InputTooLarge
     );
-    let plus_one = vec![b' '; agentgate_release::canonical::MAX_METADATA_BYTES + 1];
+    let plus_one = vec![b' '; coggate_release::canonical::MAX_METADATA_BYTES + 1];
     assert_eq!(
         verify_phase6a_report(&plus_one).unwrap_err(),
         Phase6aError::InputTooLarge

@@ -1,4 +1,4 @@
-use agentgate_core::generation::{
+use coggate_core::generation::{
     MAX_CONCAT_INPUTS, MAX_PERMUTATION_LENGTH, MAX_QUESTION_BYTES, MAX_XOR_KEY_LENGTH, NodeId,
     Operation, RenderLanguage, RenderMetadata, RenderedQuestion, SemanticGraphBuilder,
     ValidatedSemanticGraph, evaluate_semantic_graph,

@@ -128,7 +128,7 @@ impl ProcessRunner {
 
     pub fn workspace(&self) -> Result<ProcessWorkspace<'_>, ProcessError> {
         let directory = tempfile::Builder::new()
-            .prefix("agentgate-benchmark-")
+            .prefix("coggate-benchmark-")
             .tempdir_in(&self.root)
             .map_err(|_| ProcessError::Workspace)?;
         Ok(ProcessWorkspace {
@@ -165,7 +165,7 @@ impl ProcessWorkspace<'_> {
 
     pub fn write_file(&mut self, name: &str, contents: &[u8]) -> Result<(), ProcessError> {
         validate_file_name(name)?;
-        if contents.len() > agentgate_core::generation::MAX_QUESTION_BYTES {
+        if contents.len() > coggate_core::generation::MAX_QUESTION_BYTES {
             return Err(ProcessError::InvalidCommand);
         }
         fs::write(self.path().join(name), contents).map_err(|_| ProcessError::Workspace)

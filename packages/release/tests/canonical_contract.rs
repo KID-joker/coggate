@@ -1,6 +1,6 @@
 use std::io::Cursor;
 
-use agentgate_release::canonical::{
+use coggate_release::canonical::{
     MAX_METADATA_BYTES, canonical_compact, canonical_pretty_sorted, parse_strict_json,
     read_bounded, safe_relative_path, sha256_hex, validate_sha256,
 };

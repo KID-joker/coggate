@@ -1,16 +1,16 @@
 use std::{io, process::Command};
 
-use agentgate_release::cli::{
+use coggate_release::cli::{
     EXIT_AUTHORIZATION_BLOCKED, EXIT_INPUT_OR_INFRASTRUCTURE, EXIT_INTERNAL, EXIT_SUCCESS,
     run_with_io,
 };
 
 include!("evidence_contract.rs");
 
-const HELP: &str = "AgentGate Phase 6B release gate\n\ncommands:\n  receipt phase5d --commit SHA --target TRIPLE --artifact DIR --output FILE\n  receipt sanitizer --commit SHA --rust-version VERSION --clang-version VERSION --output FILE\n  receipt phase6a --commit SHA --report JSON --summary MARKDOWN --output FILE\n  assemble --commit SHA --evidence DIR --output DIR\n  verify --bundle DIR\n";
+const HELP: &str = "CogGate Phase 6B release gate\n\ncommands:\n  receipt phase5d --commit SHA --target TRIPLE --artifact DIR --output FILE\n  receipt sanitizer --commit SHA --rust-version VERSION --clang-version VERSION --output FILE\n  receipt phase6a --commit SHA --report JSON --summary MARKDOWN --output FILE\n  assemble --commit SHA --evidence DIR --output DIR\n  verify --bundle DIR\n";
 
 fn command(arguments: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_agentgate-release"))
+    Command::new(env!("CARGO_BIN_EXE_coggate-release"))
         .args(arguments)
         .output()
         .unwrap()

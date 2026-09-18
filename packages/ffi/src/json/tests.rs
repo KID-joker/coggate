@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use agentgate_core::{
+use coggate_core::{
     LifecycleRejection, SubmissionIdentity, VerificationOutcome,
     generation::RenderLanguage,
     service::{

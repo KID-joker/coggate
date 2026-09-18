@@ -187,7 +187,7 @@ impl Drop for HostBufferGuard {
     }
 }
 
-/// Releases a buffer returned by Agentgate and resets it to the empty state.
+/// Releases a buffer returned by CogGate and resets it to the empty state.
 ///
 /// # Safety
 ///

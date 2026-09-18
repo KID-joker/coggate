@@ -1,10 +1,10 @@
-use agentgate_contracts::AnswerEncoding;
+use coggate_contracts::AnswerEncoding;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 
 use crate::{CoreError, canonicalize_answer};
 
-const DOMAIN: &[u8] = b"agentgate-answer-v1";
+const DOMAIN: &[u8] = b"coggate:answer:v1";
 pub(crate) const MAX_CHALLENGE_ID_BYTES: usize = 128;
 const MAX_GENERATOR_VERSION_BYTES: usize = 32;
 pub(crate) const MAX_NONCE_BYTES: usize = 256;

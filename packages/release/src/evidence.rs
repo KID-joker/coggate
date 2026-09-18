@@ -68,7 +68,7 @@ pub enum DecisionError {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EvidenceSet {
     commit: String,
-    agentgate_version: String,
+    coggate_version: String,
     abi_version: u32,
     generator_version: String,
     suite_manifest_digest: String,
@@ -79,7 +79,7 @@ pub struct EvidenceSet {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReleaseDecision {
     commit: String,
-    agentgate_version: String,
+    coggate_version: String,
     abi_version: u32,
     generator_version: String,
     suite_manifest_digest: String,
@@ -91,8 +91,8 @@ impl ReleaseDecision {
     pub fn commit(&self) -> &str {
         &self.commit
     }
-    pub fn agentgate_version(&self) -> &str {
-        &self.agentgate_version
+    pub fn coggate_version(&self) -> &str {
+        &self.coggate_version
     }
     pub fn abi_version(&self) -> u32 {
         self.abi_version
@@ -149,12 +149,12 @@ impl EvidenceSet {
                 || binding.platform != verified.target_os()
                 || binding.target != verified.target_triple()
                 || binding.profile != "release"
-                || binding.artifact_name != "agentgate"
-                || binding.manifest_version != verified.agentgate_version()
+                || binding.artifact_name != "coggate"
+                || binding.manifest_version != verified.coggate_version()
                 || binding.abi_version != verified.abi_version()
                 || binding.tree_digest != verified.tree_digest()
                 || binding.manifest_digest != verified.manifest_file().sha256()
-                || verified.agentgate_version() != "0.1.0"
+                || verified.coggate_version() != "0.1.0"
                 || verified.abi_version() != 1
             {
                 return Err(EvidenceError::Invalid);
@@ -168,14 +168,14 @@ impl EvidenceSet {
             )?;
             match (&version, &abi) {
                 (Some(existing), Some(existing_abi)) => {
-                    if existing != verified.agentgate_version()
+                    if existing != verified.coggate_version()
                         || *existing_abi != verified.abi_version()
                     {
                         return Err(EvidenceError::Invalid);
                     }
                 }
                 (None, None) => {
-                    version = Some(verified.agentgate_version().to_owned());
+                    version = Some(verified.coggate_version().to_owned());
                     abi = Some(verified.abi_version());
                 }
                 _ => return Err(EvidenceError::Invalid),
@@ -273,7 +273,7 @@ impl EvidenceSet {
         recheck_watched(&watched)?;
         Ok(Self {
             commit: commit.to_owned(),
-            agentgate_version: version.ok_or(EvidenceError::Invalid)?,
+            coggate_version: version.ok_or(EvidenceError::Invalid)?,
             abi_version: abi.ok_or(EvidenceError::Invalid)?,
             generator_version: generator.ok_or(EvidenceError::Invalid)?,
             suite_manifest_digest: manifest.ok_or(EvidenceError::Invalid)?,
@@ -303,7 +303,7 @@ impl EvidenceSet {
         }
         Ok(ReleaseDecision {
             commit: self.commit.clone(),
-            agentgate_version: self.agentgate_version.clone(),
+            coggate_version: self.coggate_version.clone(),
             abi_version: self.abi_version,
             generator_version: self.generator_version.clone(),
             suite_manifest_digest: self.suite_manifest_digest.clone(),

@@ -1,6 +1,6 @@
 use std::{cell::RefCell, rc::Rc};
 
-use agentgate_core::{
+use coggate_core::{
     ActiveMacKey, AttemptLimit, AttemptOutcome, BeginAttemptError, ChallengeService,
     KeyProviderError, LifecycleAdapter, LifecycleAdapterError, LifecycleRejection, MacContext,
     MacKey, MacKeyProvider, Observer, PendingAttempt, PrivateChallengeMaterial, ServiceError,

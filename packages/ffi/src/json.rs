@@ -1,7 +1,7 @@
 use std::time::Duration;
 
-use agentgate_contracts::{PrivateChallengeMaterial, Submission};
-use agentgate_core::{
+use coggate_contracts::{PrivateChallengeMaterial, Submission};
+use coggate_core::{
     LifecycleRejection, SubmissionIdentity, VerificationOutcome,
     generation::RenderLanguage,
     service::{

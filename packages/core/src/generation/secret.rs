@@ -1,6 +1,6 @@
 use std::fmt;
 
-use agentgate_contracts::{MAX_SECRET_LENGTH, MIN_SECRET_LENGTH};
+use coggate_contracts::{MAX_SECRET_LENGTH, MIN_SECRET_LENGTH};
 
 use super::random::{RandomSource, sample_below};
 

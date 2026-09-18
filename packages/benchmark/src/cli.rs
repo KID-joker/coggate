@@ -21,7 +21,7 @@ pub const EXIT_QUALIFICATION_FAILED: u8 = 2;
 pub const EXIT_INPUT_OR_INFRASTRUCTURE: u8 = 3;
 pub const EXIT_INTERNAL: u8 = 4;
 
-const HELP: &str = "AgentGate Phase 6A adversarial benchmark\n\ncommands:\n  run-baselines --profile quick|release --output DIR\n  export-llm --profile quick|release --output FILE\n  score-llm --profile quick|release --input FILE --output DIR\n  verify-report --input FILE\n";
+const HELP: &str = "CogGate Phase 6A adversarial benchmark\n\ncommands:\n  run-baselines --profile quick|release --output DIR\n  export-llm --profile quick|release --output FILE\n  score-llm --profile quick|release --input FILE --output DIR\n  verify-report --input FILE\n";
 const MAX_REPORT_BYTES: usize = 8 * 1024 * 1024;
 
 pub fn run_with_io<I, S>(args: I, stdout: &mut impl Write, stderr: &mut impl Write) -> u8
@@ -340,7 +340,7 @@ fn write_aggregate(path: &Path, reports: &[QualificationReport]) -> Result<(), C
     let mut temporary =
         tempfile::NamedTempFile::new_in(path.parent().ok_or(CliError::InputOrInfrastructure)?)
             .map_err(|_| CliError::InputOrInfrastructure)?;
-    writeln!(temporary, "# AgentGate Phase 6A baseline summary")
+    writeln!(temporary, "# CogGate Phase 6A baseline summary")
         .map_err(|_| CliError::InputOrInfrastructure)?;
     writeln!(temporary).map_err(|_| CliError::InputOrInfrastructure)?;
     for report in reports {

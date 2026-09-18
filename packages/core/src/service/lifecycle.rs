@@ -1,4 +1,4 @@
-use agentgate_contracts::PrivateChallengeMaterial;
+use coggate_contracts::PrivateChallengeMaterial;
 
 use super::{
     AttemptLimit, AttemptOutcome, BeginAttemptError, LifecycleAdapterError, PendingAttempt,

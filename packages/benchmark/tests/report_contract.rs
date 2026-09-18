@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use agentgate_benchmark::{
+use coggate_benchmark::{
     baseline::{NoGuessReason, Outcome},
     corpus::Corpus,
     manifest::{ProfileName, SuiteManifest},

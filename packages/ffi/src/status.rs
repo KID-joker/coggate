@@ -14,27 +14,25 @@ pub enum AgStatus {
     PanicCaught = 102,
 }
 
-impl From<agentgate_core::ServiceError> for AgStatus {
-    fn from(error: agentgate_core::ServiceError) -> Self {
+impl From<coggate_core::ServiceError> for AgStatus {
+    fn from(error: coggate_core::ServiceError) -> Self {
         match error {
-            agentgate_core::ServiceError::InvalidConfiguration => Self::InvalidConfiguration,
-            agentgate_core::ServiceError::GenerationFailed => Self::GenerationFailed,
-            agentgate_core::ServiceError::InvalidChallengeMaterial => {
-                Self::InvalidChallengeMaterial
-            }
-            agentgate_core::ServiceError::InvalidAnswerEncoding => Self::InvalidAnswerEncoding,
-            agentgate_core::ServiceError::AnswerMismatch => Self::AnswerMismatch,
-            agentgate_core::ServiceError::UnsupportedGeneratorVersion => {
+            coggate_core::ServiceError::InvalidConfiguration => Self::InvalidConfiguration,
+            coggate_core::ServiceError::GenerationFailed => Self::GenerationFailed,
+            coggate_core::ServiceError::InvalidChallengeMaterial => Self::InvalidChallengeMaterial,
+            coggate_core::ServiceError::InvalidAnswerEncoding => Self::InvalidAnswerEncoding,
+            coggate_core::ServiceError::AnswerMismatch => Self::AnswerMismatch,
+            coggate_core::ServiceError::UnsupportedGeneratorVersion => {
                 Self::UnsupportedGeneratorVersion
             }
-            agentgate_core::ServiceError::InternalError => Self::InternalError,
+            coggate_core::ServiceError::InternalError => Self::InternalError,
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use agentgate_core::ServiceError;
+    use coggate_core::ServiceError;
 
     use super::AgStatus;
 

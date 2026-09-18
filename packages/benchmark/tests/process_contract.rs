@@ -4,7 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use agentgate_benchmark::process::{
+use coggate_benchmark::process::{
     CommandSpec, ProcessError, ProcessOutcome, ProcessRunner, ToolId,
 };
 use tempfile::TempDir;

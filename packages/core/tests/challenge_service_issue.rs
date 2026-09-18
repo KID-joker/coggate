@@ -1,16 +1,16 @@
 use std::{cell::RefCell, rc::Rc};
 
-use agentgate_core::{
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use coggate_core::{
     ActiveMacKey, AttemptLimit, BeginAttemptError, ChallengeService, IssueRequest,
     KeyProviderError, LifecycleAdapter, LifecycleAdapterError, MacKey, MacKeyProvider, Observer,
     PendingAttempt, PrivateChallengeMaterial, SecretLengthBucket, ServiceEvent, ServiceStage,
     SubmissionIdentity,
 };
-use agentgate_core::{
+use coggate_core::{
     contracts::{AnswerEncoding, CHALLENGE_TTL_SECONDS, GENERATOR_VERSION_V1},
     generation::MAX_QUESTION_BYTES,
 };
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 
 #[derive(Debug, Default)]
 struct LifecycleRecords {
@@ -48,7 +48,7 @@ impl LifecycleAdapter for RecordingLifecycle {
     fn finish_attempt(
         &mut self,
         _token: Self::AttemptToken,
-        _outcome: agentgate_core::AttemptOutcome,
+        _outcome: coggate_core::AttemptOutcome,
     ) -> Result<(), LifecycleAdapterError> {
         unreachable!("issuance does not finish attempts")
     }
@@ -193,7 +193,7 @@ fn rejects_noncanonical_generator_versions_before_key_or_storage_access() {
 
         assert_eq!(
             result,
-            Err(agentgate_core::ServiceError::UnsupportedGeneratorVersion)
+            Err(coggate_core::ServiceError::UnsupportedGeneratorVersion)
         );
         assert_eq!(*key_calls.borrow(), 0);
         assert!(records.borrow().issued.is_empty());
@@ -213,7 +213,7 @@ fn request_rejects_invalid_binding_before_service_dependencies_are_reachable() {
 
         assert_eq!(
             IssueRequest::new("1.0", binding, AttemptLimit::One).map(|_| ()),
-            Err(agentgate_core::ServiceError::InvalidConfiguration)
+            Err(coggate_core::ServiceError::InvalidConfiguration)
         );
         assert_eq!(*key_calls.borrow(), 0);
         assert!(records.borrow().issued.is_empty());
@@ -235,7 +235,7 @@ fn storage_failure_returns_internal_error_after_one_store_attempt() {
 
     assert_eq!(
         service.issue_challenge(IssueRequest::v1(b"session-42").unwrap()),
-        Err(agentgate_core::ServiceError::InternalError)
+        Err(coggate_core::ServiceError::InternalError)
     );
     assert_eq!(*key_calls.borrow(), 1);
     assert_eq!(records.borrow().issued.len(), 1);
@@ -246,15 +246,15 @@ fn maps_active_key_failures_without_storing_a_challenge() {
     for (behavior, expected) in [
         (
             KeyBehavior::InvalidMaterial,
-            agentgate_core::ServiceError::InvalidConfiguration,
+            coggate_core::ServiceError::InvalidConfiguration,
         ),
         (
             KeyBehavior::Unavailable,
-            agentgate_core::ServiceError::InternalError,
+            coggate_core::ServiceError::InternalError,
         ),
         (
             KeyBehavior::NotFound,
-            agentgate_core::ServiceError::InternalError,
+            coggate_core::ServiceError::InternalError,
         ),
     ] {
         let records = Rc::new(RefCell::new(LifecycleRecords::default()));
@@ -359,12 +359,12 @@ fn failed_store_emits_one_safe_failure_and_observer_panic_does_not_change_result
         (
             Some(LifecycleAdapterError::Unavailable),
             false,
-            Err(agentgate_core::ServiceError::InternalError),
+            Err(coggate_core::ServiceError::InternalError),
         ),
         (
             Some(LifecycleAdapterError::Unavailable),
             true,
-            Err(agentgate_core::ServiceError::InternalError),
+            Err(coggate_core::ServiceError::InternalError),
         ),
         (None, true, Ok(())),
     ] {
@@ -395,7 +395,7 @@ fn failed_store_emits_one_safe_failure_and_observer_panic_does_not_change_result
                 &events.borrow()[0],
                 ServiceEvent::IssueFailed(event)
                     if event.stage == ServiceStage::LifecycleStore
-                        && event.error == agentgate_core::ServiceError::InternalError
+                        && event.error == coggate_core::ServiceError::InternalError
                         && event.challenge_id.is_none()
                         && event.generator_version.as_deref() == Some("1.0")
                         && event.attempts == 1
@@ -412,21 +412,21 @@ fn issue_failures_report_bounded_identifiers_stable_stages_and_errors() {
             oversized_version.as_str(),
             KeyBehavior::Available,
             ServiceStage::VersionDispatch,
-            agentgate_core::ServiceError::UnsupportedGeneratorVersion,
+            coggate_core::ServiceError::UnsupportedGeneratorVersion,
             None,
         ),
         (
             "V1",
             KeyBehavior::Available,
             ServiceStage::VersionDispatch,
-            agentgate_core::ServiceError::UnsupportedGeneratorVersion,
+            coggate_core::ServiceError::UnsupportedGeneratorVersion,
             None,
         ),
         (
             "1.0",
             KeyBehavior::InvalidMaterial,
             ServiceStage::KeyProvider,
-            agentgate_core::ServiceError::InvalidConfiguration,
+            coggate_core::ServiceError::InvalidConfiguration,
             Some("1.0"),
         ),
     ] {

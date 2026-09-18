@@ -145,7 +145,7 @@ fn analyze_v1_shape(graph: &ValidatedSemanticGraph) -> Result<V1Shape, Generatio
 mod tests {
     use std::collections::BTreeSet;
 
-    use agentgate_contracts::fragment_count_for_secret_length;
+    use coggate_contracts::fragment_count_for_secret_length;
 
     use super::{PlannedSemantics, analyze_v1_shape, plan_with, validate_v1_shape};
     use crate::generation::{

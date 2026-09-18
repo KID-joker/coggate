@@ -1,4 +1,4 @@
-use agentgate_contracts::{private_material_schema, public_challenge_schema, submission_schema};
+use coggate_contracts::{private_material_schema, public_challenge_schema, submission_schema};
 use schemars::Schema;
 use std::error::Error;
 use std::fs;

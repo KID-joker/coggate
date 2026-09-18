@@ -1,9 +1,9 @@
-use agentgate_benchmark::baseline::{
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use coggate_benchmark::baseline::{
     NoGuessReason, Prediction,
     regex_extract::RegexBaseline,
     simple_parser::{SimpleParserBaseline, parse_one_fragment},
 };
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use sha2::{Digest, Sha256};
 
 #[test]

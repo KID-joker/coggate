@@ -11,7 +11,7 @@ pub const EXIT_AUTHORIZATION_BLOCKED: u8 = EXIT_BLOCKED;
 pub const EXIT_INPUT_OR_INFRASTRUCTURE: u8 = 3;
 pub const EXIT_INTERNAL: u8 = 4;
 
-const HELP: &str = "AgentGate Phase 6B release gate\n\ncommands:\n  receipt phase5d --commit SHA --target TRIPLE --artifact DIR --output FILE\n  receipt sanitizer --commit SHA --rust-version VERSION --clang-version VERSION --output FILE\n  receipt phase6a --commit SHA --report JSON --summary MARKDOWN --output FILE\n  assemble --commit SHA --evidence DIR --output DIR\n  verify --bundle DIR\n";
+const HELP: &str = "CogGate Phase 6B release gate\n\ncommands:\n  receipt phase5d --commit SHA --target TRIPLE --artifact DIR --output FILE\n  receipt sanitizer --commit SHA --rust-version VERSION --clang-version VERSION --output FILE\n  receipt phase6a --commit SHA --report JSON --summary MARKDOWN --output FILE\n  assemble --commit SHA --evidence DIR --output DIR\n  verify --bundle DIR\n";
 
 pub fn run_with_io<I, S>(args: I, stdout: &mut impl Write, stderr: &mut impl Write) -> u8
 where

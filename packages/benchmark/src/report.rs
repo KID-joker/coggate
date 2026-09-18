@@ -16,7 +16,7 @@ use crate::{
     strict_json::parse_strict_value,
 };
 
-const REPORT_DOMAIN: &[u8] = b"agentgate-benchmark-report-v1";
+const REPORT_DOMAIN: &[u8] = b"coggate:benchmark-report:v1";
 const MAX_SUBJECT_BYTES: usize = 128;
 const MAX_TOOL_ENTRIES: usize = 16;
 const MAX_TOOL_FIELD_BYTES: usize = 128;
@@ -451,7 +451,7 @@ fn write_new(path: &Path, contents: &[u8]) -> Result<(), ReportError> {
 
 fn markdown_summary(report: &QualificationReport) -> String {
     format!(
-        "# AgentGate benchmark report\n\nsubject: {}\nprofile: {}\ntotal: {}\nsolved: {}\nqualified: {}\npayload digest: {}\n",
+        "# CogGate benchmark report\n\nsubject: {}\nprofile: {}\ntotal: {}\nsolved: {}\nqualified: {}\npayload digest: {}\n",
         report.binding.subject_id,
         report.binding.profile.as_str(),
         report.total(),

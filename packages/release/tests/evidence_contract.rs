@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, fmt::Write as _, fs, path::Path};
 
-use agentgate_release::{
+use coggate_release::{
     DecisionError, EvidenceSet, Target,
     canonical::{canonical_pretty_sorted, sha256_hex},
     create_phase5d_receipt, create_phase6a_receipt, create_sanitizer_receipt,
@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 
 const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
-const SUITE_DIGEST: &str = "6861e9789da3f7403aea0198396100581731f85e127a62c1bb526d9b50b3373a";
+const SUITE_DIGEST: &str = "2a8ca741f05cad9fc902c849015ce7d678442f7669fc80a170733758b57aa8f5";
 const RELEASE_SCORED_NAMESPACE: &[u8] = b"phase6a-release-scored-v1";
 
 #[test]
@@ -26,7 +26,7 @@ fn loads_the_fixed_complete_layout_and_authorizes_qualified_evidence() {
     let decision = loaded.authorize().unwrap();
     assert!(decision.authorized());
     assert_eq!(decision.commit(), COMMIT);
-    assert_eq!(decision.agentgate_version(), "0.1.0");
+    assert_eq!(decision.coggate_version(), "0.1.0");
     assert_eq!(decision.abi_version(), 1);
     assert_eq!(decision.generator_version(), "1.0");
     assert_eq!(decision.receipt_digests().len(), 9);
@@ -232,28 +232,28 @@ fn target_details(
             "Linux",
             "x86_64",
             "x86_64-unknown-linux-gnu",
-            "libagentgate_ffi.so",
-            "libagentgate_ffi.a",
+            "libcoggate_ffi.so",
+            "libcoggate_ffi.a",
             None,
-            "libagentgate_jni.so",
+            "libcoggate_jni.so",
         ),
         Target::MacosX86_64 => (
             "Darwin",
             "x86_64",
             "x86_64-apple-darwin",
-            "libagentgate_ffi.dylib",
-            "libagentgate_ffi.a",
+            "libcoggate_ffi.dylib",
+            "libcoggate_ffi.a",
             None,
-            "libagentgate_jni.dylib",
+            "libcoggate_jni.dylib",
         ),
         Target::WindowsX86_64 => (
             "Windows",
             "x86_64",
             "x86_64-pc-windows-msvc",
-            "agentgate_ffi.dll",
-            "agentgate_ffi.lib",
-            Some("agentgate_ffi.dll.lib"),
-            "agentgate_jni.dll",
+            "coggate_ffi.dll",
+            "coggate_ffi.lib",
+            Some("coggate_ffi.dll.lib"),
+            "coggate_jni.dll",
         ),
     }
 }
@@ -261,20 +261,20 @@ fn target_details(
 fn artifact_paths(target: Target) -> Vec<String> {
     let (_, _, _, shared, static_lib, import, jni) = target_details(target);
     let mut paths = vec![
-        "include/agentgate.h".into(),
+        "include/coggate.h".into(),
         format!("native/{shared}"),
         format!("native/{static_lib}"),
         "go/go.mod".into(),
-        "go/agentgate/bindings.go".into(),
+        "go/coggate/bindings.go".into(),
         "go/examples/complete/main.go".into(),
-        "java/agentgate-java-0.1.0-SNAPSHOT.jar".into(),
+        "java/coggate-java-0.1.0-SNAPSHOT.jar".into(),
         format!("java/{jni}"),
         format!("java/{shared}"),
         "java/examples/Complete.java".into(),
         "node/package.json".into(),
         "node/lib/index.js".into(),
         "node/examples/complete.js".into(),
-        "node/build/Release/agentgate.node".into(),
+        "node/build/Release/coggate.node".into(),
         format!("node/build/Release/{shared}"),
         "smoke/abi_probe.c".into(),
         "smoke/abi_probe.cpp".into(),
@@ -296,7 +296,7 @@ fn build_artifact(root: &Path, target: Target) {
         let bytes = fs::read(root.join(path)).unwrap();
         json!({"kind": artifact_kind(path), "path": path, "sha256": sha256_hex(&bytes), "size": bytes.len()})
     }).collect::<Vec<_>>();
-    let manifest = canonical_pretty_sorted(&json!({"schema_version":1,"agentgate_version":"0.1.0","abi_version":1,"target":{"os":os,"arch":arch,"triple":triple},"tools":artifact_tools(),"files":files})).unwrap();
+    let manifest = canonical_pretty_sorted(&json!({"schema_version":1,"coggate_version":"0.1.0","abi_version":1,"target":{"os":os,"arch":arch,"triple":triple},"tools":artifact_tools(),"files":files})).unwrap();
     write(root, "manifest.json", &manifest);
     let mut names = paths;
     names.push("manifest.json".into());
@@ -314,7 +314,7 @@ fn build_artifact(root: &Path, target: Target) {
 }
 
 fn artifact_kind(path: &str) -> &'static str {
-    if path == "include/agentgate.h" {
+    if path == "include/coggate.h" {
         "header"
     } else if path.starts_with("native/") {
         "native-library"
@@ -363,7 +363,7 @@ fn write(root: &Path, relative: &str, bytes: &[u8]) {
 
 fn case_id(index: usize) -> String {
     let mut hash = Sha256::new();
-    hash.update(b"agentgate-benchmark-case-v1");
+    hash.update(b"coggate:benchmark-case:v1");
     hash.update((SUITE_DIGEST.len() as u64).to_be_bytes());
     hash.update(SUITE_DIGEST.as_bytes());
     hash.update((b"scored".len() as u64).to_be_bytes());
@@ -418,17 +418,17 @@ fn signed(value: Value) -> Vec<u8> {
     let mut payload = report_json(&value, None);
     payload.truncate(payload.len() - b",\"payload_digest\":\"\"}".len());
     payload.push(b'}');
-    let mut input = b"agentgate-benchmark-report-v1".to_vec();
+    let mut input = b"coggate:benchmark-report:v1".to_vec();
     input.extend(payload);
     report_json(&value, Some(&hex::encode(Sha256::digest(input))))
 }
 
 fn rewrite_receipt(path: &Path, mut value: Value) {
     value.as_object_mut().unwrap().remove("evidence_digest");
-    let mut bytes = b"agentgate-release-receipt-v1".to_vec();
-    bytes.extend(agentgate_release::canonical::canonical_compact(&value).unwrap());
+    let mut bytes = b"coggate:release-receipt:v1".to_vec();
+    bytes.extend(coggate_release::canonical::canonical_compact(&value).unwrap());
     value["evidence_digest"] = json!(sha256_hex(&bytes));
-    let mut encoded = agentgate_release::canonical::canonical_compact(&value).unwrap();
+    let mut encoded = coggate_release::canonical::canonical_compact(&value).unwrap();
     encoded.push(b'\n');
     fs::write(path, encoded).unwrap();
 }

@@ -106,7 +106,7 @@ fn public_header_compiles_as_strict_c11() {
     let source = manifest.join("tests/header_smoke.c");
     let include = manifest.join("include");
     let current_dir = env::current_dir().expect("read current directory");
-    let output_dir = target_directory(&manifest, &current_dir).join("agentgate-header-smoke");
+    let output_dir = target_directory(&manifest, &current_dir).join("coggate-header-smoke");
     fs::create_dir_all(&output_dir).expect("create header smoke output directory");
 
     let msvc = cfg!(target_env = "msvc");

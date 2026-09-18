@@ -1,4 +1,4 @@
-use agentgate_contracts::{AnswerEncoding, PrivateChallengeMaterial, PublicChallenge, Submission};
+use coggate_contracts::{AnswerEncoding, PrivateChallengeMaterial, PublicChallenge, Submission};
 use serde_json::{Value, json};
 
 #[test]

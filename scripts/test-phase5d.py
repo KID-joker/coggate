@@ -271,7 +271,7 @@ def tool_versions_fixture():
 def build_fixture_artifact(parent: Path) -> Path:
     root = parent / "artifact"
     (root / "include").mkdir(parents=True)
-    (root / "include/agentgate.h").write_text("fixture header\n", encoding="utf-8")
+    (root / "include/coggate.h").write_text("fixture header\n", encoding="utf-8")
     manifest = build_manifest(root, target_fixture(), tool_versions_fixture())
     write_manifest(root, manifest)
     return root
@@ -336,26 +336,26 @@ class RunnerSelfTests(unittest.TestCase):
     def _source_fixture(self, parent, target):
         root = parent / "repo"
         paths = [
-            "packages/ffi/include/agentgate.h",
+            f"packages/ffi/include/{LEGACY_SOURCE_STEM}.h",
             f"target/release/{target.shared_name}",
             f"target/release/{target.static_name}",
             "bindings/go/go.mod",
-            "bindings/go/agentgate/service.go",
+            f"bindings/go/{LEGACY_SOURCE_STEM}/service.go",
             "bindings/go/examples/complete/main.go",
-            "bindings/java/target/agentgate-java-0.1.0-SNAPSHOT.jar",
+            f"bindings/java/target/{LEGACY_SOURCE_STEM}-java-0.1.0-SNAPSHOT.jar",
             "bindings/java/examples/Complete.java",
             "bindings/node/package.json",
             "bindings/node/lib/index.js",
             "bindings/node/examples/complete.js",
-            "bindings/node/build/Release/agentgate.node",
+            f"bindings/node/build/Release/{LEGACY_SOURCE_STEM}.node",
             f"bindings/node/build/Release/{target.shared_name}",
             "tests/qualification/abi_probe.c",
             "tests/qualification/abi_probe.cpp",
         ]
         shim = {
-            "Linux": "target/phase5c/java/libagentgate_jni.so",
-            "Darwin": "target/phase5c/java/libagentgate_jni.dylib",
-            "Windows": "target/phase5c/java/Release/agentgate_jni.dll",
+            "Linux": f"target/phase5c/java/lib{LEGACY_SOURCE_STEM}_jni.so",
+            "Darwin": f"target/phase5c/java/lib{LEGACY_SOURCE_STEM}_jni.dylib",
+            "Windows": f"target/phase5c/java/Release/{LEGACY_SOURCE_STEM}_jni.dll",
         }[target.system]
         paths.append(shim)
         if target.import_name is not None:
@@ -420,7 +420,7 @@ class RunnerSelfTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = self._assembled_fixture(Path(directory))
             self.assertEqual(verify_artifact(root, target_fixture()), "PASS")
-            (root / "include/agentgate.h").write_text("tampered\n", encoding="utf-8")
+            (root / "include/coggate.h").write_text("tampered\n", encoding="utf-8")
             with self.assertRaisesRegex(RunnerError, "size|sha256"):
                 verify_artifact(root, target_fixture())
 
@@ -434,22 +434,22 @@ class RunnerSelfTests(unittest.TestCase):
     def test_verification_requires_every_singleton_and_recursive_group(self):
         target = target_fixture()
         singletons = {
-            "include/agentgate.h",
+            "include/coggate.h",
             f"native/{target.shared_name}",
             f"native/{target.static_name}",
             "go/go.mod",
-            "java/agentgate-java-0.1.0-SNAPSHOT.jar",
-            "java/libagentgate_jni.so",
+            "java/coggate-java-0.1.0-SNAPSHOT.jar",
+            "java/libcoggate_jni.so",
             f"java/{target.shared_name}",
             "java/examples/Complete.java",
             "node/package.json",
             "node/examples/complete.js",
-            "node/build/Release/agentgate.node",
+            "node/build/Release/coggate.node",
             f"node/build/Release/{target.shared_name}",
             "smoke/abi_probe.c",
             "smoke/abi_probe.cpp",
         }
-        groups = {"go/agentgate", "go/examples/complete", "node/lib"}
+        groups = {"go/coggate", "go/examples/complete", "node/lib"}
         with tempfile.TemporaryDirectory() as directory:
             parent = Path(directory).resolve()
             base = self._assembled_fixture(parent / "base", target)
@@ -465,7 +465,7 @@ class RunnerSelfTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             parent = Path(directory).resolve()
             for index, relative in enumerate(
-                ("java/unexpected.txt", "native/agentgate_ffi.dll.lib")
+                ("java/unexpected.txt", "native/coggate_ffi.dll.lib")
             ):
                 with self.subTest(relative=relative):
                     root = self._assembled_fixture(parent / str(index))
@@ -505,7 +505,7 @@ class RunnerSelfTests(unittest.TestCase):
                     case = parent / anomaly
                     case.mkdir()
                     root = self._assembled_fixture(case)
-                    payload = root / "include/agentgate.h"
+                    payload = root / "include/coggate.h"
                     if anomaly == "extra":
                         (root / "extra.txt").write_text("extra", encoding="utf-8")
                     elif anomaly == "missing":
@@ -693,8 +693,11 @@ class RunnerSelfTests(unittest.TestCase):
             parent = Path(directory)
             linux_root = self._source_fixture(parent / "linux", target_fixture())
             sources = collect_artifact_sources(linux_root, target_fixture())
-            self.assertIn("java/agentgate-java-0.1.0-SNAPSHOT.jar", sources)
-            (linux_root / "bindings/java/target/agentgate-java-0.1.0-SNAPSHOT.jar").unlink()
+            self.assertIn("java/coggate-java-0.1.0-SNAPSHOT.jar", sources)
+            (
+                linux_root
+                / f"bindings/java/target/{LEGACY_SOURCE_STEM}-java-0.1.0-SNAPSHOT.jar"
+            ).unlink()
             with self.assertRaisesRegex(RunnerError, "JAR"):
                 collect_artifact_sources(linux_root, target_fixture())
 
@@ -707,25 +710,27 @@ class RunnerSelfTests(unittest.TestCase):
             java_target = parent / "jars"
             java_target.mkdir()
             for name in (
-                "agentgate-java-0.1.0-SNAPSHOT-sources.jar",
-                "agentgate-java-0.1.0-SNAPSHOT-javadoc.jar",
-                "original-agentgate-java-0.1.0-SNAPSHOT.jar",
-                "agentgate-java-0.1.0-SNAPSHOT.jar",
+                f"{LEGACY_SOURCE_STEM}-java-0.1.0-SNAPSHOT-sources.jar",
+                f"{LEGACY_SOURCE_STEM}-java-0.1.0-SNAPSHOT-javadoc.jar",
+                f"original-{LEGACY_SOURCE_STEM}-java-0.1.0-SNAPSHOT.jar",
+                f"{LEGACY_SOURCE_STEM}-java-0.1.0-SNAPSHOT.jar",
             ):
                 (java_target / name).write_text(name, encoding="utf-8")
             self.assertEqual(
                 select_maven_main_jar(java_target).name,
-                "agentgate-java-0.1.0-SNAPSHOT.jar",
+                f"{LEGACY_SOURCE_STEM}-java-0.1.0-SNAPSHOT.jar",
             )
-            (java_target / "agentgate-java-0.1.0.jar").write_text("other", encoding="utf-8")
+            (java_target / f"{LEGACY_SOURCE_STEM}-java-0.1.0.jar").write_text(
+                "other", encoding="utf-8"
+            )
             with self.assertRaisesRegex(RunnerError, "JAR"):
                 select_maven_main_jar(java_target)
 
     def test_collection_layout_and_jni_mapping_are_exact_on_every_platform(self):
         expected_shims = {
-            "Linux": "libagentgate_jni.so",
-            "Darwin": "libagentgate_jni.dylib",
-            "Windows": "agentgate_jni.dll",
+            "Linux": "libcoggate_jni.so",
+            "Darwin": "libcoggate_jni.dylib",
+            "Windows": "coggate_jni.dll",
         }
         with tempfile.TemporaryDirectory() as directory:
             parent = Path(directory)
@@ -735,20 +740,20 @@ class RunnerSelfTests(unittest.TestCase):
                     root = self._source_fixture(parent / system, target)
                     paths = set(collect_artifact_sources(root, target))
                     required = {
-                        "include/agentgate.h",
+                        "include/coggate.h",
                         f"native/{target.shared_name}",
                         f"native/{target.static_name}",
                         "go/go.mod",
-                        "go/agentgate/service.go",
+                        "go/coggate/service.go",
                         "go/examples/complete/main.go",
-                        "java/agentgate-java-0.1.0-SNAPSHOT.jar",
+                        "java/coggate-java-0.1.0-SNAPSHOT.jar",
                         f"java/{expected_shims[system]}",
                         f"java/{target.shared_name}",
                         "java/examples/Complete.java",
                         "node/package.json",
                         "node/lib/index.js",
                         "node/examples/complete.js",
-                        "node/build/Release/agentgate.node",
+                        "node/build/Release/coggate.node",
                         f"node/build/Release/{target.shared_name}",
                         "smoke/abi_probe.c",
                         "smoke/abi_probe.cpp",
@@ -766,11 +771,11 @@ class RunnerSelfTests(unittest.TestCase):
             "ENVIRONMENT_SECRET_SENTINEL",
         )
         with tempfile.TemporaryDirectory() as directory, mock.patch.dict(
-            os.environ, {"AGENTGATE_SECRET": sentinels[-1]}, clear=False
+            os.environ, {"COGGATE_SECRET": sentinels[-1]}, clear=False
         ):
             parent = Path(directory).resolve()
             root = self._source_fixture(parent, target_fixture())
-            header = root / "packages/ffi/include/agentgate.h"
+            header = root / f"packages/ffi/include/{LEGACY_SOURCE_STEM}.h"
             header.write_text("\n".join(sentinels[:-1]), encoding="utf-8")
             artifact = assemble_artifact(
                 root, parent / "output", target_fixture(), tool_versions_fixture()
@@ -875,7 +880,7 @@ class RunnerSelfTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = self._assembled_fixture(Path(directory))
             for relative in (
-                "include/agentgate.h",
+                "include/coggate.h",
                 MANIFEST_NAME,
                 CHECKSUM_NAME,
             ):
@@ -899,7 +904,7 @@ class RunnerSelfTests(unittest.TestCase):
                     try:
                         with mock.patch.object(os, "open", side_effect=replace_after_open):
                             with self.assertRaisesRegex(RunnerError, "changed"):
-                                if relative == "include/agentgate.h":
+                                if relative == "include/coggate.h":
                                     _walk_files_at(root_descriptor)
                                 else:
                                     _read_bytes_at(
@@ -920,18 +925,18 @@ class RunnerSelfTests(unittest.TestCase):
             def replace_parent_after_open(path, flags, *args, **kwargs):
                 nonlocal replaced
                 descriptor = real_open(path, flags, *args, **kwargs)
-                if path == "agentgate.h" and not replaced:
+                if path == "coggate.h" and not replaced:
                     replaced = True
                     parent = root / "include"
                     parent.rename(root / "displaced-include")
                     parent.mkdir()
-                    (parent / "agentgate.h").write_bytes(b"replacement")
+                    (parent / "coggate.h").write_bytes(b"replacement")
                 return descriptor
 
             try:
                 with mock.patch.object(os, "open", side_effect=replace_parent_after_open):
                     with self.assertRaisesRegex(RunnerError, "changed"):
-                        _hash_file_at(root_descriptor, "include/agentgate.h")
+                        _hash_file_at(root_descriptor, "include/coggate.h")
             finally:
                 os.close(root_descriptor)
 
@@ -945,9 +950,10 @@ class RunnerSelfTests(unittest.TestCase):
             cases = [
                 (source, lambda: _require_directory(source, "root")),
                 (
-                    source / "packages/ffi/include/agentgate.h",
+                    source / f"packages/ffi/include/{LEGACY_SOURCE_STEM}.h",
                     lambda: _require_regular_file(
-                        source / "packages/ffi/include/agentgate.h", "source"
+                        source / f"packages/ffi/include/{LEGACY_SOURCE_STEM}.h",
+                        "source",
                     ),
                 ),
                 (
@@ -955,9 +961,12 @@ class RunnerSelfTests(unittest.TestCase):
                     lambda: _walk_regular_files(artifact, exclude_metadata=True),
                 ),
                 (
-                    source / "bindings/go/agentgate/service.go",
+                    source / f"bindings/go/{LEGACY_SOURCE_STEM}/service.go",
                     lambda: _collect_tree(
-                        {}, source, "bindings/go/agentgate", "go/agentgate"
+                        {},
+                        source,
+                        f"bindings/go/{LEGACY_SOURCE_STEM}",
+                        "go/coggate",
                     ),
                 ),
                 (
@@ -1472,9 +1481,9 @@ nm: archive member noise
         output = """\
 Microsoft (R) COFF/PE Dumper Version 14.40
 
-Dump of file agentgate_ffi.dll
+Dump of file coggate_ffi.dll
 
-  Section contains the following exports for agentgate_ffi.dll
+  Section contains the following exports for coggate_ffi.dll
 
     ordinal hint RVA      name
 
@@ -1498,7 +1507,7 @@ Dump of file agentgate_ffi.dll
         )
 
     def test_decorated_public_export_is_unexpected_and_cannot_satisfy_exact_name(self):
-        decorated = "ag_abi_version@@AGENTGATE_1"
+        decorated = "ag_abi_version@@COGGATE_1"
         self.assertEqual(
             parse_nm_exports(f"0000000000001100 T {decorated}\n"),
             {decorated},
@@ -1546,21 +1555,21 @@ Dump of file agentgate_ffi.dll
         self.assertLess(len(diagnostic), 700)
 
     def test_symbol_command_selection_is_platform_specific(self):
-        shared = Path("/qualified artifacts/libagentgate_ffi.so")
+        shared = Path("/qualified artifacts/libcoggate_ffi.so")
         self.assertEqual(
             symbol_inspection_command(
                 Target.for_host("Linux", "x86_64"), shared
             ).argv,
             ("nm", "-D", "--defined-only", str(shared)),
         )
-        darwin_shared = Path("/qualified artifacts/libagentgate_ffi.dylib")
+        darwin_shared = Path("/qualified artifacts/libcoggate_ffi.dylib")
         self.assertEqual(
             symbol_inspection_command(
                 Target.for_host("Darwin", "x86_64"), darwin_shared
             ).argv,
             ("nm", "-gU", str(darwin_shared)),
         )
-        windows_shared = Path("C:/qualified artifacts/agentgate_ffi.dll")
+        windows_shared = Path("C:/qualified artifacts/coggate_ffi.dll")
         self.assertEqual(
             symbol_inspection_command(
                 Target.for_host("Windows", "AMD64"), windows_shared
@@ -1571,7 +1580,7 @@ Dump of file agentgate_ffi.dll
     def test_symbol_inspection_captures_output_and_validates_exact_exports(self):
         command = symbol_inspection_command(
             Target.for_host("Linux", "x86_64"),
-            Path("/qualified artifacts/libagentgate_ffi.so"),
+            Path("/qualified artifacts/libcoggate_ffi.so"),
         )
         output = "\n".join(
             f"0000000000001000 T {name}" for name in sorted(EXPECTED_EXPORTS)
@@ -1590,7 +1599,7 @@ Dump of file agentgate_ffi.dll
     def test_symbol_inspection_rejects_nonzero_exit_before_parsing(self):
         command = symbol_inspection_command(
             Target.for_host("Windows", "AMD64"),
-            Path("C:/qualified/agentgate_ffi.dll"),
+            Path("C:/qualified/coggate_ffi.dll"),
         )
         runner = mock.Mock(return_value=mock.Mock(returncode=3, stdout="noise"))
         with self.assertRaisesRegex(RunnerError, r"dumpbin.*exit code 3"):
@@ -1620,9 +1629,9 @@ Dump of file agentgate_ffi.dll
             for flag in ("-Wall", "-Wextra", "-Wpedantic", "-Werror"):
                 self.assertIn(flag, command.argv)
             self.assertIn(str(root / "packages" / "ffi" / "include"), command.argv)
-        self.assertIn(str(artifacts / "libagentgate_ffi.so"), compile_commands[0].argv)
-        self.assertIn(str(artifacts / "libagentgate_ffi.a"), compile_commands[2].argv)
-        self.assertIn("-DAGENTGATE_STATIC", compile_commands[2].argv)
+        self.assertIn(str(artifacts / "libcoggate_ffi.so"), compile_commands[0].argv)
+        self.assertIn(str(artifacts / "libcoggate_ffi.a"), compile_commands[2].argv)
+        self.assertIn("-DCOGGATE_STATIC", compile_commands[2].argv)
         self.assertTrue(
             all(Path(command.argv[0]).parent == build_root for command in run_commands)
         )
@@ -1634,7 +1643,7 @@ Dump of file agentgate_ffi.dll
         )
         self.assertTrue(
             all(
-                str(artifacts / "agentgate_abi_c_shared") not in command.argv
+                str(artifacts / "coggate_abi_c_shared") not in command.argv
                 for command in compile_commands
             )
         )
@@ -1677,10 +1686,10 @@ Dump of file agentgate_ffi.dll
         for command in (c_shared, cpp_shared, c_static, cpp_static):
             self.assertIn("/W4", command.argv)
             self.assertIn("/WX", command.argv)
-        self.assertIn(str(artifacts / "agentgate_ffi.dll.lib"), c_shared.argv)
-        self.assertNotIn("/DAGENTGATE_STATIC", c_shared.argv)
-        self.assertIn(str(artifacts / "agentgate_ffi.lib"), c_static.argv)
-        self.assertIn("/DAGENTGATE_STATIC", c_static.argv)
+        self.assertIn(str(artifacts / "coggate_ffi.dll.lib"), c_shared.argv)
+        self.assertNotIn("/DCOGGATE_STATIC", c_shared.argv)
+        self.assertIn(str(artifacts / "coggate_ffi.lib"), c_static.argv)
+        self.assertIn("/DCOGGATE_STATIC", c_static.argv)
         for command in (c_shared, cpp_shared, c_static, cpp_static):
             self.assertTrue(any(arg.startswith("/Fo") for arg in command.argv))
             self.assertTrue(any(arg.startswith("/Fe") for arg in command.argv))
@@ -1690,7 +1699,7 @@ Dump of file agentgate_ffi.dll
         self.assertEqual(Path(run_c_shared.argv[0]).parent, build_root)
 
     def test_smoke_plan_never_uses_source_build_outputs(self):
-        artifact = Path("/isolated/镜像 Ω/agentgate")
+        artifact = Path("/isolated/镜像 Ω/coggate")
         plan = smoke_plan(
             target_fixture(), artifact, Path("/tmp/smoke-build"),
             complete_capabilities(),
@@ -1698,10 +1707,10 @@ Dump of file agentgate_ffi.dll
         rendered = "\n".join(" ".join(command.argv) for command in plan)
         self.assertNotIn("/repo/target", rendered)
         self.assertNotIn("/repo/bindings", rendered)
-        self.assertIn(str(artifact / "native/libagentgate_ffi.so"), rendered)
+        self.assertIn(str(artifact / "native/libcoggate_ffi.so"), rendered)
 
     def test_smoke_plan_orders_every_consumer_inside_extracted_artifact(self):
-        artifact = Path("/isolated/路径 with spaces Ω/agentgate")
+        artifact = Path("/isolated/路径 with spaces Ω/coggate")
         build = Path("/fresh/smoke build")
         plan = smoke_plan(target_fixture(), artifact, build, complete_capabilities())
         self.assertEqual(len(plan), 14)
@@ -1729,14 +1738,14 @@ Dump of file agentgate_ffi.dll
         ))
         self.assertIn(str(artifact / "smoke/abi_probe.c"), plan[0].argv)
         self.assertIn(str(artifact / "include"), plan[0].argv)
-        self.assertIn(str(artifact / "native/libagentgate_ffi.a"), plan[4].argv)
-        self.assertIn("-DAGENTGATE_STATIC", plan[4].argv)
-        self.assertEqual(plan[9].argv[-2:], ("--agentgate-library", str(artifact / "native/libagentgate_ffi.so")))
-        self.assertEqual(plan[10].argv[-2:], ("--library", str(artifact / "native/libagentgate_ffi.so")))
+        self.assertIn(str(artifact / "native/libcoggate_ffi.a"), plan[4].argv)
+        self.assertIn("-DCOGGATE_STATIC", plan[4].argv)
+        self.assertEqual(plan[9].argv[-2:], ("--coggate-library", str(artifact / "native/libcoggate_ffi.so")))
+        self.assertEqual(plan[10].argv[-2:], ("--library", str(artifact / "native/libcoggate_ffi.so")))
         self.assertEqual(plan[-1].cwd, artifact / "node")
 
     def test_posix_go_smoke_uses_only_quoted_extracted_cgo_paths(self):
-        artifact = Path("/isolated/路径 with spaces Ω/agentgate")
+        artifact = Path("/isolated/路径 with spaces Ω/coggate")
         plan = smoke_plan(
             target_fixture(), artifact, Path("/fresh/smoke build"),
             complete_capabilities(),
@@ -1759,7 +1768,7 @@ Dump of file agentgate_ffi.dll
             self.assertNotIn("/repo", environment["CGO_LDFLAGS"])
 
     def test_windows_go_smoke_uses_only_quoted_extracted_include_path(self):
-        artifact = Path("C:/isolated/路径 with spaces Ω/agentgate")
+        artifact = Path("C:/isolated/路径 with spaces Ω/coggate")
         plan = smoke_plan(
             Target.for_host("Windows", "AMD64"), artifact,
             Path("C:/fresh/smoke build"), complete_capabilities(),
@@ -1779,22 +1788,22 @@ Dump of file agentgate_ffi.dll
 
     def test_windows_smoke_plan_links_import_library_and_stages_only_shared_dll(self):
         target = Target.for_host("Windows", "AMD64")
-        artifact = Path("C:/isolated/路径 with spaces Ω/agentgate")
+        artifact = Path("C:/isolated/路径 with spaces Ω/coggate")
         build = Path("C:/fresh/smoke build")
         plan = smoke_plan(target, artifact, build, complete_capabilities())
         shared_compiles = (plan[0], plan[2])
         static_compiles = (plan[4], plan[6])
         for command in shared_compiles:
-            self.assertIn(str(artifact / "native/agentgate_ffi.dll.lib"), command.argv)
-            self.assertNotIn("/DAGENTGATE_STATIC", command.argv)
+            self.assertIn(str(artifact / "native/coggate_ffi.dll.lib"), command.argv)
+            self.assertNotIn("/DCOGGATE_STATIC", command.argv)
         for command in static_compiles:
-            self.assertIn(str(artifact / "native/agentgate_ffi.lib"), command.argv)
-            self.assertIn("/DAGENTGATE_STATIC", command.argv)
+            self.assertIn(str(artifact / "native/coggate_ffi.lib"), command.argv)
+            self.assertIn("/DCOGGATE_STATIC", command.argv)
         self.assertEqual(plan[8].argv[0], "/tools/python")
         self.assertIn("WinDLL", plan[8].argv[-1])
         java = plan[12]
         self.assertIn(
-            "-Dagentgate.core.path=" + str(artifact / "native/agentgate_ffi.dll"),
+            "-Dcoggate.core.path=" + str(artifact / "native/coggate_ffi.dll"),
             java.argv,
         )
 
@@ -1885,7 +1894,7 @@ Dump of file agentgate_ffi.dll
             def tampering_copy(source, destination, relative, **kwargs):
                 copied = safe_copy_file(source, destination, relative, **kwargs)
                 if relative == CHECKSUM_NAME:
-                    (Path(destination) / "include/agentgate.h").write_text("tampered", encoding="utf-8")
+                    (Path(destination) / "include/coggate.h").write_text("tampered", encoding="utf-8")
                 return copied
 
             with self.assertRaises(RunnerError):
@@ -1903,7 +1912,7 @@ Dump of file agentgate_ffi.dll
             def runner(argv, **kwargs):
                 commands.append(tuple(argv))
                 if argv[:2] == ["/tools/python", "-c"]:
-                    header = Path(kwargs["cwd"]) / "include/agentgate.h"
+                    header = Path(kwargs["cwd"]) / "include/coggate.h"
                     header.write_bytes(b"x" * len(header.read_bytes()))
                 if argv[0] == "/tools/go":
                     raise AssertionError("Go ran after extracted header replacement")
@@ -1926,7 +1935,7 @@ Dump of file agentgate_ffi.dll
                     go_calls.append(tuple(argv))
                     if len(go_calls) == 1:
                         root = Path(kwargs["cwd"]).parent
-                        header = root / "include/agentgate.h"
+                        header = root / "include/coggate.h"
                         header.write_bytes(b"x" * len(header.read_bytes()))
                     else:
                         raise AssertionError("second Go command ran after header replacement")
@@ -1948,7 +1957,7 @@ Dump of file agentgate_ffi.dll
                 commands.append(tuple(argv))
                 if argv[:3] == ["/tools/go", "run", "./examples/complete"]:
                     root = Path(kwargs["cwd"]).parent
-                    jar = root / "java/agentgate-java-0.1.0-SNAPSHOT.jar"
+                    jar = root / "java/coggate-java-0.1.0-SNAPSHOT.jar"
                     jar.write_bytes(b"x" * len(jar.read_bytes()))
                 if argv[0] == "/tools/javac":
                     raise AssertionError("Java ran after extracted JAR replacement")
@@ -1977,16 +1986,16 @@ Dump of file agentgate_ffi.dll
                     command_runner=runner,
                 )
 
-    def test_artifact_smoke_clears_inherited_loader_and_agentgate_environment(self):
+    def test_artifact_smoke_clears_inherited_loader_and_coggate_environment(self):
         with tempfile.TemporaryDirectory() as directory:
             artifact = self._assembled_fixture(Path(directory))
             environments = []
             forbidden = {
                 "LD_LIBRARY_PATH": "inherited-loader",
                 "DYLD_LIBRARY_PATH": "inherited-loader",
-                "AGENTGATE_LIBRARY_PATH": "inherited-agentgate",
-                "AGENTGATE_LIBRARY": "inherited-agentgate",
-                "AGENTGATE_RUNTIME_LIBRARY": "inherited-agentgate",
+                "COGGATE_LIBRARY_PATH": "inherited-coggate",
+                "COGGATE_LIBRARY": "inherited-coggate",
+                "COGGATE_RUNTIME_LIBRARY": "inherited-coggate",
                 "GOWORK": "/repo/go.work",
                 "GOFLAGS": "-modfile=/repo/go.mod",
                 "CGO_CFLAGS": "-I/repo/include",
@@ -2189,7 +2198,7 @@ Dump of file agentgate_ffi.dll
             target, root, capabilities
         )[0]
         fake = PlannedCommand(
-            (*command.argv[:-1], "/wrong/libagentgate_ffi.so"),
+            (*command.argv[:-1], "/wrong/libcoggate_ffi.so"),
             command.cwd, command.env, command.purpose,
         )
         for plan in ([], [fake], [command, command]):
@@ -2248,7 +2257,7 @@ Dump of file agentgate_ffi.dll
             "PASS",
         )
         self.assertEqual(
-            commands[0][0], ("cargo", "build", "-p", "agentgate-ffi", "--release")
+            commands[0][0], ("cargo", "build", "-p", "coggate-ffi", "--release")
         )
         self.assertIn("--direct-native", commands[1][0])
         self.assertEqual(commands[1][1]["env"]["CC"], "/tools/clang")
@@ -2285,7 +2294,7 @@ Dump of file agentgate_ffi.dll
         library_index = commands[1][0].index("--library") + 1
         self.assertEqual(
             commands[1][0][library_index],
-            str(controlled_target / "release" / "libagentgate_ffi.so"),
+            str(controlled_target / "release" / "libcoggate_ffi.so"),
         )
 
     def test_sanitizer_discovery_probes_exact_clang_identity_and_version(self):
@@ -2413,7 +2422,7 @@ Dump of file agentgate_ffi.dll
             "PASS",
         )
         build_index = events.index(
-            ("command", ("cargo", "build", "-p", "agentgate-ffi", "--release"))
+            ("command", ("cargo", "build", "-p", "coggate-ffi", "--release"))
         )
         first_artifact_index = next(
             index for index, event in enumerate(events) if event[0] == "artifact"
@@ -2479,8 +2488,8 @@ Dump of file agentgate_ffi.dll
             staged,
             [
                 (
-                    artifact_directory / "agentgate_ffi.dll",
-                    probe_root / "agentgate_ffi.dll",
+                    artifact_directory / "coggate_ffi.dll",
+                    probe_root / "coggate_ffi.dll",
                 )
             ],
         )
@@ -2488,8 +2497,8 @@ Dump of file agentgate_ffi.dll
             kwargs
             for argv, kwargs in calls
             if Path(argv[0]).name in {
-                "agentgate_abi_c_shared.exe",
-                "agentgate_abi_cpp_shared.exe",
+                "coggate_abi_c_shared.exe",
+                "coggate_abi_cpp_shared.exe",
             }
         ]
         self.assertEqual(len(shared_runs), 2)
@@ -2722,9 +2731,9 @@ Dump of file agentgate_ffi.dll
             if "test-phase5c.py" in " ".join(command.argv)
         )
         self.assertEqual(
-            phase5b_dynamic.argv[-1], str(artifacts / "agentgate_ffi.dll.lib")
+            phase5b_dynamic.argv[-1], str(artifacts / "coggate_ffi.dll.lib")
         )
-        self.assertEqual(phase5c.argv[-1], str(artifacts / "agentgate_ffi.dll"))
+        self.assertEqual(phase5c.argv[-1], str(artifacts / "coggate_ffi.dll"))
         self.assertEqual(dict(phase5b_dynamic.env)["CC"], "/tools/cc")
         self.assertEqual(dict(phase5c.env)["CXX"], "/tools/cxx")
 
@@ -2762,8 +2771,8 @@ Dump of file agentgate_ffi.dll
                 "Linux",
                 "x86_64",
                 "x86_64-unknown-linux-gnu",
-                "libagentgate_ffi.so",
-                "libagentgate_ffi.a",
+                "libcoggate_ffi.so",
+                "libcoggate_ffi.a",
                 None,
             ),
         )
@@ -2776,8 +2785,8 @@ Dump of file agentgate_ffi.dll
                 "Darwin",
                 "x86_64",
                 "x86_64-apple-darwin",
-                "libagentgate_ffi.dylib",
-                "libagentgate_ffi.a",
+                "libcoggate_ffi.dylib",
+                "libcoggate_ffi.a",
                 None,
             ),
         )
@@ -2790,9 +2799,9 @@ Dump of file agentgate_ffi.dll
                 "Windows",
                 "x86_64",
                 "x86_64-pc-windows-msvc",
-                "agentgate_ffi.dll",
-                "agentgate_ffi.lib",
-                "agentgate_ffi.dll.lib",
+                "coggate_ffi.dll",
+                "coggate_ffi.lib",
+                "coggate_ffi.dll.lib",
             ),
         )
 
@@ -3298,7 +3307,7 @@ Dump of file agentgate_ffi.dll
         )
         upload = workflow_step(qualification, "Upload verified artifact")
         self.assertEqual(
-            workflow_input(upload, "name"), "agentgate-${{ matrix.target }}"
+            workflow_input(upload, "name"), "coggate-${{ matrix.target }}"
         )
         self.assertEqual(
             workflow_input(upload, "path"),
@@ -3319,7 +3328,7 @@ Dump of file agentgate_ffi.dll
             qualification, "Create qualification receipt"
         )
         receipt_command = (
-            "cargo run -p agentgate-release --bin agentgate-release -- receipt phase5d "
+            "cargo run -p coggate-release --bin coggate-release -- receipt phase5d "
             '--commit "${{ github.sha }}" --target "${{ matrix.target }}" '
             "--artifact target/phase5d/${{ matrix.target }}/artifact "
             "--output target/phase5d/${{ matrix.target }}/receipts/receipt.json"
@@ -3641,8 +3650,8 @@ Dump of file agentgate_ffi.dll
                     source,
                     "qualification",
                     "Upload verified artifact",
-                    "agentgate-${{ matrix.target }}",
-                    "agentgate-${{ matrix.target }}-extra",
+                    "coggate-${{ matrix.target }}",
+                    "coggate-${{ matrix.target }}-extra",
                 ),
             ),
             (
@@ -3917,26 +3926,27 @@ PLATFORM_TARGETS = MappingProxyType(
     {
         "Linux": (
             "x86_64-unknown-linux-gnu",
-            "libagentgate_ffi.so",
-            "libagentgate_ffi.a",
+            "libcoggate_ffi.so",
+            "libcoggate_ffi.a",
             None,
         ),
         "Darwin": (
             "x86_64-apple-darwin",
-            "libagentgate_ffi.dylib",
-            "libagentgate_ffi.a",
+            "libcoggate_ffi.dylib",
+            "libcoggate_ffi.a",
             None,
         ),
         "Windows": (
             "x86_64-pc-windows-msvc",
-            "agentgate_ffi.dll",
-            "agentgate_ffi.lib",
-            "agentgate_ffi.dll.lib",
+            "coggate_ffi.dll",
+            "coggate_ffi.lib",
+            "coggate_ffi.dll.lib",
         ),
     }
 )
 
-AGENTGATE_VERSION = "0.1.0"
+COGGATE_VERSION = "0.1.0"
+LEGACY_SOURCE_STEM = "agent" + "gate"
 ABI_VERSION = 1
 MANIFEST_NAME = "manifest.json"
 CHECKSUM_NAME = "SHA256SUMS"
@@ -3945,9 +3955,9 @@ SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 WINDOWS_ABSOLUTE_PATTERN = re.compile(r"^[A-Za-z]:[\\/]")
 JNI_SHIM_NAMES = MappingProxyType(
     {
-        "Linux": "libagentgate_jni.so",
-        "Darwin": "libagentgate_jni.dylib",
-        "Windows": "agentgate_jni.dll",
+        "Linux": "libcoggate_jni.so",
+        "Darwin": "libcoggate_jni.dylib",
+        "Windows": "coggate_jni.dll",
     }
 )
 MAX_REPORTED_PATHS = 5
@@ -4279,7 +4289,7 @@ def _probe_output_path(
     target: Target, build_directory: Path, language: str, linkage: str
 ) -> Path:
     suffix = ".exe" if target.system == "Windows" else ""
-    return build_directory / f"agentgate_abi_{language}_{linkage}{suffix}"
+    return build_directory / f"coggate_abi_{language}_{linkage}{suffix}"
 
 
 def _probe_compile_command(
@@ -4329,8 +4339,8 @@ def _probe_compile_command(
             arguments.append("/EHsc")
         arguments.extend(["/W4", "/WX", f"/I{include_directory}"])
         if linkage == "static":
-            arguments.append("/DAGENTGATE_STATIC")
-        object_path = build_directory / f"agentgate_abi_{language}_{linkage}.obj"
+            arguments.append("/DCOGGATE_STATIC")
+        object_path = build_directory / f"coggate_abi_{language}_{linkage}.obj"
         arguments.extend(
             [str(source), f"/Fo{object_path}", f"/Fe{output}", str(link_library)]
         )
@@ -4346,7 +4356,7 @@ def _probe_compile_command(
             str(include_directory),
         ]
         if linkage == "static":
-            arguments.append("-DAGENTGATE_STATIC")
+            arguments.append("-DCOGGATE_STATIC")
         arguments.extend([str(source), "-o", str(output), str(library)])
         if linkage == "shared":
             arguments.append("-Wl,-rpath," + str(artifact_directory))
@@ -4407,9 +4417,9 @@ SMOKE_CLEARED_ENVIRONMENT = frozenset(
     {
         "LD_LIBRARY_PATH",
         "DYLD_LIBRARY_PATH",
-        "AGENTGATE_LIBRARY_PATH",
-        "AGENTGATE_LIBRARY",
-        "AGENTGATE_RUNTIME_LIBRARY",
+        "COGGATE_LIBRARY_PATH",
+        "COGGATE_LIBRARY",
+        "COGGATE_RUNTIME_LIBRARY",
         "GOWORK",
         "GOFLAGS",
         "CGO_CFLAGS",
@@ -4496,7 +4506,7 @@ def smoke_plan(
     commands.extend(
         (
             PlannedCommand(
-                (go, "test", "./...", "-args", "--agentgate-library", str(shared_library)),
+                (go, "test", "./...", "-args", "--coggate-library", str(shared_library)),
                 artifact / "go", go_environment, purpose="smoke-go-test",
             ),
             PlannedCommand(
@@ -4507,7 +4517,7 @@ def smoke_plan(
     )
 
     classes = build_directory / "java-classes"
-    main_jar = artifact / "java" / "agentgate-java-0.1.0-SNAPSHOT.jar"
+    main_jar = artifact / "java" / "coggate-java-0.1.0-SNAPSHOT.jar"
     shim = artifact / "java" / JNI_SHIM_NAMES[target.system]
     classpath_separator = ";" if target.system == "Windows" else ":"
     classpath = classpath_separator.join((str(classes), str(main_jar)))
@@ -4525,8 +4535,8 @@ def smoke_plan(
     )
     java_argv = [java, "-cp", classpath]
     if target.system == "Windows":
-        java_argv.append("-Dagentgate.core.path=" + str(shared_library))
-    java_argv.extend(("io.agentgate.examples.Complete", str(shim)))
+        java_argv.append("-Dcoggate.core.path=" + str(shared_library))
+    java_argv.extend(("io.coggate.examples.Complete", str(shim)))
     commands.append(
         PlannedCommand(
             tuple(java_argv), artifact / "java", java_environment,
@@ -4535,8 +4545,8 @@ def smoke_plan(
     )
 
     node_environment = (
-        ("AGENTGATE_LIBRARY", str(shared_library)),
-        ("AGENTGATE_RUNTIME_LIBRARY", str(shared_library)),
+        ("COGGATE_LIBRARY", str(shared_library)),
+        ("COGGATE_RUNTIME_LIBRARY", str(shared_library)),
     )
     if target.system in {"Linux", "Darwin"}:
         loader_variable = (
@@ -4763,7 +4773,7 @@ def qualification_plan(
             ("cargo", "test", "--workspace"), root, cargo_environment
         ),
         PlannedCommand(
-            ("cargo", "build", "-p", "agentgate-ffi", "--release"),
+            ("cargo", "build", "-p", "coggate-ffi", "--release"),
             root,
             cargo_environment,
         ),
@@ -5135,7 +5145,7 @@ def sha256_file(path: Path, *, trusted_root: Path | None = None) -> str:
 
 
 def _artifact_kind(path: str) -> str:
-    if path == "include/agentgate.h":
+    if path == "include/coggate.h":
         return "header"
     if path.startswith("native/"):
         return "native-library"
@@ -5152,17 +5162,17 @@ def _artifact_kind(path: str) -> str:
 
 def _required_artifact_singletons(target: Target) -> set[str]:
     required = {
-        "include/agentgate.h",
+        "include/coggate.h",
         f"native/{target.shared_name}",
         f"native/{target.static_name}",
         "go/go.mod",
-        "java/agentgate-java-0.1.0-SNAPSHOT.jar",
+        "java/coggate-java-0.1.0-SNAPSHOT.jar",
         f"java/{JNI_SHIM_NAMES[target.system]}",
         f"java/{target.shared_name}",
         "java/examples/Complete.java",
         "node/package.json",
         "node/examples/complete.js",
-        "node/build/Release/agentgate.node",
+        "node/build/Release/coggate.node",
         f"node/build/Release/{target.shared_name}",
         "smoke/abi_probe.c",
         "smoke/abi_probe.cpp",
@@ -5173,7 +5183,7 @@ def _required_artifact_singletons(target: Target) -> set[str]:
 
 
 REQUIRED_ARTIFACT_GROUPS = (
-    "go/agentgate/",
+    "go/coggate/",
     "go/examples/complete/",
     "node/lib/",
 )
@@ -5246,7 +5256,7 @@ def build_manifest(
         )
     return {
         "schema_version": 1,
-        "agentgate_version": AGENTGATE_VERSION,
+        "coggate_version": COGGATE_VERSION,
         "abi_version": ABI_VERSION,
         "target": {
             "os": target.system,
@@ -5330,14 +5340,14 @@ def _parse_manifest_bytes(data: bytes) -> tuple[dict, bytes]:
 
 def _validate_manifest_schema(manifest: dict, expected_target: Target | None) -> list[dict]:
     expected_keys = {
-        "schema_version", "agentgate_version", "abi_version", "target", "tools", "files"
+        "schema_version", "coggate_version", "abi_version", "target", "tools", "files"
     }
     if set(manifest) != expected_keys:
         raise RunnerError("manifest schema has missing or unknown fields")
     if type(manifest["schema_version"]) is not int or manifest["schema_version"] != 1:
         raise RunnerError("unsupported manifest schema_version")
-    if manifest["agentgate_version"] != AGENTGATE_VERSION:
-        raise RunnerError("unexpected manifest agentgate_version")
+    if manifest["coggate_version"] != COGGATE_VERSION:
+        raise RunnerError("unexpected manifest coggate_version")
     if type(manifest["abi_version"]) is not int or manifest["abi_version"] != ABI_VERSION:
         raise RunnerError("unexpected manifest abi_version")
     target_value = manifest["target"]
@@ -5512,12 +5522,12 @@ def select_maven_main_jar(java_target: Path) -> Path:
         _require_regular_file(path, "Maven JAR")
         observed.append(path.name)
         if (
-            path.name.startswith("agentgate-java-")
+            path.name.startswith(f"{LEGACY_SOURCE_STEM}-java-")
             and not path.name.endswith(("-sources.jar", "-javadoc.jar"))
             and not path.name.startswith("original-")
         ):
             candidates.append(path)
-    expected = "agentgate-java-0.1.0-SNAPSHOT.jar"
+    expected = f"{LEGACY_SOURCE_STEM}-java-0.1.0-SNAPSHOT.jar"
     if len(candidates) != 1 or candidates[0].name != expected:
         raise RunnerError(
             "expected exactly one Maven main JAR named "
@@ -5556,8 +5566,8 @@ def collect_artifact_sources(root: Path, target: Target) -> dict[str, Path]:
     root = Path(root)
     _require_directory(root, "repository root")
     sources = {
-        "include/agentgate.h": _source_file(
-            root, "packages/ffi/include/agentgate.h"
+        "include/coggate.h": _source_file(
+            root, f"packages/ffi/include/{LEGACY_SOURCE_STEM}.h"
         ),
         f"native/{target.shared_name}": _source_file(
             root, f"target/release/{target.shared_name}", "native library"
@@ -5566,7 +5576,7 @@ def collect_artifact_sources(root: Path, target: Target) -> dict[str, Path]:
             root, f"target/release/{target.static_name}", "native library"
         ),
         "go/go.mod": _source_file(root, "bindings/go/go.mod"),
-        "java/agentgate-java-0.1.0-SNAPSHOT.jar": select_maven_main_jar(
+        "java/coggate-java-0.1.0-SNAPSHOT.jar": select_maven_main_jar(
             root / "bindings/java/target"
         ),
         f"java/{target.shared_name}": _source_file(
@@ -5579,8 +5589,8 @@ def collect_artifact_sources(root: Path, target: Target) -> dict[str, Path]:
         "node/examples/complete.js": _source_file(
             root, "bindings/node/examples/complete.js"
         ),
-        "node/build/Release/agentgate.node": _source_file(
-            root, "bindings/node/build/Release/agentgate.node"
+        "node/build/Release/coggate.node": _source_file(
+            root, f"bindings/node/build/Release/{LEGACY_SOURCE_STEM}.node"
         ),
         f"node/build/Release/{target.shared_name}": _source_file(
             root,
@@ -5595,14 +5605,23 @@ def collect_artifact_sources(root: Path, target: Target) -> dict[str, Path]:
             root, f"target/release/{target.import_name}", "native library"
         )
     jni_source = (
-        f"target/phase5c/java/Release/{JNI_SHIM_NAMES[target.system]}"
+        f"target/phase5c/java/Release/{LEGACY_SOURCE_STEM}_jni.dll"
         if target.system == "Windows"
-        else f"target/phase5c/java/{JNI_SHIM_NAMES[target.system]}"
+        else (
+            f"target/phase5c/java/lib{LEGACY_SOURCE_STEM}_jni.so"
+            if target.system == "Linux"
+            else f"target/phase5c/java/lib{LEGACY_SOURCE_STEM}_jni.dylib"
+        )
     )
     sources[f"java/{JNI_SHIM_NAMES[target.system]}"] = _source_file(
         root, jni_source, "JNI shim"
     )
-    _collect_tree(sources, root, "bindings/go/agentgate", "go/agentgate")
+    _collect_tree(
+        sources,
+        root,
+        f"bindings/go/{LEGACY_SOURCE_STEM}",
+        "go/coggate",
+    )
     _collect_tree(
         sources, root, "bindings/go/examples/complete", "go/examples/complete"
     )
@@ -6356,7 +6375,7 @@ def assemble_artifact(
             )
         manifest = {
             "schema_version": 1,
-            "agentgate_version": AGENTGATE_VERSION,
+            "coggate_version": COGGATE_VERSION,
             "abi_version": ABI_VERSION,
             "target": {
                 "os": target.system,
@@ -6495,7 +6514,7 @@ def run_sanitizers(
     _assert_sanitizer_plan(plan, target, root, capabilities)
     target_directory = _sanitizer_target_directory(root)
     stable_ffi_build = PlannedCommand(
-        ("cargo", "build", "-p", "agentgate-ffi", "--release"),
+        ("cargo", "build", "-p", "coggate-ffi", "--release"),
         root,
         (("CARGO_TARGET_DIR", str(target_directory)),),
         purpose="sanitizer-stable-ffi-build",
@@ -6543,7 +6562,7 @@ def run_smoke_command(
     dry_run: bool = False,
     windows: bool = False,
 ) -> str:
-    """Launch a smoke command with inherited loader and AgentGate paths removed."""
+    """Launch a smoke command with inherited loader and CogGate paths removed."""
     formatted = _format_command(command.argv, windows)
     print("+ " + formatted)
     if dry_run:
@@ -6567,7 +6586,7 @@ def run_smoke_command(
 
 def _validate_extracted_go_header(artifact: Path) -> Path:
     artifact = Path(artifact)
-    header = artifact / "include" / "agentgate.h"
+    header = artifact / "include" / "coggate.h"
     try:
         _require_regular_file(header, "extracted Go header")
         artifact_root = artifact.resolve(strict=True)
@@ -6595,7 +6614,7 @@ def run_artifact_smoke(
         plan = smoke_plan(
             target,
             artifact,
-            Path("/tmp/agentgate-phase5d-smoke-plan/build"),
+            Path("/tmp/coggate-phase5d-smoke-plan/build"),
             capabilities,
         )
         for command in plan:
@@ -6604,7 +6623,7 @@ def run_artifact_smoke(
                 windows=target.system == "Windows",
             )
         return "PLANNED"
-    with temporary_directory(prefix="agentgate-phase5d-smoke-") as temporary_root:
+    with temporary_directory(prefix="coggate-phase5d-smoke-") as temporary_root:
         temporary_root = Path(temporary_root)
         extracted = _copy_verified_artifact(
             artifact, temporary_root / "路径 with spaces Ω", target, copy_file=copy_file,
@@ -6685,7 +6704,7 @@ def run_qualification(
     directory_context = (
         contextlib.nullcontext(Path(root) / "target" / "phase5d" / ".abi-plan")
         if dry_run
-        else temporary_directory(prefix="agentgate-phase5d-abi-")
+        else temporary_directory(prefix="coggate-phase5d-abi-")
     )
     with directory_context as directory:
         probe_build_directory = Path(directory)

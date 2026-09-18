@@ -2,7 +2,7 @@
 mod tests {
     use std::collections::BTreeSet;
 
-    use agentgate_contracts::{GENERATOR_VERSION_V1, fragment_count_for_secret_length};
+    use coggate_contracts::{GENERATOR_VERSION_V1, fragment_count_for_secret_length};
 
     use crate::generation::{
         NodeKind, OperationKind, ValidatedSemanticGraph, evaluate_semantic_graph,

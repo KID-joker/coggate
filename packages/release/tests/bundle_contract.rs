@@ -2,7 +2,7 @@
 // public bundle API to test-only construction details.
 include!("evidence_contract.rs");
 
-use agentgate_release::{BundleError, assemble_bundle, verify_bundle};
+use coggate_release::{BundleError, assemble_bundle, verify_bundle};
 
 #[test]
 fn assembles_and_independently_verifies_a_canonical_offline_bundle() {
@@ -29,7 +29,7 @@ fn assembles_and_independently_verifies_a_canonical_offline_bundle() {
     let verified = verify_bundle(&bundle).unwrap();
     assert!(verified.authorized());
     assert_eq!(verified.commit(), COMMIT);
-    assert_eq!(verified.agentgate_version(), "0.1.0");
+    assert_eq!(verified.coggate_version(), "0.1.0");
     assert_eq!(verified.abi_version(), 1);
     assert_eq!(verified.generator_version(), "1.0");
     assert_eq!(verified.suite_manifest_digest(), SUITE_DIGEST);
@@ -102,7 +102,7 @@ fn verification_does_not_trust_a_canonical_authorized_flag() {
     let manifest = bundle.join("manifest.json");
     let mut value: Value = serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
     value["authorized"] = json!(false);
-    let bytes = agentgate_release::canonical::canonical_compact(&value).unwrap();
+    let bytes = coggate_release::canonical::canonical_compact(&value).unwrap();
     fs::write(&manifest, &bytes).unwrap();
     let sums = bundle.join("SHA256SUMS");
     let mut lines = String::from_utf8(fs::read(&sums).unwrap())
@@ -110,7 +110,7 @@ fn verification_does_not_trust_a_canonical_authorized_flag() {
         .lines()
         .map(str::to_owned)
         .collect::<Vec<_>>();
-    let digest = agentgate_release::canonical::sha256_hex(&bytes);
+    let digest = coggate_release::canonical::sha256_hex(&bytes);
     let line = lines
         .iter_mut()
         .find(|line| line.ends_with("  manifest.json"))

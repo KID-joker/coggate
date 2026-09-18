@@ -1,6 +1,6 @@
 use std::fmt;
 
-use agentgate_core::{
+use coggate_core::{
     canonicalize_answer, contracts::AnswerEncoding, generation::MAX_QUESTION_BYTES,
 };
 use zeroize::Zeroizing;

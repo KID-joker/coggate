@@ -3,73 +3,6 @@
 version = 4
 
 [[package]]
-name = "agentgate-benchmark"
-version = "0.1.0"
-dependencies = [
- "agentgate-core",
- "base64",
- "command-group",
- "hex",
- "regex",
- "serde",
- "serde_json",
- "sha2",
- "subtle",
- "tempfile",
- "thiserror",
- "zeroize",
-]
-
-[[package]]
-name = "agentgate-contracts"
-version = "0.1.0"
-dependencies = [
- "schemars",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "agentgate-core"
-version = "0.1.0"
-dependencies = [
- "agentgate-contracts",
- "base64",
- "getrandom",
- "hex",
- "hmac",
- "sha2",
- "subtle",
- "thiserror",
- "zeroize",
-]
-
-[[package]]
-name = "agentgate-ffi"
-version = "0.1.0"
-dependencies = [
- "agentgate-contracts",
- "agentgate-core",
- "serde",
- "serde_json",
- "zeroize",
-]
-
-[[package]]
-name = "agentgate-release"
-version = "0.1.0"
-dependencies = [
- "getrandom",
- "hex",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "thiserror",
- "windows-sys",
-]
-
-[[package]]
 name = "aho-corasick"
 version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -104,6 +37,73 @@ name = "cfg-if"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
+
+[[package]]
+name = "coggate-benchmark"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "coggate-core",
+ "command-group",
+ "hex",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "subtle",
+ "tempfile",
+ "thiserror",
+ "zeroize",
+]
+
+[[package]]
+name = "coggate-contracts"
+version = "0.1.0"
+dependencies = [
+ "schemars",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "coggate-core"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "coggate-contracts",
+ "getrandom",
+ "hex",
+ "hmac",
+ "sha2",
+ "subtle",
+ "thiserror",
+ "zeroize",
+]
+
+[[package]]
+name = "coggate-ffi"
+version = "0.1.0"
+dependencies = [
+ "coggate-contracts",
+ "coggate-core",
+ "serde",
+ "serde_json",
+ "zeroize",
+]
+
+[[package]]
+name = "coggate-release"
+version = "0.1.0"
+dependencies = [
+ "getrandom",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "windows-sys",
+]
 
 [[package]]
 name = "command-group"

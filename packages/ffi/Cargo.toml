@@ -1,5 +1,5 @@
 [package]
-name = "agentgate-ffi"
+name = "coggate-ffi"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,8 +9,8 @@ license.workspace = true
 crate-type = ["cdylib", "staticlib", "rlib"]
 
 [dependencies]
-agentgate-contracts = { path = "../contracts" }
-agentgate-core = { path = "../core" }
+coggate-contracts = { path = "../contracts" }
+coggate-core = { path = "../core" }
 serde.workspace = true
 serde_json.workspace = true
 zeroize.workspace = true

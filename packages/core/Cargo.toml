@@ -1,5 +1,5 @@
 [package]
-name = "agentgate-core"
+name = "coggate-core"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,7 +10,7 @@ default = []
 insecure-benchmarking = []
 
 [dependencies]
-agentgate-contracts = { path = "../contracts" }
+coggate-contracts = { path = "../contracts" }
 base64.workspace = true
 getrandom.workspace = true
 hex.workspace = true

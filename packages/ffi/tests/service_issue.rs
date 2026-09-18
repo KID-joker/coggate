@@ -8,8 +8,8 @@ use std::{
     },
 };
 
-use agentgate_contracts::{PrivateChallengeMaterial, PublicChallenge};
-use agentgate_ffi::{
+use coggate_contracts::{PrivateChallengeMaterial, PublicChallenge};
+use coggate_ffi::{
     AG_ABI_VERSION_1, AgAttemptLimit, AgBeginStatus, AgByteSlice, AgHostBuffer, AgKeyCallbacks,
     AgKeyStatus, AgLifecycleCallbacks, AgLifecycleStatus, AgOwnedBuffer, AgService, AgStatus,
     ag_buffer_free, ag_service_create, ag_service_destroy, ag_service_issue,
