@@ -26,14 +26,14 @@ from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PHASE5D_WORKFLOW = ROOT / ".github" / "workflows" / "phase5d.yml"
+PHASE5D_WORKFLOW = ROOT / ".github" / "workflows" / "cross-platform-qualification.yml"
 
 
 def read_phase5d_workflow() -> str:
     try:
         return PHASE5D_WORKFLOW.read_text(encoding="utf-8")
     except FileNotFoundError as error:
-        raise AssertionError("missing Phase 5D qualification workflow") from error
+        raise AssertionError("missing cross-platform qualification workflow") from error
 
 
 def workflow_block(source: str, key: str, indentation: int = 0) -> str:

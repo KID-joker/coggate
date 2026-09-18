@@ -1,4 +1,4 @@
-name: CogGate Phase 6B release gate
+name: CogGate Release gate
 
 on:
   push:
@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: coggate-phase6b-${{ github.workflow }}-${{ github.ref }}
+  group: coggate-release-gate-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:

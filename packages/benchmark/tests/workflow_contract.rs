@@ -1,18 +1,22 @@
 use std::path::PathBuf;
 
 fn workflow() -> String {
-    let path =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.github/workflows/phase6a.yml");
-    std::fs::read_to_string(path).expect("Phase 6A workflow must exist")
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../.github/workflows/adversarial-benchmark.yml");
+    std::fs::read_to_string(path).expect("adversarial benchmark workflow must exist")
 }
 
 #[test]
 fn workflow_is_pinned_bounded_and_has_quick_and_manual_release_gates() {
     let source = workflow();
-    assert!(source.starts_with("name: CogGate Phase 6A adversarial qualification\n"));
-    assert!(source.contains("group: coggate-phase6a-${{ github.workflow }}-${{ github.ref }}"));
-    assert!(source.contains("name: coggate-phase6a-quick-reports"));
-    assert!(source.contains("name: coggate-phase6a-release-reports"));
+    assert!(source.starts_with("name: CogGate Adversarial benchmark\n"));
+    assert!(
+        source.contains(
+            "group: coggate-adversarial-benchmark-${{ github.workflow }}-${{ github.ref }}"
+        )
+    );
+    assert!(source.contains("name: coggate-adversarial-benchmark-quick-reports"));
+    assert!(source.contains("name: coggate-adversarial-benchmark-release-reports"));
     assert!(source.contains("permissions:\n  contents: read\n\nconcurrency:"));
     assert!(source.contains("push:"));
     assert!(source.contains("pull_request:"));

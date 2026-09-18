@@ -154,9 +154,9 @@ fn readme_links_all_complete_sdk_examples_and_release_workflows() {
         "bindings/go/examples/complete/main.go",
         "bindings/java/examples/Complete.java",
         "bindings/node/examples/complete.js",
-        ".github/workflows/phase5d.yml",
-        ".github/workflows/phase6a.yml",
-        ".github/workflows/phase6b.yml",
+        ".github/workflows/cross-platform-qualification.yml",
+        ".github/workflows/adversarial-benchmark.yml",
+        ".github/workflows/release-gate.yml",
         "LICENSE",
     ] {
         assert!(
@@ -180,6 +180,36 @@ fn readme_links_all_complete_sdk_examples_and_release_workflows() {
             "README.md is missing stable integration guidance: {required_text}"
         );
     }
+}
+
+#[test]
+fn repository_keeps_local_docs_and_phase_named_workflows_out_of_git() {
+    let root = repository_root(Path::new(env!("CARGO_MANIFEST_DIR")));
+    let output = Command::new("git")
+        .args(["ls-files", "-z"])
+        .current_dir(&root)
+        .output()
+        .expect("git must enumerate tracked files");
+    assert!(output.status.success(), "git ls-files failed");
+
+    let tracked = output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+        .map(|path| String::from_utf8(path.to_vec()).expect("tracked paths must be UTF-8"))
+        .collect::<Vec<_>>();
+    assert!(
+        tracked.iter().all(|path| !path.starts_with("docs/")),
+        "docs/ is local-only and must not contain tracked files"
+    );
+    assert!(
+        tracked.iter().all(|path| {
+            !path
+                .strip_prefix(".github/workflows/")
+                .is_some_and(|name| name.starts_with("phase"))
+        }),
+        "workflow filenames must describe purpose rather than project phases"
+    );
 }
 
 #[test]
@@ -218,12 +248,12 @@ fn readme_lists_the_complete_workspace_gate_prerequisites() {
 }
 
 #[test]
-fn readme_distinguishes_workspace_and_phase6a_toolchain_requirements() {
+fn readme_distinguishes_workspace_and_benchmark_toolchain_requirements() {
     let root = repository_root(Path::new(env!("CARGO_MANIFEST_DIR")));
     let readme = readme(&root);
     let compact = compact_whitespace(&readme);
     for required_text in [
-        "Phase 6A `run-baselines` requires C, C++, Rust, Go, and Java toolchains",
+        "The adversarial benchmark's `run-baselines` command requires C, C++, Rust, Go, and Java toolchains",
         "Go and C++ are not prerequisites for the workspace gate",
         "Node.js is required only for the Node.js SDK",
     ] {
@@ -236,25 +266,25 @@ fn readme_distinguishes_workspace_and_phase6a_toolchain_requirements() {
         !compact.contains(
             "Go, Node.js, and a C++ toolchain are needed only for their corresponding SDK-specific tests and examples"
         ),
-        "README.md must not exclude Go and C++ from Phase 6A prerequisites"
+        "README.md must not exclude Go and C++ from benchmark prerequisites"
     );
 }
 
 #[test]
-fn readme_creates_the_phase6a_output_parent_before_benchmark_commands() {
+fn readme_creates_the_benchmark_output_parent_before_commands() {
     let root = repository_root(Path::new(env!("CARGO_MANIFEST_DIR")));
     let readme = readme(&root);
     let mkdir = "mkdir -p target/phase6a/quick";
     let first_command = "cargo run -p coggate-benchmark --bin coggate-bench -- run-baselines";
     let mkdir_position = readme
         .find(mkdir)
-        .expect("README.md must create the Phase 6A quick output directory");
+        .expect("README.md must create the benchmark quick output directory");
     let command_position = readme
         .find(first_command)
-        .expect("README.md must document the Phase 6A baseline command");
+        .expect("README.md must document the benchmark baseline command");
     assert!(
         mkdir_position < command_position,
-        "README.md must create the Phase 6A output parent before benchmark commands"
+        "README.md must create the output parent before benchmark commands"
     );
 }
 

@@ -2,14 +2,16 @@ use std::{fs, path::PathBuf};
 
 fn workflow() -> String {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    fs::read_to_string(root.join(".github/workflows/phase6b.yml")).unwrap()
+    fs::read_to_string(root.join(".github/workflows/release-gate.yml")).unwrap()
 }
 
 #[test]
-fn phase6b_workflow_is_a_pinned_offline_release_gate() {
+fn release_workflow_is_a_pinned_offline_release_gate() {
     let source = workflow();
-    assert!(source.starts_with("name: CogGate Phase 6B release gate\n"));
-    assert!(source.contains("group: coggate-phase6b-${{ github.workflow }}-${{ github.ref }}"));
+    assert!(source.starts_with("name: CogGate Release gate\n"));
+    assert!(
+        source.contains("group: coggate-release-gate-${{ github.workflow }}-${{ github.ref }}")
+    );
     assert!(source.contains("name: CogGate offline release gate"));
     assert!(source.contains("on:\n  push:\n  pull_request:\n  workflow_dispatch:"));
     assert!(source.contains("permissions:\n  contents: read\n\nconcurrency:"));

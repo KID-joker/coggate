@@ -1,8 +1,8 @@
 # CogGate
 
-[![Phase 5D](https://github.com/KID-joker/coggate/actions/workflows/phase5d.yml/badge.svg)](https://github.com/KID-joker/coggate/actions/workflows/phase5d.yml)
-[![Phase 6A](https://github.com/KID-joker/coggate/actions/workflows/phase6a.yml/badge.svg)](https://github.com/KID-joker/coggate/actions/workflows/phase6a.yml)
-[![Phase 6B](https://github.com/KID-joker/coggate/actions/workflows/phase6b.yml/badge.svg)](https://github.com/KID-joker/coggate/actions/workflows/phase6b.yml)
+[![Cross-platform qualification](https://github.com/KID-joker/coggate/actions/workflows/cross-platform-qualification.yml/badge.svg)](https://github.com/KID-joker/coggate/actions/workflows/cross-platform-qualification.yml)
+[![Adversarial benchmark](https://github.com/KID-joker/coggate/actions/workflows/adversarial-benchmark.yml/badge.svg)](https://github.com/KID-joker/coggate/actions/workflows/adversarial-benchmark.yml)
+[![Release gate](https://github.com/KID-joker/coggate/actions/workflows/release-gate.yml/badge.svg)](https://github.com/KID-joker/coggate/actions/workflows/release-gate.yml)
 
 CogGate generates bounded, mixed-language semantic challenges designed to make
 LLM-assisted solving the economical general approach. It is not a traditional
@@ -55,10 +55,10 @@ first run may download Cargo and Maven dependencies unless they are already
 cached. The C and Java tools are used by C ABI header and Java packaging
 contract tests in that gate.
 
-Go and C++ are not prerequisites for the workspace gate. Phase 6A
-`run-baselines` requires C, C++, Rust, Go, and Java toolchains; Go and C++ are
-also needed for their corresponding SDK tests and examples. Node.js is required
-only for the Node.js SDK tests, build, and example.
+Go and C++ are not prerequisites for the workspace gate. The adversarial
+benchmark's `run-baselines` command requires C, C++, Rust, Go, and Java
+toolchains; Go and C++ are also needed for their corresponding SDK tests and
+examples. Node.js is required only for the Node.js SDK tests, build, and example.
 
 ```sh
 git clone https://github.com/KID-joker/coggate.git
@@ -129,7 +129,7 @@ services; the SDKs do not move that server responsibility to clients.
 
 ## Benchmarking
 
-The Phase 6A benchmark provides four CLI operations:
+The adversarial benchmark provides four CLI operations:
 
 ```sh
 mkdir -p target/phase6a/quick
@@ -155,12 +155,12 @@ raw model responses.
 
 Release qualification combines three independent evidence layers:
 
-- [Phase 5D](.github/workflows/phase5d.yml) exercises cross-platform native and
-  SDK qualification and produces target-bound evidence.
-- [Phase 6A](.github/workflows/phase6a.yml) produces reproducible adversarial
-  benchmark reports and receipts.
-- [Phase 6B](.github/workflows/phase6b.yml) verifies same-commit external
-  evidence offline before it can authorize a release bundle.
+- [Cross-platform qualification](.github/workflows/cross-platform-qualification.yml)
+  exercises native and SDK qualification and produces target-bound evidence.
+- [Adversarial benchmark](.github/workflows/adversarial-benchmark.yml) produces
+  reproducible benchmark reports and receipts.
+- [Release gate](.github/workflows/release-gate.yml) verifies same-commit
+  external evidence offline before it can authorize a release bundle.
 
 The release gate reads explicit local paths and makes no network, upload,
 publication, or signing request. All native, sanitizer, baseline, and offline

@@ -61,11 +61,13 @@ fn assert_secure_workflow(source: &str) {
 }
 
 #[test]
-fn phase5d_receipts_follow_verification_and_upload_only_bounded_evidence() {
-    let source = workflow("phase5d.yml");
+fn cross_platform_receipts_follow_verification_and_upload_only_bounded_evidence() {
+    let source = workflow("cross-platform-qualification.yml");
     assert_secure_workflow(&source);
-    assert!(source.starts_with("name: CogGate Phase 5D cross-platform qualification\n"));
-    assert!(source.contains("group: coggate-phase5d-${{ github.workflow }}-${{ github.ref }}"));
+    assert!(source.starts_with("name: CogGate Cross-platform qualification\n"));
+    assert!(source.contains(
+        "group: coggate-cross-platform-qualification-${{ github.workflow }}-${{ github.ref }}"
+    ));
     assert!(source.contains("key: ${{ runner.os }}-coggate-cargo-${{ hashFiles('Cargo.lock') }}"));
     assert!(source.contains("restore-keys: ${{ runner.os }}-coggate-cargo-"));
     assert!(source.contains("key: linux-coggate-cargo-${{ hashFiles('Cargo.lock') }}"));
@@ -90,11 +92,11 @@ fn phase5d_receipts_follow_verification_and_upload_only_bounded_evidence() {
 }
 
 #[test]
-fn phase6a_manual_release_binds_each_safe_report_pair_without_llm_leakage() {
-    let source = workflow("phase6a.yml");
+fn adversarial_benchmark_manual_release_binds_each_safe_report_pair_without_llm_leakage() {
+    let source = workflow("adversarial-benchmark.yml");
     assert_secure_workflow(&source);
-    assert!(source.contains("name: coggate-phase6a-quick-reports"));
-    assert!(source.contains("name: coggate-phase6a-release-reports"));
+    assert!(source.contains("name: coggate-adversarial-benchmark-quick-reports"));
+    assert!(source.contains("name: coggate-adversarial-benchmark-release-reports"));
     let release = source.split("  release:\n").nth(1).expect("release job");
     assert!(release.contains("if: always()"));
     assert!(
