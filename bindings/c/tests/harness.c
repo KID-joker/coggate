@@ -46,7 +46,7 @@ static bool write_output(ag_test_host_output *storage, const void *bytes,
     return true;
 }
 
-static void AG_CALL release_output(void *release_data, uint8_t *data,
+static void COGGATE_CALL release_output(void *release_data, uint8_t *data,
                                    size_t len) {
     ag_test_host_output *output = (ag_test_host_output *)release_data;
     bool noncanonical_empty;
@@ -75,7 +75,7 @@ static bool finish_output(ag_test_host_output *storage, const void *bytes,
     return true;
 }
 
-static ag_lifecycle_status AG_CALL
+static ag_lifecycle_status COGGATE_CALL
 store_issued(void *user_data, ag_byte_slice private_json, ag_byte_slice binding,
              ag_attempt_limit attempt_limit) {
     ag_test_harness *harness = (ag_test_harness *)user_data;
@@ -91,7 +91,7 @@ store_issued(void *user_data, ag_byte_slice private_json, ag_byte_slice binding,
     return AG_LIFECYCLE_STATUS_OK;
 }
 
-static ag_begin_status AG_CALL
+static ag_begin_status COGGATE_CALL
 begin_attempt(void *user_data, ag_byte_slice identity_json,
               ag_byte_slice binding, int64_t server_time,
               ag_host_buffer *material_out, ag_host_buffer *token_out) {
@@ -140,7 +140,7 @@ begin_attempt(void *user_data, ag_byte_slice identity_json,
     return AG_BEGIN_STATUS_OK;
 }
 
-static ag_lifecycle_status AG_CALL finish_attempt(void *user_data,
+static ag_lifecycle_status COGGATE_CALL finish_attempt(void *user_data,
                                                    ag_byte_slice token,
                                                    ag_attempt_outcome outcome) {
     ag_test_harness *harness = (ag_test_harness *)user_data;
@@ -163,7 +163,7 @@ static ag_lifecycle_status AG_CALL finish_attempt(void *user_data,
     return harness->finish_status;
 }
 
-static ag_key_status AG_CALL active_key(void *user_data,
+static ag_key_status COGGATE_CALL active_key(void *user_data,
                                         ag_host_buffer *key_id_out,
                                         ag_host_buffer *key_out) {
     static const char key_id[] = "active-2026-09";
@@ -186,7 +186,7 @@ static ag_key_status AG_CALL active_key(void *user_data,
     return AG_KEY_STATUS_OK;
 }
 
-static ag_key_status AG_CALL key_by_id(void *user_data, ag_byte_slice key_id,
+static ag_key_status COGGATE_CALL key_by_id(void *user_data, ag_byte_slice key_id,
                                        ag_host_buffer *key_out) {
     ag_test_harness *harness = (ag_test_harness *)user_data;
     harness->key_by_id_calls++;
@@ -214,7 +214,7 @@ static ag_key_status AG_CALL key_by_id(void *user_data, ag_byte_slice key_id,
     return AG_KEY_STATUS_OK;
 }
 
-static void AG_CALL observe(void *user_data, ag_byte_slice event_json) {
+static void COGGATE_CALL observe(void *user_data, ag_byte_slice event_json) {
     ag_test_harness *harness = (ag_test_harness *)user_data;
     char event[AG_TEST_TEXT_CAPACITY];
     if (!copy_bytes(harness->observed_event, sizeof(harness->observed_event),

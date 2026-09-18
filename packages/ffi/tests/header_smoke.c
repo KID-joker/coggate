@@ -1,4 +1,4 @@
-#include "agentgate.h"
+#include "coggate.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -93,13 +93,13 @@ _Static_assert(offsetof(ag_observer_callbacks, user_data) == 8u, "ag_observer_ca
 _Static_assert(offsetof(ag_observer_callbacks, observe) == 16u, "ag_observer_callbacks.observe offset changed");
 #endif
 
-static void AG_CALL release_host(void *user_data, uint8_t *data, size_t len) {
+static void COGGATE_CALL release_host(void *user_data, uint8_t *data, size_t len) {
     (void)user_data;
     (void)data;
     (void)len;
 }
 
-static int32_t AG_CALL store_issued(
+static int32_t COGGATE_CALL store_issued(
     void *user_data,
     ag_byte_slice private_json,
     ag_byte_slice binding,
@@ -112,7 +112,7 @@ static int32_t AG_CALL store_issued(
     return AG_LIFECYCLE_STATUS_OK;
 }
 
-static int32_t AG_CALL begin_attempt(
+static int32_t COGGATE_CALL begin_attempt(
     void *user_data,
     ag_byte_slice identity_json,
     ag_byte_slice binding,
@@ -129,7 +129,7 @@ static int32_t AG_CALL begin_attempt(
     return AG_BEGIN_STATUS_NOT_FOUND;
 }
 
-static int32_t AG_CALL finish_attempt(
+static int32_t COGGATE_CALL finish_attempt(
     void *user_data,
     ag_byte_slice token,
     int32_t outcome
@@ -140,7 +140,7 @@ static int32_t AG_CALL finish_attempt(
     return AG_LIFECYCLE_STATUS_OK;
 }
 
-static int32_t AG_CALL active_key(
+static int32_t COGGATE_CALL active_key(
     void *user_data,
     ag_host_buffer *key_id_out,
     ag_host_buffer *key_out
@@ -151,7 +151,7 @@ static int32_t AG_CALL active_key(
     return AG_KEY_STATUS_UNAVAILABLE;
 }
 
-static int32_t AG_CALL key_by_id(
+static int32_t COGGATE_CALL key_by_id(
     void *user_data,
     ag_byte_slice key_id,
     ag_host_buffer *key_out
@@ -162,12 +162,12 @@ static int32_t AG_CALL key_by_id(
     return AG_KEY_STATUS_NOT_FOUND;
 }
 
-static void AG_CALL observe(void *user_data, ag_byte_slice event_json) {
+static void COGGATE_CALL observe(void *user_data, ag_byte_slice event_json) {
     (void)user_data;
     (void)event_json;
 }
 
-void agentgate_header_smoke(int run) {
+void coggate_header_smoke(int run) {
     ag_byte_slice borrowed = {NULL, 0u};
     ag_owned_buffer owned = {NULL, 0u, 0u};
     ag_host_buffer host = {NULL, 0u, NULL, release_host};

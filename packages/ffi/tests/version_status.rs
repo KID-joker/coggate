@@ -11,10 +11,8 @@ use coggate_ffi::{
     ag_core_version,
 };
 
-// The C header is migrated by the language-binding rename task; keep this Rust
-// ABI contract compiling against that task's current filename without retaining
-// the legacy product token in Rust source.
-const HEADER: &str = include_str!(concat!("../include/", "agent", "gate.h"));
+// Keep the Rust ABI contract pinned to the public C header shipped to consumers.
+const HEADER: &str = include_str!("../include/coggate.h");
 
 unsafe extern "C" {
     #[link_name = "ag_abi_version"]

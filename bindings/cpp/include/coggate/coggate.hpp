@@ -1,7 +1,7 @@
-#ifndef AGENTGATE_CPP_AGENTGATE_HPP
-#define AGENTGATE_CPP_AGENTGATE_HPP
+#ifndef COGGATE_CPP_COGGATE_HPP
+#define COGGATE_CPP_COGGATE_HPP
 
-#include "agentgate.h"
+#include "coggate.h"
 
 #include <nlohmann/json.hpp>
 
@@ -9,7 +9,7 @@
     !defined(NLOHMANN_JSON_VERSION_MINOR) ||                                 \
     NLOHMANN_JSON_VERSION_MAJOR < 3 ||                                       \
     (NLOHMANN_JSON_VERSION_MAJOR == 3 && NLOHMANN_JSON_VERSION_MINOR < 11)
-#error "AgentGate C++ requires nlohmann/json 3.11 or newer"
+#error "CogGate C++ requires nlohmann/json 3.11 or newer"
 #endif
 
 #include <cstddef>
@@ -28,14 +28,14 @@
 #include <utility>
 #include <vector>
 
-namespace agentgate {
+namespace coggate {
 
 namespace detail {
 
 using Json = nlohmann::ordered_json;
 
 [[noreturn]] inline void invalid_json() {
-  throw std::invalid_argument("invalid AgentGate JSON");
+  throw std::invalid_argument("invalid CogGate JSON");
 }
 
 template <typename Callable>
@@ -154,7 +154,7 @@ inline const char *status_code(ag_status status) noexcept {
 inline const char *require_status_code(ag_status status) {
   const char *code = status_code(status);
   if (code == nullptr) {
-    throw std::invalid_argument("invalid AgentGate status");
+    throw std::invalid_argument("invalid CogGate status");
   }
   return code;
 }
@@ -175,7 +175,7 @@ public:
     if (binding_.empty() || binding_.size() > 256U ||
         (attempt_limit_ != AttemptLimit::one &&
          attempt_limit_ != AttemptLimit::two)) {
-      throw std::invalid_argument("invalid AgentGate binding");
+      throw std::invalid_argument("invalid CogGate binding");
     }
   }
 
@@ -280,7 +280,7 @@ private:
 
   static const char *answer_encoding_text(AnswerEncoding encoding) {
     if (encoding != AnswerEncoding::base64url) {
-      throw std::invalid_argument("invalid AgentGate answer encoding");
+      throw std::invalid_argument("invalid CogGate answer encoding");
     }
     return "base64url";
   }
@@ -378,30 +378,30 @@ private:
     case RejectionReason::attempts_exhausted:
       return "attempts_exhausted";
     }
-    throw std::invalid_argument("invalid AgentGate rejection reason");
+    throw std::invalid_argument("invalid CogGate rejection reason");
   }
 
   VerificationStatus status_;
   std::optional<RejectionReason> reason_;
 };
 
-class AgentGateError : public std::runtime_error {
+class CogGateError : public std::runtime_error {
 public:
-  explicit AgentGateError(ag_status status)
-      : AgentGateError(status, detail::require_status_code(status)) {}
+  explicit CogGateError(ag_status status)
+      : CogGateError(status, detail::require_status_code(status)) {}
 
   ag_status status() const noexcept { return status_; }
   const std::string &code() const noexcept { return code_; }
 
 private:
-  AgentGateError(ag_status status, const char *code)
+  CogGateError(ag_status status, const char *code)
       : std::runtime_error(code), status_(status), code_(code) {}
 
   ag_status status_;
   std::string code_;
 };
 
-#ifdef AGENTGATE_CPP_TESTING
+#ifdef COGGATE_CPP_TESTING
 namespace detail {
 class OwnedBufferTestAccess;
 }
@@ -449,7 +449,7 @@ public:
 
   void reset() noexcept {
     if (allocated(raw_)) {
-#ifdef AGENTGATE_CPP_TESTING
+#ifdef COGGATE_CPP_TESTING
       ++test_free_calls();
 #endif
       (void)ag_buffer_free(&raw_);
@@ -458,7 +458,7 @@ public:
 
 private:
   friend class Service;
-#ifdef AGENTGATE_CPP_TESTING
+#ifdef COGGATE_CPP_TESTING
   friend class detail::OwnedBufferTestAccess;
 #endif
 
@@ -469,12 +469,12 @@ private:
   static void validate(const ag_owned_buffer &raw) {
     if (raw.data == nullptr) {
       if (raw.len != 0U || raw.capacity != 0U) {
-        throw std::invalid_argument("invalid AgentGate buffer");
+        throw std::invalid_argument("invalid CogGate buffer");
       }
       return;
     }
     if (raw.len > raw.capacity) {
-      throw std::invalid_argument("invalid AgentGate buffer");
+      throw std::invalid_argument("invalid CogGate buffer");
     }
   }
 
@@ -488,12 +488,12 @@ private:
   ag_owned_buffer *output() {
     validate(raw_);
     if (!empty()) {
-      throw std::invalid_argument("AgentGate output buffer is not empty");
+      throw std::invalid_argument("CogGate output buffer is not empty");
     }
     return &raw_;
   }
 
-#ifdef AGENTGATE_CPP_TESTING
+#ifdef COGGATE_CPP_TESTING
   static std::size_t &test_free_calls() noexcept {
     static std::size_t calls = 0U;
     return calls;
@@ -503,7 +503,7 @@ private:
   ag_owned_buffer raw_{};
 };
 
-#ifdef AGENTGATE_CPP_TESTING
+#ifdef COGGATE_CPP_TESTING
 namespace detail {
 class OwnedBufferTestAccess {
 public:
@@ -592,7 +592,7 @@ inline std::vector<std::uint8_t> slice_bytes(ag_byte_slice slice) {
   return {slice.data, slice.data + slice.len};
 }
 
-#ifdef AGENTGATE_CPP_TESTING
+#ifdef COGGATE_CPP_TESTING
 using CallbackReleaseHook = void (*)(const char *, void *) noexcept;
 
 inline std::atomic<std::size_t> &callback_buffer_outstanding() noexcept {
@@ -625,13 +625,13 @@ struct CallbackBufferState {
   explicit CallbackBufferState(std::vector<std::uint8_t> value,
                                const char *value_label)
       : bytes(std::move(value)), label(value_label) {
-#ifdef AGENTGATE_CPP_TESTING
+#ifdef COGGATE_CPP_TESTING
     ++callback_buffer_outstanding();
 #endif
   }
 
   ~CallbackBufferState() noexcept {
-#ifdef AGENTGATE_CPP_TESTING
+#ifdef COGGATE_CPP_TESTING
     --callback_buffer_outstanding();
 #endif
   }
@@ -640,7 +640,7 @@ struct CallbackBufferState {
   const char *label;
 };
 
-inline void AG_CALL release_callback_buffer(void *release_data,
+inline void COGGATE_CALL release_callback_buffer(void *release_data,
                                             std::uint8_t *data,
                                             std::size_t len) noexcept {
   std::unique_ptr<CallbackBufferState> state(
@@ -648,7 +648,7 @@ inline void AG_CALL release_callback_buffer(void *release_data,
   if (!state) {
     return;
   }
-#ifdef AGENTGATE_CPP_TESTING
+#ifdef COGGATE_CPP_TESTING
   if (callback_release_hook() != nullptr && data == state->bytes.data() &&
       len == state->bytes.size()) {
     callback_release_hook()(state->label, callback_release_hook_data());
@@ -663,7 +663,7 @@ class PendingCallbackBuffer {
 public:
   PendingCallbackBuffer(std::vector<std::uint8_t> bytes, const char *label) {
     if (!bytes.empty()) {
-#ifdef AGENTGATE_CPP_TESTING
+#ifdef COGGATE_CPP_TESTING
       int remaining = callback_allocations_before_failure().load();
       if (remaining == 0) {
         throw std::bad_alloc();
@@ -708,7 +708,7 @@ struct CallbackBridge {
         AG_ABI_VERSION_1, this, observe};
   }
 
-  static ag_lifecycle_status AG_CALL
+  static ag_lifecycle_status COGGATE_CALL
   store_issued(void *user_data, ag_byte_slice private_json,
                ag_byte_slice binding, ag_attempt_limit attempt_limit) noexcept {
     try {
@@ -721,7 +721,7 @@ struct CallbackBridge {
     }
   }
 
-  static ag_begin_status AG_CALL
+  static ag_begin_status COGGATE_CALL
   begin_attempt(void *user_data, ag_byte_slice identity_json,
                 ag_byte_slice binding, std::int64_t server_time,
                 ag_host_buffer *material_out,
@@ -743,7 +743,7 @@ struct CallbackBridge {
     }
   }
 
-  static ag_lifecycle_status AG_CALL
+  static ag_lifecycle_status COGGATE_CALL
   finish_attempt(void *user_data, ag_byte_slice token,
                  ag_attempt_outcome outcome) noexcept {
     try {
@@ -754,7 +754,7 @@ struct CallbackBridge {
     }
   }
 
-  static ag_key_status AG_CALL active_key(void *user_data,
+  static ag_key_status COGGATE_CALL active_key(void *user_data,
                                           ag_host_buffer *key_id_out,
                                           ag_host_buffer *key_out) noexcept {
     try {
@@ -775,7 +775,7 @@ struct CallbackBridge {
     }
   }
 
-  static ag_key_status AG_CALL key_by_id(void *user_data,
+  static ag_key_status COGGATE_CALL key_by_id(void *user_data,
                                          ag_byte_slice key_id,
                                          ag_host_buffer *key_out) noexcept {
     try {
@@ -792,7 +792,7 @@ struct CallbackBridge {
     }
   }
 
-  static void AG_CALL observe(void *user_data,
+  static void COGGATE_CALL observe(void *user_data,
                               ag_byte_slice event_json) noexcept {
     try {
       auto &self = *static_cast<CallbackBridge *>(user_data);
@@ -856,7 +856,7 @@ private:
   ActiveCallFrame frame_;
 };
 
-#ifdef AGENTGATE_CPP_TESTING
+#ifdef COGGATE_CPP_TESTING
 class CallbackBufferTestAccess {
 public:
   static std::size_t outstanding() noexcept {
@@ -893,7 +893,7 @@ public:
           std::shared_ptr<KeyProvider> keys,
           std::shared_ptr<Observer> observer = {}) {
     if (!lifecycle || !keys) {
-      throw std::invalid_argument("AgentGate callbacks are required");
+      throw std::invalid_argument("CogGate callbacks are required");
     }
     auto control = std::make_shared<detail::ServiceControl>(
         std::move(lifecycle), std::move(keys), std::move(observer));
@@ -906,7 +906,7 @@ public:
         &control->bridge->lifecycle_callbacks,
         &control->bridge->key_callbacks, observer_callbacks, &handle);
     if (status != AG_STATUS_OK) {
-      throw AgentGateError(status);
+      throw CogGateError(status);
     }
     control->handle = handle;
     control->open.store(true);
@@ -944,7 +944,7 @@ public:
         control->handle, bytes(version), bytes(binding),
         static_cast<ag_attempt_limit>(request.attempt_limit()), output.output());
     if (status != AG_STATUS_OK) {
-      throw AgentGateError(status);
+      throw CogGateError(status);
     }
     return PublicChallenge::from_json(output.string());
   }
@@ -962,7 +962,7 @@ public:
         control->handle, bytes(submission_json), bytes(binding),
         output.output());
     if (status != AG_STATUS_OK) {
-      throw AgentGateError(status);
+      throw CogGateError(status);
     }
     return VerificationOutcome::from_json(output.string());
   }
@@ -970,7 +970,7 @@ public:
   void close() {
     const ag_status status = close_noexcept();
     if (status != AG_STATUS_OK) {
-      throw AgentGateError(status);
+      throw CogGateError(status);
     }
   }
 
@@ -990,7 +990,7 @@ private:
       }
       ag_service *handle = std::exchange(control->handle, nullptr);
       control->open.store(false);
-#ifdef AGENTGATE_CPP_TESTING
+#ifdef COGGATE_CPP_TESTING
       ++detail::service_destroy_calls();
 #endif
       return ag_service_destroy(handle);
@@ -1009,26 +1009,26 @@ private:
 
   std::shared_ptr<detail::ServiceControl> require_control() const {
     if (!control_ || !control_->open.load()) {
-      throw AgentGateError(AG_STATUS_INVALID_ARGUMENT);
+      throw CogGateError(AG_STATUS_INVALID_ARGUMENT);
     }
     return control_;
   }
 
   static void reject_reentry(const detail::ServiceControl *control) {
     if (detail::is_active_service_call(control)) {
-      throw AgentGateError(AG_STATUS_INVALID_ARGUMENT);
+      throw CogGateError(AG_STATUS_INVALID_ARGUMENT);
     }
   }
 
   static void require_open(const detail::ServiceControl &control) {
     if (!control.open.load() || control.handle == nullptr) {
-      throw AgentGateError(AG_STATUS_INVALID_ARGUMENT);
+      throw CogGateError(AG_STATUS_INVALID_ARGUMENT);
     }
   }
 
   std::shared_ptr<detail::ServiceControl> control_;
 };
 
-} // namespace agentgate
+} // namespace coggate
 
-#endif /* AGENTGATE_CPP_AGENTGATE_HPP */
+#endif /* COGGATE_CPP_COGGATE_HPP */

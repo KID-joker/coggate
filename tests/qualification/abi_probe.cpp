@@ -1,7 +1,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <type_traits>
-#include "agentgate.h"
+#include "coggate.h"
 
 static_assert(std::is_standard_layout_v<ag_owned_buffer>);
 static_assert(sizeof(ag_byte_slice) == 16);
@@ -9,20 +9,20 @@ static_assert(sizeof(ag_owned_buffer) == 24);
 static_assert(sizeof(ag_host_buffer) == 32);
 static_assert(sizeof(ag_lifecycle_callbacks) == 40);
 
-using AbiVersion = std::uint32_t (AG_CALL *)(void);
-using CoreVersion = ag_byte_slice (AG_CALL *)(void);
-using BufferFree = ag_status (AG_CALL *)(ag_owned_buffer *);
-using ServiceCreate = ag_status (AG_CALL *)(
+using AbiVersion = std::uint32_t (COGGATE_CALL *)(void);
+using CoreVersion = ag_byte_slice (COGGATE_CALL *)(void);
+using BufferFree = ag_status (COGGATE_CALL *)(ag_owned_buffer *);
+using ServiceCreate = ag_status (COGGATE_CALL *)(
     const ag_lifecycle_callbacks *,
     const ag_key_callbacks *,
     const ag_observer_callbacks *,
     ag_service **
 );
-using ServiceDestroy = ag_status (AG_CALL *)(ag_service *);
-using ServiceIssue = ag_status (AG_CALL *)(
+using ServiceDestroy = ag_status (COGGATE_CALL *)(ag_service *);
+using ServiceIssue = ag_status (COGGATE_CALL *)(
     ag_service *, ag_byte_slice, ag_byte_slice, ag_attempt_limit, ag_owned_buffer *
 );
-using ServiceVerify = ag_status (AG_CALL *)(
+using ServiceVerify = ag_status (COGGATE_CALL *)(
     ag_service *, ag_byte_slice, ag_byte_slice, ag_owned_buffer *
 );
 

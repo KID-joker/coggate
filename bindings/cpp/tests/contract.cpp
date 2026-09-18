@@ -1,5 +1,5 @@
-#define AGENTGATE_CPP_TESTING 1
-#include <agentgate/agentgate.hpp>
+#define COGGATE_CPP_TESTING 1
+#include <coggate/coggate.hpp>
 
 #include "../fixture_support.hpp"
 
@@ -59,19 +59,19 @@ struct FixtureCase {
 
 const FixtureVectors &fixture_vectors() {
   static const FixtureVectors value = [] {
-    const auto &vectors = agentgate_fixture::vectors();
+    const auto &vectors = coggate_fixture::vectors();
     return FixtureVectors{
         vectors.at("challenge_id").get<std::string>(),
         vectors.at("nonce").get<std::string>(),
         vectors.at("answer").get<std::string>(),
         vectors.at("wrong_answer").get<std::string>(),
-        agentgate_fixture::vector_hex("binding_hex"),
-        agentgate_fixture::vector_hex("token_hex"),
+        coggate_fixture::vector_hex("binding_hex"),
+        coggate_fixture::vector_hex("token_hex"),
         vectors.at("active_key_id").get<std::string>(),
-        agentgate_fixture::vector_hex("active_key_hex"),
+        coggate_fixture::vector_hex("active_key_hex"),
         vectors.at("old_key_id").get<std::string>(),
-        agentgate_fixture::vector_hex("old_key_hex"),
-        agentgate_fixture::private_material_json(),
+        coggate_fixture::vector_hex("old_key_hex"),
+        coggate_fixture::private_material_json(),
         vectors.at("observer_allowlist").dump()};
   }();
   return value;
@@ -80,7 +80,7 @@ const FixtureVectors &fixture_vectors() {
 const std::vector<FixtureCase> &fixture_cases() {
   static const std::vector<FixtureCase> values = [] {
     std::vector<FixtureCase> parsed;
-    for (const auto &fixture : agentgate_fixture::manifest().at("cases")) {
+    for (const auto &fixture : coggate_fixture::manifest().at("cases")) {
       parsed.push_back(FixtureCase{
           fixture.at("id").get<std::string>(),
           fixture.at("operation").get<std::string>(),
@@ -128,14 +128,14 @@ bool rejects_with_fixed_json_error(Callable &&callable) {
   try {
     std::forward<Callable>(callable)();
   } catch (const std::invalid_argument &error) {
-    return std::string(error.what()) == "invalid AgentGate JSON";
+    return std::string(error.what()) == "invalid CogGate JSON";
   } catch (...) {
   }
   return false;
 }
 
 bool model_contract() {
-  using namespace agentgate;
+  using namespace coggate;
 
   try {
     (void)detail::with_json_errors([]() -> int { throw std::bad_alloc(); });
@@ -251,7 +251,7 @@ bool model_contract() {
 }
 
 bool fixture_contract() {
-  using namespace agentgate;
+  using namespace coggate;
 
   for (const FixtureCase &fixture : fixture_cases()) {
     if (fixture.submission_json) {
@@ -265,7 +265,7 @@ bool fixture_contract() {
                 .to_json() == *fixture.expected_outcome_json);
     }
     if (fixture.expected_status != AG_STATUS_OK) {
-      const AgentGateError error(fixture.expected_status);
+      const CogGateError error(fixture.expected_status);
       CHECK(error.status() == fixture.expected_status);
       CHECK(error.code() == fixture.expected_code);
     }
@@ -274,7 +274,7 @@ bool fixture_contract() {
 }
 
 bool status_contract() {
-  using namespace agentgate;
+  using namespace coggate;
   const std::array<std::pair<ag_status, const char *>, 11> statuses{{
       {AG_STATUS_INVALID_CONFIGURATION, "invalid_configuration"},
       {AG_STATUS_GENERATION_FAILED, "generation_failed"},
@@ -290,16 +290,16 @@ bool status_contract() {
       {AG_STATUS_OK, "ok"},
   }};
   for (const auto &entry : statuses) {
-    const AgentGateError error(entry.first);
+    const CogGateError error(entry.first);
     CHECK(error.status() == entry.first);
     CHECK(error.code() == entry.second);
     CHECK(std::string(error.what()) == entry.second);
   }
   try {
-    (void)AgentGateError(static_cast<ag_status>(-999));
+    (void)CogGateError(static_cast<ag_status>(-999));
     return false;
   } catch (const std::invalid_argument &error) {
-    CHECK(std::string(error.what()) == "invalid AgentGate status");
+    CHECK(std::string(error.what()) == "invalid CogGate status");
   } catch (...) {
     return false;
   }
@@ -315,7 +315,7 @@ bool status_contract() {
 }
 
 bool ownership_contract() {
-  using namespace agentgate;
+  using namespace coggate;
   OwnedBuffer source;
   CHECK(source.empty());
   CHECK(source.string().empty());
@@ -411,7 +411,7 @@ ag_begin_status begin_status(std::string_view value) {
   return AG_BEGIN_STATUS_INTERNAL;
 }
 
-class FixtureLifecycle final : public agentgate::Lifecycle {
+class FixtureLifecycle final : public coggate::Lifecycle {
 public:
   explicit FixtureLifecycle(std::shared_ptr<FixtureState> state)
       : state_(std::move(state)) {}
@@ -419,7 +419,7 @@ public:
   ag_lifecycle_status
   store_issued(std::string_view private_json,
                const std::vector<std::uint8_t> &binding,
-               agentgate::AttemptLimit attempt_limit) override {
+               coggate::AttemptLimit attempt_limit) override {
     state_->trace.emplace_back("store_issued");
     stored_private.assign(private_json);
     stored_binding = binding;
@@ -428,10 +428,10 @@ public:
     return AG_LIFECYCLE_STATUS_OK;
   }
 
-  agentgate::BeginAttemptResult
+  coggate::BeginAttemptResult
   begin_attempt(std::string_view, const std::vector<std::uint8_t> &,
                 std::int64_t) override {
-    const auto script = agentgate::detail::Json::parse(state_->fixture->lifecycle_json);
+    const auto script = coggate::detail::Json::parse(state_->fixture->lifecycle_json);
     if (script.at("callback_exception").get<bool>()) {
       state_->trace.emplace_back("begin_attempt:exception");
       throw std::runtime_error("CALLBACK_EXCEPTION_SENTINEL");
@@ -469,7 +469,7 @@ public:
                   ? "finish_attempt:rejected"
                   : "finish_attempt:system_failure");
     if (throw_finish) throw std::runtime_error("FINISH_EXCEPTION_SENTINEL");
-    const auto script = agentgate::detail::Json::parse(state_->fixture->lifecycle_json);
+    const auto script = coggate::detail::Json::parse(state_->fixture->lifecycle_json);
     return script.at("finish_status").get<std::string>() == "internal"
                ? AG_LIFECYCLE_STATUS_INTERNAL
                : AG_LIFECYCLE_STATUS_OK;
@@ -480,25 +480,25 @@ public:
   bool empty_token = false;
   std::string stored_private;
   std::vector<std::uint8_t> stored_binding;
-  agentgate::AttemptLimit stored_limit = agentgate::AttemptLimit::one;
+  coggate::AttemptLimit stored_limit = coggate::AttemptLimit::one;
 
 private:
   std::shared_ptr<FixtureState> state_;
 };
 
-class FixtureKeys final : public agentgate::KeyProvider {
+class FixtureKeys final : public coggate::KeyProvider {
 public:
   explicit FixtureKeys(std::shared_ptr<FixtureState> state)
       : state_(std::move(state)) {}
 
-  agentgate::ActiveKeyResult active_key() override {
+  coggate::ActiveKeyResult active_key() override {
     state_->trace.emplace_back("active_key");
     if (throw_active) throw std::runtime_error("KEY_EXCEPTION_SENTINEL");
     return {AG_KEY_STATUS_OK, fixture_vectors().active_key_id,
             fixture_vectors().active_key};
   }
 
-  agentgate::KeyResult key_by_id(std::string_view key_id) override {
+  coggate::KeyResult key_by_id(std::string_view key_id) override {
     state_->requested_key_id.assign(key_id);
     state_->trace.emplace_back("key_by_id:old");
     if (throw_lookup) throw std::runtime_error("KEY_LOOKUP_SECRET_SENTINEL");
@@ -512,14 +512,14 @@ private:
   std::shared_ptr<FixtureState> state_;
 };
 
-class FixtureObserver final : public agentgate::Observer {
+class FixtureObserver final : public coggate::Observer {
 public:
   explicit FixtureObserver(std::shared_ptr<FixtureState> state)
       : state_(std::move(state)) {}
 
   void observe(std::string_view event_json) override {
     state_->observed.emplace_back(event_json);
-    const auto event = agentgate::detail::Json::parse(event_json);
+    const auto event = coggate::detail::Json::parse(event_json);
     state_->trace.emplace_back("observe:" + event.at("event").get<std::string>());
     if (state_->observer_throws) {
       throw std::runtime_error("OBSERVER_EXCEPTION_SENTINEL");
@@ -545,7 +545,7 @@ void release_trace(const char *label, void *data) noexcept {
 }
 
 bool cpp_fixture_contract() {
-  using namespace agentgate;
+  using namespace coggate;
   for (const auto &fixture : fixture_cases()) {
     auto state = std::make_shared<FixtureState>();
     state->fixture = &fixture;
@@ -571,13 +571,13 @@ bool cpp_fixture_contract() {
     detail::CallbackBufferTestAccess::set_release_hook(release_trace,
                                                        state.get());
     std::optional<std::string> outcome;
-    std::optional<AgentGateError> error;
+    std::optional<CogGateError> error;
     try {
       outcome = service
                     .verify(Submission::from_json(*fixture.submission_json),
                             fixture_vectors().binding)
                     .to_json();
-    } catch (const AgentGateError &caught) {
+    } catch (const CogGateError &caught) {
       error = caught;
     }
     detail::CallbackBufferTestAccess::set_release_hook(nullptr);
@@ -638,23 +638,23 @@ bool cpp_fixture_contract() {
   return true;
 }
 
-class ReentrantLifecycle final : public agentgate::Lifecycle {
+class ReentrantLifecycle final : public coggate::Lifecycle {
 public:
   ag_lifecycle_status
   store_issued(std::string_view, const std::vector<std::uint8_t> &,
-               agentgate::AttemptLimit) override {
+               coggate::AttemptLimit) override {
     return AG_LIFECYCLE_STATUS_OK;
   }
 
-  agentgate::BeginAttemptResult
+  coggate::BeginAttemptResult
   begin_attempt(std::string_view, const std::vector<std::uint8_t> &,
                 std::int64_t) override {
     try {
       (void)service->verify(
-          agentgate::Submission::from_json(
+          coggate::Submission::from_json(
               R"({"challenge_id":"id","nonce":"nonce","answer":"answer"})"),
           {0x01});
-    } catch (const agentgate::AgentGateError &error) {
+    } catch (const coggate::CogGateError &error) {
       rejected = error.status() == AG_STATUS_INVALID_ARGUMENT &&
                  std::string(error.what()) == "invalid_argument";
     }
@@ -667,19 +667,19 @@ public:
     return AG_LIFECYCLE_STATUS_OK;
   }
 
-  agentgate::Service *service = nullptr;
+  coggate::Service *service = nullptr;
   bool rejected = false;
 };
 
-class BlockingLifecycle final : public agentgate::Lifecycle {
+class BlockingLifecycle final : public coggate::Lifecycle {
 public:
   ag_lifecycle_status
   store_issued(std::string_view, const std::vector<std::uint8_t> &,
-               agentgate::AttemptLimit) override {
+               coggate::AttemptLimit) override {
     return AG_LIFECYCLE_STATUS_OK;
   }
 
-  agentgate::BeginAttemptResult
+  coggate::BeginAttemptResult
   begin_attempt(std::string_view, const std::vector<std::uint8_t> &,
                 std::int64_t) override {
     std::unique_lock<std::mutex> lock(mutex);
@@ -702,14 +702,14 @@ public:
   bool released = false;
 };
 
-class NestedLifecycle final : public agentgate::Lifecycle {
+class NestedLifecycle final : public coggate::Lifecycle {
 public:
   ag_lifecycle_status
   store_issued(std::string_view, const std::vector<std::uint8_t> &,
-               agentgate::AttemptLimit) override {
+               coggate::AttemptLimit) override {
     return AG_LIFECYCLE_STATUS_OK;
   }
-  agentgate::BeginAttemptResult
+  coggate::BeginAttemptResult
   begin_attempt(std::string_view, const std::vector<std::uint8_t> &,
                 std::int64_t) override {
     if (action) action();
@@ -723,41 +723,41 @@ public:
   std::function<void()> action;
 };
 
-class ReentrantKeys final : public agentgate::KeyProvider {
+class ReentrantKeys final : public coggate::KeyProvider {
 public:
-  agentgate::ActiveKeyResult active_key() override {
+  coggate::ActiveKeyResult active_key() override {
     try {
-      (void)service->issue(agentgate::IssueRequest::v1({0x01}));
-    } catch (const agentgate::AgentGateError &error) {
+      (void)service->issue(coggate::IssueRequest::v1({0x01}));
+    } catch (const coggate::CogGateError &error) {
       rejected = error.status() == AG_STATUS_INVALID_ARGUMENT;
     }
     return {AG_KEY_STATUS_OK, fixture_vectors().active_key_id,
             fixture_vectors().active_key};
   }
-  agentgate::KeyResult key_by_id(std::string_view) override {
+  coggate::KeyResult key_by_id(std::string_view) override {
     return {AG_KEY_STATUS_NOT_FOUND, {}};
   }
-  agentgate::Service *service = nullptr;
+  coggate::Service *service = nullptr;
   bool rejected = false;
 };
 
-class ReentrantObserver final : public agentgate::Observer {
+class ReentrantObserver final : public coggate::Observer {
 public:
   void observe(std::string_view) override {
     try {
       service->close();
-    } catch (const agentgate::AgentGateError &error) {
+    } catch (const coggate::CogGateError &error) {
       rejected = error.status() == AG_STATUS_INVALID_ARGUMENT &&
                  std::string(error.what()) == "invalid_argument";
     }
   }
-  agentgate::Service *service = nullptr;
+  coggate::Service *service = nullptr;
   bool rejected = false;
 };
 
 bool service_lifecycle_contract() {
-  using namespace agentgate;
-  const auto &accepted_case = agentgate_fixture::fixture_by_id("accepted");
+  using namespace coggate;
+  const auto &accepted_case = coggate_fixture::fixture_by_id("accepted");
   const auto &accepted = *std::find_if(
       fixture_cases().begin(), fixture_cases().end(), [](const auto &fixture) {
         return fixture.id == "accepted";
@@ -820,7 +820,7 @@ bool service_lifecycle_contract() {
     try {
       (void)service_a.verify(Submission::from_json(*accepted.submission_json),
                              {0x01});
-    } catch (const AgentGateError &error) {
+    } catch (const CogGateError &error) {
       cycle_rejected = error.status() == AG_STATUS_INVALID_ARGUMENT;
     }
   };
@@ -869,7 +869,7 @@ bool service_lifecycle_contract() {
   try {
     (void)store_exception_service.issue(IssueRequest::v1({0x01}));
     return false;
-  } catch (const AgentGateError &error) {
+  } catch (const CogGateError &error) {
     CHECK(error.status() == AG_STATUS_INTERNAL_ERROR);
     CHECK(std::string(error.what()) == "internal_error");
   }
@@ -883,7 +883,7 @@ bool service_lifecycle_contract() {
     (void)finish_exception_service.verify(
         Submission::from_json(*accepted.submission_json), {0x01});
     return false;
-  } catch (const AgentGateError &error) {
+  } catch (const CogGateError &error) {
     CHECK(error.status() == AG_STATUS_INTERNAL_ERROR);
     CHECK(std::string(error.what()).find("FINISH_EXCEPTION_SENTINEL") ==
           std::string::npos);
@@ -901,7 +901,7 @@ bool service_lifecycle_contract() {
     (void)lookup_exception_service.verify(
         Submission::from_json(*accepted.submission_json), {0x01});
     return false;
-  } catch (const AgentGateError &error) {
+  } catch (const CogGateError &error) {
     detail::CallbackBufferTestAccess::set_release_hook(nullptr);
     CHECK(error.status() == AG_STATUS_INTERNAL_ERROR);
     CHECK(std::string(error.what()).find("KEY_LOOKUP_SECRET_SENTINEL") ==
@@ -923,7 +923,7 @@ bool service_lifecycle_contract() {
   try {
     (void)active_exception_service.issue(IssueRequest::v1({0x01}));
     return false;
-  } catch (const AgentGateError &error) {
+  } catch (const CogGateError &error) {
     CHECK(error.status() == AG_STATUS_INTERNAL_ERROR);
     CHECK(std::string(error.what()).find("KEY_EXCEPTION_SENTINEL") ==
           std::string::npos);
@@ -939,7 +939,7 @@ bool service_lifecycle_contract() {
         Submission::from_json(*accepted.submission_json), {0x01});
     detail::CallbackBufferTestAccess::fail_after(-1);
     return false;
-  } catch (const AgentGateError &error) {
+  } catch (const CogGateError &error) {
     detail::CallbackBufferTestAccess::fail_after(-1);
     CHECK(error.status() == AG_STATUS_INTERNAL_ERROR);
     CHECK(std::string(error.what()).find("SENTINEL") == std::string::npos);
@@ -954,7 +954,7 @@ bool service_lifecycle_contract() {
     (void)key_allocation_service.issue(IssueRequest::v1({0x01}));
     detail::CallbackBufferTestAccess::fail_after(-1);
     return false;
-  } catch (const AgentGateError &error) {
+  } catch (const CogGateError &error) {
     detail::CallbackBufferTestAccess::fail_after(-1);
     CHECK(error.status() == AG_STATUS_INTERNAL_ERROR);
   }
@@ -1026,7 +1026,7 @@ bool service_lifecycle_contract() {
   try {
     (void)first.issue(IssueRequest::v1({0x01}));
     return false;
-  } catch (const AgentGateError &error) {
+  } catch (const CogGateError &error) {
     CHECK(error.status() == AG_STATUS_INVALID_ARGUMENT);
   }
   Service assigned(std::make_shared<FixtureLifecycle>(state),
@@ -1046,15 +1046,15 @@ bool service_lifecycle_contract() {
   return true;
 }
 
-class RedLifecycle final : public agentgate::Lifecycle {
+class RedLifecycle final : public coggate::Lifecycle {
 public:
   ag_lifecycle_status
   store_issued(std::string_view, const std::vector<std::uint8_t> &,
-               agentgate::AttemptLimit) override {
+               coggate::AttemptLimit) override {
     return AG_LIFECYCLE_STATUS_OK;
   }
 
-  agentgate::BeginAttemptResult
+  coggate::BeginAttemptResult
   begin_attempt(std::string_view, const std::vector<std::uint8_t> &,
                 std::int64_t) override {
     return {AG_BEGIN_STATUS_INTERNAL, {0x53, 0x45, 0x43, 0x52, 0x45, 0x54},
@@ -1068,20 +1068,20 @@ public:
   }
 };
 
-class RedKeys final : public agentgate::KeyProvider {
+class RedKeys final : public coggate::KeyProvider {
 public:
-  agentgate::ActiveKeyResult active_key() override {
+  coggate::ActiveKeyResult active_key() override {
     return {AG_KEY_STATUS_OK, "active-2026-09",
             std::vector<std::uint8_t>(32U, 0x11)};
   }
 
-  agentgate::KeyResult key_by_id(std::string_view) override {
+  coggate::KeyResult key_by_id(std::string_view) override {
     return {AG_KEY_STATUS_NOT_FOUND, {}};
   }
 };
 
 bool service_red_contract() {
-  using namespace agentgate;
+  using namespace coggate;
   auto lifecycle = std::make_shared<RedLifecycle>();
   auto keys = std::make_shared<RedKeys>();
   Service service(lifecycle, keys);
@@ -1091,7 +1091,7 @@ bool service_red_contract() {
             R"({"challenge_id":"id","nonce":"nonce","answer":"answer"})"),
         {0x01});
     return false;
-  } catch (const AgentGateError &error) {
+  } catch (const CogGateError &error) {
     CHECK(error.status() == AG_STATUS_INTERNAL_ERROR);
   }
   CHECK(detail::CallbackBufferTestAccess::outstanding() == 0U);
@@ -1100,7 +1100,7 @@ bool service_red_contract() {
   try {
     (void)service.issue(IssueRequest::v1({0x01}));
     return false;
-  } catch (const AgentGateError &error) {
+  } catch (const CogGateError &error) {
     CHECK(error.status() == AG_STATUS_INVALID_ARGUMENT);
     CHECK(std::string(error.what()) == "invalid_argument");
   }
@@ -1109,50 +1109,50 @@ bool service_red_contract() {
 
 } // namespace
 
-static_assert(!std::is_copy_constructible_v<agentgate::OwnedBuffer>);
-static_assert(!std::is_copy_assignable_v<agentgate::OwnedBuffer>);
+static_assert(!std::is_copy_constructible_v<coggate::OwnedBuffer>);
+static_assert(!std::is_copy_assignable_v<coggate::OwnedBuffer>);
 static_assert(
-    !std::is_constructible_v<agentgate::OwnedBuffer, ag_owned_buffer>);
-static_assert(std::is_nothrow_move_constructible_v<agentgate::OwnedBuffer>);
-static_assert(std::is_nothrow_move_assignable_v<agentgate::OwnedBuffer>);
-static_assert(std::is_nothrow_destructible_v<agentgate::OwnedBuffer>);
+    !std::is_constructible_v<coggate::OwnedBuffer, ag_owned_buffer>);
+static_assert(std::is_nothrow_move_constructible_v<coggate::OwnedBuffer>);
+static_assert(std::is_nothrow_move_assignable_v<coggate::OwnedBuffer>);
+static_assert(std::is_nothrow_destructible_v<coggate::OwnedBuffer>);
 
-static_assert(!std::is_aggregate_v<agentgate::PublicChallenge>);
+static_assert(!std::is_aggregate_v<coggate::PublicChallenge>);
 static_assert(std::is_same_v<
-              decltype(std::declval<const agentgate::PublicChallenge &>()
+              decltype(std::declval<const coggate::PublicChallenge &>()
                            .answer_encoding()),
-              agentgate::AnswerEncoding>);
+              coggate::AnswerEncoding>);
 static_assert(!std::is_constructible_v<
-              agentgate::PublicChallenge, std::string, std::string,
+              coggate::PublicChallenge, std::string, std::string,
               std::string, std::int64_t, std::int64_t, std::string,
-              agentgate::AnswerEncoding>);
+              coggate::AnswerEncoding>);
 
-static_assert(!std::is_copy_constructible_v<agentgate::Service>);
-static_assert(!std::is_copy_assignable_v<agentgate::Service>);
-static_assert(!std::is_constructible_v<agentgate::Service, ag_service *>);
-static_assert(std::is_nothrow_move_constructible_v<agentgate::Service>);
-static_assert(std::is_nothrow_move_assignable_v<agentgate::Service>);
-static_assert(std::is_nothrow_destructible_v<agentgate::Service>);
+static_assert(!std::is_copy_constructible_v<coggate::Service>);
+static_assert(!std::is_copy_assignable_v<coggate::Service>);
+static_assert(!std::is_constructible_v<coggate::Service, ag_service *>);
+static_assert(std::is_nothrow_move_constructible_v<coggate::Service>);
+static_assert(std::is_nothrow_move_assignable_v<coggate::Service>);
+static_assert(std::is_nothrow_destructible_v<coggate::Service>);
 static_assert(std::is_same_v<
-              decltype(std::declval<agentgate::Service &>().close()), void>);
-static_assert(!noexcept(std::declval<agentgate::Service &>().close()));
-static_assert(std::has_virtual_destructor_v<agentgate::Lifecycle>);
-static_assert(std::has_virtual_destructor_v<agentgate::KeyProvider>);
-static_assert(std::has_virtual_destructor_v<agentgate::Observer>);
-static_assert(noexcept(agentgate::detail::release_callback_buffer(
+              decltype(std::declval<coggate::Service &>().close()), void>);
+static_assert(!noexcept(std::declval<coggate::Service &>().close()));
+static_assert(std::has_virtual_destructor_v<coggate::Lifecycle>);
+static_assert(std::has_virtual_destructor_v<coggate::KeyProvider>);
+static_assert(std::has_virtual_destructor_v<coggate::Observer>);
+static_assert(noexcept(coggate::detail::release_callback_buffer(
     nullptr, nullptr, 0U)));
-static_assert(noexcept(agentgate::detail::CallbackBridge::store_issued(
+static_assert(noexcept(coggate::detail::CallbackBridge::store_issued(
     nullptr, {}, {}, AG_ATTEMPT_LIMIT_ONE)));
-static_assert(noexcept(agentgate::detail::CallbackBridge::begin_attempt(
+static_assert(noexcept(coggate::detail::CallbackBridge::begin_attempt(
     nullptr, {}, {}, 0, nullptr, nullptr)));
-static_assert(noexcept(agentgate::detail::CallbackBridge::finish_attempt(
+static_assert(noexcept(coggate::detail::CallbackBridge::finish_attempt(
     nullptr, {}, AG_ATTEMPT_OUTCOME_SYSTEM_FAILURE)));
-static_assert(noexcept(agentgate::detail::CallbackBridge::active_key(
+static_assert(noexcept(coggate::detail::CallbackBridge::active_key(
     nullptr, nullptr, nullptr)));
-static_assert(noexcept(agentgate::detail::CallbackBridge::key_by_id(
+static_assert(noexcept(coggate::detail::CallbackBridge::key_by_id(
     nullptr, {}, nullptr)));
 static_assert(noexcept(
-    agentgate::detail::CallbackBridge::observe(nullptr, {})));
+    coggate::detail::CallbackBridge::observe(nullptr, {})));
 
 int main() {
   return model_contract() && fixture_contract() && status_contract() &&

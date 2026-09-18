@@ -1,7 +1,7 @@
-#ifndef AGENTGATE_C_TEST_HARNESS_H
-#define AGENTGATE_C_TEST_HARNESS_H
+#ifndef COGGATE_C_TEST_HARNESS_H
+#define COGGATE_C_TEST_HARNESS_H
 
-#include "agentgate.h"
+#include "coggate.h"
 #include "generated_fixtures.h"
 
 #include <stdbool.h>
@@ -129,4 +129,4 @@ bool ag_test_forbidden_sentinels_absent(
     const ag_test_harness *harness, const ag_owned_buffer *out,
     const char *sentinels_json);
 
-#endif /* AGENTGATE_C_TEST_HARNESS_H */
+#endif /* COGGATE_C_TEST_HARNESS_H */

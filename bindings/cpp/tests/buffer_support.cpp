@@ -1,4 +1,4 @@
-#include "agentgate.h"
+#include "coggate.h"
 
 #include <array>
 #include <cstdint>
@@ -13,29 +13,29 @@ struct TestState {
   TestState() { key.fill(0x11U); }
 };
 
-void AG_CALL release_output(void *, std::uint8_t *, std::size_t) {}
+void COGGATE_CALL release_output(void *, std::uint8_t *, std::size_t) {}
 
 ag_host_buffer host_buffer(std::uint8_t *data, std::size_t size) {
   return {data, size, nullptr, release_output};
 }
 
-ag_lifecycle_status AG_CALL store_issued(void *, ag_byte_slice, ag_byte_slice,
+ag_lifecycle_status COGGATE_CALL store_issued(void *, ag_byte_slice, ag_byte_slice,
                                          ag_attempt_limit) {
   return AG_LIFECYCLE_STATUS_OK;
 }
 
-ag_begin_status AG_CALL begin_attempt(void *, ag_byte_slice, ag_byte_slice,
+ag_begin_status COGGATE_CALL begin_attempt(void *, ag_byte_slice, ag_byte_slice,
                                       std::int64_t, ag_host_buffer *,
                                       ag_host_buffer *) {
   return AG_BEGIN_STATUS_INTERNAL;
 }
 
-ag_lifecycle_status AG_CALL finish_attempt(void *, ag_byte_slice,
+ag_lifecycle_status COGGATE_CALL finish_attempt(void *, ag_byte_slice,
                                             ag_attempt_outcome) {
   return AG_LIFECYCLE_STATUS_INTERNAL;
 }
 
-ag_key_status AG_CALL active_key(void *user_data, ag_host_buffer *key_id_out,
+ag_key_status COGGATE_CALL active_key(void *user_data, ag_host_buffer *key_id_out,
                                  ag_host_buffer *key_out) {
   if (user_data == nullptr || key_id_out == nullptr || key_out == nullptr) {
     return AG_KEY_STATUS_INVALID_MATERIAL;
@@ -46,7 +46,7 @@ ag_key_status AG_CALL active_key(void *user_data, ag_host_buffer *key_id_out,
   return AG_KEY_STATUS_OK;
 }
 
-ag_key_status AG_CALL key_by_id(void *, ag_byte_slice, ag_host_buffer *) {
+ag_key_status COGGATE_CALL key_by_id(void *, ag_byte_slice, ag_host_buffer *) {
   return AG_KEY_STATUS_NOT_FOUND;
 }
 

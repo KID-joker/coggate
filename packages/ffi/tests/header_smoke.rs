@@ -158,3 +158,20 @@ fn public_header_compiles_as_strict_c11() {
     #[cfg(unix)]
     assert_undefined_exports(&object);
 }
+
+#[test]
+fn public_header_uses_coggate_macro_namespace() {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let header =
+        fs::read_to_string(manifest.join("include/coggate.h")).expect("read public C header");
+
+    for expected in ["COGGATE_API", "COGGATE_CALL", "COGGATE_STATIC"] {
+        assert!(header.contains(expected), "missing public macro {expected}");
+    }
+    for legacy in ["AG_API", "AG_CALL"] {
+        assert!(
+            !header.contains(legacy),
+            "legacy public macro remains: {legacy}"
+        );
+    }
+}

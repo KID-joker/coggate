@@ -1,4 +1,4 @@
-#include "agentgate.h"
+#include "coggate.h"
 #include "../tests/generated_fixtures.h"
 
 #include <stdio.h>
@@ -52,7 +52,7 @@ static int copy(uint8_t *out, size_t *out_len, const void *data, size_t len) {
     return 1;
 }
 
-static void AG_CALL release_output(void *release_data, uint8_t *data,
+static void COGGATE_CALL release_output(void *release_data, uint8_t *data,
                                    size_t len) {
     example_output *output = (example_output *)release_data;
     if (output == NULL || output->owner == NULL) {
@@ -77,7 +77,7 @@ static int write_output(example_output *storage, const void *data, size_t len,
     return 1;
 }
 
-static ag_lifecycle_status AG_CALL
+static ag_lifecycle_status COGGATE_CALL
 store_issued(void *user_data, ag_byte_slice private_json, ag_byte_slice binding,
              ag_attempt_limit attempt_limit) {
     example_state *state = (example_state *)user_data;
@@ -91,7 +91,7 @@ store_issued(void *user_data, ag_byte_slice private_json, ag_byte_slice binding,
     return AG_LIFECYCLE_STATUS_OK;
 }
 
-static ag_begin_status AG_CALL
+static ag_begin_status COGGATE_CALL
 begin_attempt(void *user_data, ag_byte_slice identity_json,
               ag_byte_slice binding, int64_t server_time,
               ag_host_buffer *material_out, ag_host_buffer *token_out) {
@@ -115,7 +115,7 @@ begin_attempt(void *user_data, ag_byte_slice identity_json,
     return AG_BEGIN_STATUS_OK;
 }
 
-static ag_lifecycle_status AG_CALL finish_attempt(void *user_data,
+static ag_lifecycle_status COGGATE_CALL finish_attempt(void *user_data,
                                                    ag_byte_slice token,
                                                    ag_attempt_outcome outcome) {
     (void)user_data;
@@ -127,7 +127,7 @@ static ag_lifecycle_status AG_CALL finish_attempt(void *user_data,
     return AG_LIFECYCLE_STATUS_OK;
 }
 
-static ag_key_status AG_CALL active_key(void *user_data,
+static ag_key_status COGGATE_CALL active_key(void *user_data,
                                         ag_host_buffer *key_id_out,
                                         ag_host_buffer *key_out) {
     example_state *state = (example_state *)user_data;
@@ -143,7 +143,7 @@ static ag_key_status AG_CALL active_key(void *user_data,
     return AG_KEY_STATUS_OK;
 }
 
-static ag_key_status AG_CALL key_by_id(void *user_data, ag_byte_slice key_id,
+static ag_key_status COGGATE_CALL key_by_id(void *user_data, ag_byte_slice key_id,
                                        ag_host_buffer *key_out) {
     example_state *state = (example_state *)user_data;
     size_t expected_len = strlen(AG_BINDING_FIXTURE_VECTORS.old_key_id);
@@ -159,7 +159,7 @@ static ag_key_status AG_CALL key_by_id(void *user_data, ag_byte_slice key_id,
     return AG_KEY_STATUS_OK;
 }
 
-static void AG_CALL observe(void *user_data, ag_byte_slice event_json) {
+static void COGGATE_CALL observe(void *user_data, ag_byte_slice event_json) {
     (void)user_data;
     (void)event_json;
 }
@@ -178,7 +178,7 @@ static int expect_ok(ag_status status, const char *operation) {
     if (status == AG_STATUS_OK) {
         return 1;
     }
-    fprintf(stderr, "%s failed with AgentGate status %d\n", operation,
+    fprintf(stderr, "%s failed with CogGate status %d\n", operation,
             (int)status);
     return 0;
 }

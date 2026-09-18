@@ -1,31 +1,31 @@
-#ifndef AGENTGATE_H
-#define AGENTGATE_H
+#ifndef COGGATE_H
+#define COGGATE_H
 
 #include <stddef.h>
 #include <stdint.h>
 
 /*
- * AgentGate stable synchronous C ABI, version 1.
+ * CogGate stable synchronous C ABI, version 1.
  *
- * Define AGENTGATE_STATIC when linking a static library on Windows. Define
- * AGENTGATE_BUILDING_DLL only while building the AgentGate DLL. All callbacks
- * and exports use the platform C calling convention selected by AG_CALL.
+ * Define COGGATE_STATIC when linking a static library on Windows. Define
+ * COGGATE_BUILDING_DLL only while building the CogGate DLL. All callbacks
+ * and exports use the platform C calling convention selected by COGGATE_CALL.
  */
 #if defined(_WIN32)
-#  if defined(AGENTGATE_STATIC)
-#    define AG_API
-#  elif defined(AGENTGATE_BUILDING_DLL)
-#    define AG_API __declspec(dllexport)
+#  if defined(COGGATE_STATIC)
+#    define COGGATE_API
+#  elif defined(COGGATE_BUILDING_DLL)
+#    define COGGATE_API __declspec(dllexport)
 #  else
-#    define AG_API __declspec(dllimport)
+#    define COGGATE_API __declspec(dllimport)
 #  endif
-#  define AG_CALL __cdecl
+#  define COGGATE_CALL __cdecl
 #elif defined(__GNUC__) || defined(__clang__)
-#  define AG_API __attribute__((visibility("default")))
-#  define AG_CALL
+#  define COGGATE_API __attribute__((visibility("default")))
+#  define COGGATE_CALL
 #else
-#  define AG_API
-#  define AG_CALL
+#  define COGGATE_API
+#  define COGGATE_CALL
 #endif
 
 #ifdef __cplusplus
@@ -97,7 +97,7 @@ typedef uint32_t ag_attempt_limit;
 /*
  * Borrowed bytes. A null data pointer is valid only when len is zero. A
  * non-null pointer must remain readable and unmodified for the synchronous
- * call or callback receiving it. AgentGate never retains borrowed inputs.
+ * call or callback receiving it. CogGate never retains borrowed inputs.
  */
 typedef struct ag_byte_slice {
     const uint8_t *data;
@@ -119,19 +119,19 @@ typedef struct ag_owned_buffer {
 
 /*
  * Releases host-owned callback output. The exact release_data/data/len tuple
- * is returned once after AgentGate's last read when the producing callback
+ * is returned once after CogGate's last read when the producing callback
  * returns its OK status. The function must accept len == 0 and must not throw,
  * unwind, longjmp, or reenter the same service.
  */
-typedef void (AG_CALL *ag_host_release)(
+typedef void (COGGATE_CALL *ag_host_release)(
     void *release_data,
     uint8_t *data,
     size_t len
 );
 
 /*
- * Host-owned callback output. Ownership transfers to AgentGate only when the
- * callback returns OK. Otherwise AgentGate neither reads nor releases it.
+ * Host-owned callback output. Ownership transfers to CogGate only when the
+ * callback returns OK. Otherwise CogGate neither reads nor releases it.
  * After transfer, every non-null data pointer requires a release callback,
  * including for len == 0. Required outputs must be nonempty; optional outputs
  * may use {NULL, 0, NULL, NULL}.
@@ -148,7 +148,7 @@ typedef struct ag_host_buffer {
  * Documented non-OK lifecycle values map to AG_STATUS_INTERNAL_ERROR; unknown
  * values map to AG_STATUS_CALLBACK_FAILED.
  */
-typedef ag_lifecycle_status (AG_CALL *ag_store_issued_callback)(
+typedef ag_lifecycle_status (COGGATE_CALL *ag_store_issued_callback)(
     void *user_data,
     ag_byte_slice private_json,
     ag_byte_slice binding,
@@ -160,7 +160,7 @@ typedef ag_lifecycle_status (AG_CALL *ag_store_issued_callback)(
  * Its infrastructure values 1-3 map to AG_STATUS_INTERNAL_ERROR; an unknown
  * value or malformed successful output maps to AG_STATUS_CALLBACK_FAILED.
  */
-typedef ag_begin_status (AG_CALL *ag_begin_attempt_callback)(
+typedef ag_begin_status (COGGATE_CALL *ag_begin_attempt_callback)(
     void *user_data,
     ag_byte_slice identity_json,
     ag_byte_slice binding,
@@ -172,9 +172,9 @@ typedef ag_begin_status (AG_CALL *ag_begin_attempt_callback)(
 /*
  * finish_attempt values 1-3 override the pending result with
  * AG_STATUS_INTERNAL_ERROR; an unknown value overrides it with
- * AG_STATUS_CALLBACK_FAILED. AgentGate never retries lifecycle callbacks.
+ * AG_STATUS_CALLBACK_FAILED. CogGate never retries lifecycle callbacks.
  */
-typedef ag_lifecycle_status (AG_CALL *ag_finish_attempt_callback)(
+typedef ag_lifecycle_status (COGGATE_CALL *ag_finish_attempt_callback)(
     void *user_data,
     ag_byte_slice token,
     ag_attempt_outcome outcome
@@ -187,19 +187,19 @@ typedef ag_lifecycle_status (AG_CALL *ag_finish_attempt_callback)(
  * to AG_STATUS_INTERNAL_ERROR. Unknown values and malformed successful outputs
  * map to AG_STATUS_CALLBACK_FAILED.
  */
-typedef ag_key_status (AG_CALL *ag_active_key_callback)(
+typedef ag_key_status (COGGATE_CALL *ag_active_key_callback)(
     void *user_data,
     ag_host_buffer *key_id_out,
     ag_host_buffer *key_out
 );
 
-typedef ag_key_status (AG_CALL *ag_key_by_id_callback)(
+typedef ag_key_status (COGGATE_CALL *ag_key_by_id_callback)(
     void *user_data,
     ag_byte_slice key_id,
     ag_host_buffer *key_out
 );
 
-typedef void (AG_CALL *ag_observe_callback)(
+typedef void (COGGATE_CALL *ag_observe_callback)(
     void *user_data,
     ag_byte_slice event_json
 );
@@ -266,21 +266,21 @@ typedef struct ag_observer_callbacks {
  *   inside their callback and return a documented closed status.
  * - Callback output pointers are writable only during their callback and must
  *   not be retained. Host code must not access a top-level output buffer while
- *   its AgentGate call is in progress.
+ *   its CogGate call is in progress.
  */
 
 /* Opaque synchronized service handle. */
 typedef struct ag_service ag_service;
 
 /* Returns AG_ABI_VERSION_1. */
-AG_API uint32_t AG_CALL ag_abi_version(void);
+COGGATE_API uint32_t COGGATE_CALL ag_abi_version(void);
 
 /*
  * Returns the core package version as immutable borrowed UTF-8 bytes. The
- * storage is valid while the AgentGate library remains loaded (normally the
+ * storage is valid while the CogGate library remains loaded (normally the
  * process lifetime), is not NUL-terminated, and must not be released.
  */
-AG_API ag_byte_slice AG_CALL ag_core_version(void);
+COGGATE_API ag_byte_slice COGGATE_CALL ag_core_version(void);
 
 /*
  * Creates a service. lifecycle, keys, and out are required; observer may be
@@ -292,7 +292,7 @@ AG_API ag_byte_slice AG_CALL ag_core_version(void);
  * prefix. The caller owns callback user_data and function lifetimes described
  * above.
  */
-AG_API ag_status AG_CALL ag_service_create(
+COGGATE_API ag_status COGGATE_CALL ag_service_create(
     const ag_lifecycle_callbacks *lifecycle,
     const ag_key_callbacks *keys,
     const ag_observer_callbacks *observer,
@@ -305,7 +305,7 @@ AG_API ag_status AG_CALL ag_service_create(
  * this call begins. Destruction is prohibited while any call or callback is in
  * progress. All callback state must remain valid until destruction returns.
  */
-AG_API ag_status AG_CALL ag_service_destroy(ag_service *service);
+COGGATE_API ag_status COGGATE_CALL ag_service_destroy(ag_service *service);
 
 /*
  * Issues and durably stores a challenge. version is strict UTF-8; binding is
@@ -320,7 +320,7 @@ AG_API ag_status AG_CALL ag_service_destroy(ag_service *service);
  * pointers are borrowed only until return. Calls through one handle are
  * serialized; callbacks must not reenter that handle.
  */
-AG_API ag_status AG_CALL ag_service_issue(
+COGGATE_API ag_status COGGATE_CALL ag_service_issue(
     ag_service *service,
     ag_byte_slice version,
     ag_byte_slice binding,
@@ -341,7 +341,7 @@ AG_API ag_status AG_CALL ag_service_issue(
  * pointers are borrowed only until return. A successful begin_attempt is always
  * followed by one finish_attempt request; finish failure overrides the result.
  */
-AG_API ag_status AG_CALL ag_service_verify(
+COGGATE_API ag_status COGGATE_CALL ag_service_verify(
     ag_service *service,
     ag_byte_slice submission_json,
     ag_byte_slice binding,
@@ -351,14 +351,14 @@ AG_API ag_status AG_CALL ag_service_verify(
 /*
  * Releases one Rust-owned output and resets it to canonical empty. buffer may
  * not be NULL. A non-null data pointer requires the exact unchanged
- * data/len/capacity tuple returned by AgentGate, unique ownership, and no prior
+ * data/len/capacity tuple returned by CogGate, unique ownership, and no prior
  * free. Null data with nonzero metadata and len > capacity are rejected without
  * changing the buffer. Never pass host allocations to this function.
  */
-AG_API ag_status AG_CALL ag_buffer_free(ag_owned_buffer *buffer);
+COGGATE_API ag_status COGGATE_CALL ag_buffer_free(ag_owned_buffer *buffer);
 
 #ifdef __cplusplus
 } /* extern "C" */
 #endif
 
-#endif /* AGENTGATE_H */
+#endif /* COGGATE_H */

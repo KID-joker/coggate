@@ -336,7 +336,7 @@ class RunnerSelfTests(unittest.TestCase):
     def _source_fixture(self, parent, target):
         root = parent / "repo"
         paths = [
-            f"packages/ffi/include/{LEGACY_SOURCE_STEM}.h",
+            "packages/ffi/include/coggate.h",
             f"target/release/{target.shared_name}",
             f"target/release/{target.static_name}",
             "bindings/go/go.mod",
@@ -775,7 +775,7 @@ class RunnerSelfTests(unittest.TestCase):
         ):
             parent = Path(directory).resolve()
             root = self._source_fixture(parent, target_fixture())
-            header = root / f"packages/ffi/include/{LEGACY_SOURCE_STEM}.h"
+            header = root / "packages/ffi/include/coggate.h"
             header.write_text("\n".join(sentinels[:-1]), encoding="utf-8")
             artifact = assemble_artifact(
                 root, parent / "output", target_fixture(), tool_versions_fixture()
@@ -950,9 +950,9 @@ class RunnerSelfTests(unittest.TestCase):
             cases = [
                 (source, lambda: _require_directory(source, "root")),
                 (
-                    source / f"packages/ffi/include/{LEGACY_SOURCE_STEM}.h",
+                    source / "packages/ffi/include/coggate.h",
                     lambda: _require_regular_file(
-                        source / f"packages/ffi/include/{LEGACY_SOURCE_STEM}.h",
+                        source / "packages/ffi/include/coggate.h",
                         "source",
                     ),
                 ),
@@ -5567,7 +5567,7 @@ def collect_artifact_sources(root: Path, target: Target) -> dict[str, Path]:
     _require_directory(root, "repository root")
     sources = {
         "include/coggate.h": _source_file(
-            root, f"packages/ffi/include/{LEGACY_SOURCE_STEM}.h"
+            root, "packages/ffi/include/coggate.h"
         ),
         f"native/{target.shared_name}": _source_file(
             root, f"target/release/{target.shared_name}", "native library"

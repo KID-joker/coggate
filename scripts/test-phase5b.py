@@ -27,15 +27,15 @@ class RunnerError(Exception):
 def platform_library_name(system, static=False):
     names = (
         {
-            "Linux": "libagentgate_ffi.a",
-            "Darwin": "libagentgate_ffi.a",
-            "Windows": "agentgate_ffi.lib",
+            "Linux": "libcoggate_ffi.a",
+            "Darwin": "libcoggate_ffi.a",
+            "Windows": "coggate_ffi.lib",
         }
         if static
         else {
-            "Linux": "libagentgate_ffi.so",
-            "Darwin": "libagentgate_ffi.dylib",
-            "Windows": "agentgate_ffi.dll.lib",
+            "Linux": "libcoggate_ffi.so",
+            "Darwin": "libcoggate_ffi.dylib",
+            "Windows": "coggate_ffi.dll.lib",
         }
     )
     try:
@@ -149,7 +149,7 @@ def windows_library_artifacts(library, static):
 
 
 def _cmake_build(library, runtime_library, static, dry_run, system):
-    with tempfile.TemporaryDirectory(prefix="agentgate-phase5b-cmake-") as directory:
+    with tempfile.TemporaryDirectory(prefix="coggate-phase5b-cmake-") as directory:
         build = Path(directory)
         configure = [
             "cmake",
@@ -157,12 +157,12 @@ def _cmake_build(library, runtime_library, static, dry_run, system):
             BINDINGS_DIR,
             "-B",
             build,
-            "-DAGENTGATE_INCLUDE_DIR=" + str(INCLUDE_DIR),
-            "-DAGENTGATE_LIBRARY=" + str(library),
-            "-DAGENTGATE_STATIC=" + ("ON" if static else "OFF"),
+            "-DCOGGATE_INCLUDE_DIR=" + str(INCLUDE_DIR),
+            "-DCOGGATE_LIBRARY=" + str(library),
+            "-DCOGGATE_STATIC=" + ("ON" if static else "OFF"),
         ]
         if runtime_library is not None:
-            configure.append("-DAGENTGATE_RUNTIME_LIBRARY=" + str(runtime_library))
+            configure.append("-DCOGGATE_RUNTIME_LIBRARY=" + str(runtime_library))
         _run(configure, dry_run)
         build_command = ["cmake", "--build", build]
         ctest_command = ["ctest", "--output-on-failure"]
@@ -207,9 +207,9 @@ def _direct_flags(
             ["-I", nlohmann_include or _nlohmann_include_dir()]
         )
         fixture_path = str(FIXTURE_PATH).replace("\\", "/")
-        flags.append('-DAGENTGATE_BINDING_FIXTURE_PATH="' + fixture_path + '"')
+        flags.append('-DCOGGATE_BINDING_FIXTURE_PATH="' + fixture_path + '"')
     if static:
-        flags.append("-DAGENTGATE_STATIC")
+        flags.append("-DCOGGATE_STATIC")
     flags.append(library)
     if not static:
         flags.append("-Wl,-rpath," + str(library.parent))
@@ -237,7 +237,7 @@ def _direct_build(library, tools, system, static, dry_run):
     nlohmann_include = (
         _nlohmann_include_dir() if cpp_tests or cpp_examples else None
     )
-    with tempfile.TemporaryDirectory(prefix="agentgate-phase5b-native-") as directory:
+    with tempfile.TemporaryDirectory(prefix="coggate-phase5b-native-") as directory:
         build = Path(directory)
         for language, compiler_key in (("c", "cc"), ("cpp", "cxx")):
             tests, examples, test_support, example_support = groups[language]
@@ -304,7 +304,7 @@ def run_phase5b(args):
             raise RunnerError("missing capability: Python 3.11+")
         python_environment = os.environ.copy()
         if not static:
-            python_environment["AGENTGATE_LIBRARY_PATH"] = str(
+            python_environment["COGGATE_LIBRARY_PATH"] = str(
                 runtime_library or library
             )
         _run(
@@ -352,7 +352,7 @@ class RunnerSelfTests(unittest.TestCase):
             side_effect=lambda command, *args, **kwargs: commands.append(command),
         ):
             _cmake_build(
-                Path("agentgate_ffi.lib"),
+                Path("coggate_ffi.lib"),
                 None,
                 True,
                 True,
@@ -370,12 +370,12 @@ class RunnerSelfTests(unittest.TestCase):
         )
 
         self.assertIn(
-            'agentgate_configure_c_target("agentgate_c_example_${stem}" "${source}" TRUE',
+            'coggate_configure_c_target("coggate_c_example_${stem}" "${source}" TRUE',
             c_cmake,
         )
 
     def test_non_native_run_executes_python_contract_and_complete_example(self):
-        release_library = ROOT / "target" / "release" / "libagentgate_ffi.dylib"
+        release_library = ROOT / "target" / "release" / "libcoggate_ffi.dylib"
         args = argparse.Namespace(
             system="Darwin",
             library=None,
@@ -426,15 +426,15 @@ class RunnerSelfTests(unittest.TestCase):
         self.assertTrue(all(keyword.get("cwd") == ROOT for _, _, keyword in commands))
         self.assertTrue(
             all(
-                keyword["env"]["AGENTGATE_LIBRARY_PATH"]
+                keyword["env"]["COGGATE_LIBRARY_PATH"]
                 == str(release_library)
                 for _, _, keyword in commands
             )
         )
 
     def test_windows_runtime_dll_is_forwarded_to_python_subprocesses(self):
-        import_library = Path("C:/native dir/agentgate_ffi.dll.lib")
-        runtime_library = Path("C:/native dir/agentgate_ffi.dll")
+        import_library = Path("C:/native dir/coggate_ffi.dll.lib")
+        runtime_library = Path("C:/native dir/coggate_ffi.dll")
         args = argparse.Namespace(
             system="Windows",
             library=import_library,
@@ -471,11 +471,11 @@ class RunnerSelfTests(unittest.TestCase):
         self.assertEqual(len(commands), 2)
         for _, kwargs in commands:
             self.assertEqual(
-                kwargs["env"]["AGENTGATE_LIBRARY_PATH"], str(runtime_library)
+                kwargs["env"]["COGGATE_LIBRARY_PATH"], str(runtime_library)
             )
 
     def test_static_full_gate_is_rejected_after_native_build(self):
-        static_library = Path("C:/native dir/agentgate_ffi.lib")
+        static_library = Path("C:/native dir/coggate_ffi.lib")
         args = argparse.Namespace(
             system="Windows",
             library=static_library,
@@ -484,7 +484,7 @@ class RunnerSelfTests(unittest.TestCase):
             native_only=False,
         )
         with mock.patch.dict(
-            os.environ, {"AGENTGATE_LIBRARY_PATH": str(static_library)}
+            os.environ, {"COGGATE_LIBRARY_PATH": str(static_library)}
         ), mock.patch.object(
             sys.modules[__name__],
             "detect_tools",
@@ -525,7 +525,7 @@ class RunnerSelfTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        self.assertIn("AGENTGATE_BINDING_FIXTURE_PATH", cpp_cmake)
+        self.assertIn("COGGATE_BINDING_FIXTURE_PATH", cpp_cmake)
         self.assertIn("add_test(NAME ${target} COMMAND ${target})", cpp_cmake)
         self.assertNotIn("generated_fixtures.h", contract)
         self.assertIn("fixture_by_id(\"accepted\")", example)
@@ -539,7 +539,7 @@ class RunnerSelfTests(unittest.TestCase):
         expected = str(FIXTURE_PATH).replace("\\", "/")
         self.assertTrue(
             any(
-                str(flag).startswith("-DAGENTGATE_BINDING_FIXTURE_PATH=")
+                str(flag).startswith("-DCOGGATE_BINDING_FIXTURE_PATH=")
                 and expected in str(flag)
                 for flag in flags
             )
@@ -581,7 +581,7 @@ class RunnerSelfTests(unittest.TestCase):
         self.assertEqual(len(executed), 4)
 
     def test_direct_native_bypasses_cmake_even_when_available_on_linux(self):
-        library = Path("/native/libagentgate_ffi.so")
+        library = Path("/native/libcoggate_ffi.so")
         args = argparse.Namespace(
             system="Linux", library=library, static=False, dry_run=True,
             native_only=True, direct_native=True,
@@ -604,7 +604,7 @@ class RunnerSelfTests(unittest.TestCase):
 
     def test_direct_native_is_rejected_on_windows(self):
         args = argparse.Namespace(
-            system="Windows", library=Path("C:/native/agentgate_ffi.dll.lib"),
+            system="Windows", library=Path("C:/native/coggate_ffi.dll.lib"),
             static=False, dry_run=True, native_only=True, direct_native=True,
         )
         with self.assertRaisesRegex(RunnerError, "--direct-native.*Windows"), mock.patch.object(
@@ -614,7 +614,7 @@ class RunnerSelfTests(unittest.TestCase):
         detect_tools.assert_not_called()
 
     def test_default_native_path_remains_cmake_first(self):
-        library = Path("/native/libagentgate_ffi.so")
+        library = Path("/native/libcoggate_ffi.so")
         args = argparse.Namespace(
             system="Linux", library=library, static=False, dry_run=True,
             native_only=True, direct_native=False,
@@ -692,18 +692,18 @@ class RunnerSelfTests(unittest.TestCase):
         self.assertIn("nlohmann_json::nlohmann_json", cpp_cmake)
 
     def test_platform_release_library_names_are_exact(self):
-        self.assertEqual(platform_library_name("Linux"), "libagentgate_ffi.so")
-        self.assertEqual(platform_library_name("Darwin"), "libagentgate_ffi.dylib")
-        self.assertEqual(platform_library_name("Windows"), "agentgate_ffi.dll.lib")
-        self.assertEqual(platform_library_name("Linux", True), "libagentgate_ffi.a")
-        self.assertEqual(platform_library_name("Darwin", True), "libagentgate_ffi.a")
-        self.assertEqual(platform_library_name("Windows", True), "agentgate_ffi.lib")
+        self.assertEqual(platform_library_name("Linux"), "libcoggate_ffi.so")
+        self.assertEqual(platform_library_name("Darwin"), "libcoggate_ffi.dylib")
+        self.assertEqual(platform_library_name("Windows"), "coggate_ffi.dll.lib")
+        self.assertEqual(platform_library_name("Linux", True), "libcoggate_ffi.a")
+        self.assertEqual(platform_library_name("Darwin", True), "libcoggate_ffi.a")
+        self.assertEqual(platform_library_name("Windows", True), "coggate_ffi.lib")
 
     def test_explicit_library_has_priority_over_release_discovery(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             explicit = root / "custom library.dylib"
-            discovered = root / "target" / "release" / "libagentgate_ffi.dylib"
+            discovered = root / "target" / "release" / "libcoggate_ffi.dylib"
             explicit.write_bytes(b"explicit")
             discovered.parent.mkdir(parents=True)
             discovered.write_bytes(b"discovered")
@@ -763,8 +763,8 @@ class RunnerSelfTests(unittest.TestCase):
     def test_windows_import_and_runtime_libraries_are_paired(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            runtime = root / "agentgate_ffi.dll"
-            import_library = root / "agentgate_ffi.dll.lib"
+            runtime = root / "coggate_ffi.dll"
+            import_library = root / "coggate_ffi.dll.lib"
             runtime.write_bytes(b"runtime")
             import_library.write_bytes(b"import")
 
