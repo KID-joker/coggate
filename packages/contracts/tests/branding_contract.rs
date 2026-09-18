@@ -19,6 +19,309 @@ fn repository_root(manifest_dir: &Path) -> PathBuf {
         .to_path_buf()
 }
 
+fn readme(root: &Path) -> String {
+    fs::read_to_string(root.join("README.md")).expect("README.md must be readable")
+}
+
+fn compact_whitespace(source: &str) -> String {
+    source.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn relative_markdown_links(source: &str) -> Result<Vec<String>, String> {
+    let mut links = Vec::new();
+    let mut in_fence = false;
+    for line in source.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+
+        let mut remainder = line;
+        let mut inline_delimiter = None;
+        while !remainder.is_empty() {
+            if remainder.starts_with('`') {
+                let width = remainder.bytes().take_while(|byte| *byte == b'`').count();
+                inline_delimiter = match inline_delimiter {
+                    None => Some(width),
+                    Some(expected) if expected == width => None,
+                    current => current,
+                };
+                remainder = &remainder[width..];
+                continue;
+            }
+            if inline_delimiter.is_none() && remainder.starts_with("](") {
+                remainder = &remainder[2..];
+                let end = remainder
+                    .find(')')
+                    .ok_or_else(|| "unterminated Markdown link target".to_owned())?;
+                let target = remainder[..end].trim();
+                remainder = &remainder[end + 1..];
+                if target.is_empty() {
+                    return Err("Markdown link target must not be empty".to_owned());
+                }
+                if !target.starts_with("http://")
+                    && !target.starts_with("https://")
+                    && !target.starts_with('#')
+                    && !target.starts_with("mailto:")
+                {
+                    links.push(target.to_owned());
+                }
+                continue;
+            }
+            let width = remainder
+                .chars()
+                .next()
+                .expect("non-empty remainder has a character")
+                .len_utf8();
+            remainder = &remainder[width..];
+        }
+    }
+    Ok(links)
+}
+
+fn validate_relative_markdown_links(root: &Path, source: &str) -> Result<(), String> {
+    let links = relative_markdown_links(source)?;
+    if links.is_empty() {
+        return Err("Markdown must contain at least one relative link".to_owned());
+    }
+    for link in links {
+        let path_text = link.split('#').next().unwrap_or(&link);
+        let path = Path::new(path_text);
+        let bytes = path_text.as_bytes();
+        let has_windows_prefix =
+            bytes.get(1) == Some(&b':') && bytes.first().is_some_and(u8::is_ascii_alphabetic);
+        if path.is_absolute() || path_text.starts_with('\\') || has_windows_prefix {
+            return Err(format!("relative link must not be absolute: {link}"));
+        }
+        if path
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+        {
+            return Err(format!("link must not escape the repository: {link}"));
+        }
+        if !root.join(path).exists() {
+            return Err(format!("relative link target does not exist: {link}"));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn readme_has_product_first_navigation() {
+    let root = repository_root(Path::new(env!("CARGO_MANIFEST_DIR")));
+    let readme = readme(&root);
+    let mut previous_position = None;
+    for heading in [
+        "## What CogGate does",
+        "## How it works",
+        "## Quick start",
+        "## SDKs",
+        "## Core concepts",
+        "## Architecture",
+        "## Benchmarking",
+        "## Release qualification",
+        "## Security considerations",
+        "## Project status",
+        "## Contributing",
+        "## License",
+    ] {
+        let position = readme
+            .lines()
+            .position(|line| line == heading)
+            .unwrap_or_else(|| panic!("README.md is missing stable section heading: {heading}"));
+        if let Some(previous) = previous_position {
+            assert!(
+                previous < position,
+                "README.md section is out of product-first order: {heading}"
+            );
+        }
+        previous_position = Some(position);
+    }
+}
+
+#[test]
+fn readme_links_all_complete_sdk_examples_and_release_workflows() {
+    let root = repository_root(Path::new(env!("CARGO_MANIFEST_DIR")));
+    let readme = readme(&root);
+    for path in [
+        "bindings/c/examples/complete.c",
+        "bindings/cpp/examples/complete.cpp",
+        "bindings/python/examples/complete.py",
+        "bindings/go/examples/complete/main.go",
+        "bindings/java/examples/Complete.java",
+        "bindings/node/examples/complete.js",
+        ".github/workflows/phase5d.yml",
+        ".github/workflows/phase6a.yml",
+        ".github/workflows/phase6b.yml",
+        "LICENSE",
+    ] {
+        assert!(
+            root.join(path).exists(),
+            "README target does not exist: {path}"
+        );
+        assert!(
+            readme.contains(&format!("]({path})")),
+            "README.md must link to {path}"
+        );
+    }
+
+    for required_text in [
+        "https://github.com/KID-joker/coggate",
+        "git clone https://github.com/KID-joker/coggate.git",
+        "not cryptographic proof of agent identity",
+        "not published to public package registries",
+    ] {
+        assert!(
+            readme.contains(required_text),
+            "README.md is missing stable integration guidance: {required_text}"
+        );
+    }
+}
+
+#[test]
+fn readme_documents_the_production_java_native_loading_api() {
+    let root = repository_root(Path::new(env!("CARGO_MANIFEST_DIR")));
+    let readme = readme(&root);
+    assert!(
+        readme.contains("Service.loadNative(Path)"),
+        "README.md must document the production Java native-loading API"
+    );
+    assert!(
+        !readme.contains("coggate.jni.path"),
+        "README.md must not present the Java test-only property as a production API"
+    );
+}
+
+#[test]
+fn readme_lists_the_complete_workspace_gate_prerequisites() {
+    let root = repository_root(Path::new(env!("CARGO_MANIFEST_DIR")));
+    let readme = readme(&root);
+    let readme = compact_whitespace(&readme);
+    for prerequisite in [
+        "Rust 1.85 or newer",
+        "Python 3",
+        "C11 compiler",
+        "`nm`",
+        "JDK 17 or newer",
+        "Maven",
+        "first run may download",
+    ] {
+        assert!(
+            readme.contains(prerequisite),
+            "README.md must disclose the full workspace prerequisite: {prerequisite}"
+        );
+    }
+}
+
+#[test]
+fn readme_distinguishes_workspace_and_phase6a_toolchain_requirements() {
+    let root = repository_root(Path::new(env!("CARGO_MANIFEST_DIR")));
+    let readme = readme(&root);
+    let compact = compact_whitespace(&readme);
+    for required_text in [
+        "Phase 6A `run-baselines` requires C, C++, Rust, Go, and Java toolchains",
+        "Go and C++ are not prerequisites for the workspace gate",
+        "Node.js is required only for the Node.js SDK",
+    ] {
+        assert!(
+            compact.contains(required_text),
+            "README.md is missing toolchain scope guidance: {required_text}"
+        );
+    }
+    assert!(
+        !compact.contains(
+            "Go, Node.js, and a C++ toolchain are needed only for their corresponding SDK-specific tests and examples"
+        ),
+        "README.md must not exclude Go and C++ from Phase 6A prerequisites"
+    );
+}
+
+#[test]
+fn readme_creates_the_phase6a_output_parent_before_benchmark_commands() {
+    let root = repository_root(Path::new(env!("CARGO_MANIFEST_DIR")));
+    let readme = readme(&root);
+    let mkdir = "mkdir -p target/phase6a/quick";
+    let first_command = "cargo run -p coggate-benchmark --bin coggate-bench -- run-baselines";
+    let mkdir_position = readme
+        .find(mkdir)
+        .expect("README.md must create the Phase 6A quick output directory");
+    let command_position = readme
+        .find(first_command)
+        .expect("README.md must document the Phase 6A baseline command");
+    assert!(
+        mkdir_position < command_position,
+        "README.md must create the Phase 6A output parent before benchmark commands"
+    );
+}
+
+#[test]
+fn readme_keeps_binding_out_of_the_client_submission_boundary() {
+    let root = repository_root(Path::new(env!("CARGO_MANIFEST_DIR")));
+    let readme = readme(&root);
+    let compact = compact_whitespace(&readme);
+    for required_text in [
+        "Submissions contain only `challenge_id`, `nonce`, and `answer`",
+        "The server reconstructs the binding from trusted application context",
+        "never trusts a client-supplied binding",
+        "exactly matches the stored binding",
+    ] {
+        assert!(
+            compact.contains(required_text),
+            "README.md is missing trusted binding guidance: {required_text}"
+        );
+    }
+    assert!(
+        !readme.contains("client returns the encoded answer with the application"),
+        "README.md must not describe binding as a client submission field"
+    );
+}
+
+#[test]
+fn readme_relative_markdown_links_stay_inside_the_repository_and_exist() {
+    let root = repository_root(Path::new(env!("CARGO_MANIFEST_DIR")));
+    let readme = readme(&root);
+    validate_relative_markdown_links(&root, &readme)
+        .unwrap_or_else(|error| panic!("README.md link validation failed: {error}"));
+}
+
+#[test]
+fn markdown_link_validator_rejects_empty_targets() {
+    let root = repository_root(Path::new(env!("CARGO_MANIFEST_DIR")));
+    assert!(
+        validate_relative_markdown_links(&root, "[empty]()\n[license](LICENSE)\n").is_err(),
+        "empty Markdown link targets must be rejected"
+    );
+}
+
+#[test]
+fn markdown_link_validator_ignores_code_examples() {
+    let root = repository_root(Path::new(env!("CARGO_MANIFEST_DIR")));
+    let source = "```md\n[fenced](does-not-exist)\n```\n`[inline](also-missing)`\n``[multi](still-missing)``\n[license](LICENSE)\n";
+    assert!(
+        validate_relative_markdown_links(&root, source).is_ok(),
+        "links shown only as code examples must not be validated"
+    );
+}
+
+#[test]
+fn markdown_link_validator_rejects_unsafe_and_missing_real_targets() {
+    let root = repository_root(Path::new(env!("CARGO_MANIFEST_DIR")));
+    for source in [
+        "[missing](does-not-exist)\n",
+        "[absolute](/etc/passwd)\n",
+        "[escape](../outside)\n",
+    ] {
+        assert!(
+            validate_relative_markdown_links(&root, source).is_err(),
+            "unsafe or missing real Markdown link must be rejected: {source}"
+        );
+    }
+}
+
 #[derive(Debug, Eq, PartialEq)]
 struct MavenLicense {
     name: String,
