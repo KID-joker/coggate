@@ -12,7 +12,7 @@ default = []
 insecure-benchmarking = []
 
 [dependencies]
-coggate-contracts = { path = "../contracts" }
+coggate-contracts = { version = "0.1.0", path = "../contracts" }
 base64.workspace = true
 getrandom.workspace = true
 hex.workspace = true

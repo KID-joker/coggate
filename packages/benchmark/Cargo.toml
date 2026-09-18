@@ -12,7 +12,7 @@ name = "coggate-bench"
 path = "src/main.rs"
 
 [dependencies]
-coggate-core = { path = "../core", features = ["insecure-benchmarking"] }
+coggate-core = { version = "0.1.0", path = "../core", features = ["insecure-benchmarking"] }
 base64.workspace = true
 command-group.workspace = true
 hex.workspace = true

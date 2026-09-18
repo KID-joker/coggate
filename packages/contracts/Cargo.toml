@@ -13,4 +13,9 @@ serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+flate2 = "1"
+roxmltree = "0.20"
+tar = "0.4"
 tempfile.workspace = true
+toml = "0.8"
+zip = { version = "2", default-features = false, features = ["deflate"] }
