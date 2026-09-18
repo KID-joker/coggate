@@ -1,4 +1,4 @@
-package agentgate
+package coggate
 
 import (
 	"bytes"
@@ -12,8 +12,8 @@ import (
 const maxBindingBytes = 256
 
 var (
-	errInvalidJSON         = errors.New("invalid AgentGate JSON")
-	errInvalidIssueRequest = errors.New("invalid AgentGate issue request")
+	errInvalidJSON         = errors.New("invalid CogGate JSON")
+	errInvalidIssueRequest = errors.New("invalid CogGate issue request")
 )
 
 // AttemptLimit is the closed V1 verification-attempt budget.

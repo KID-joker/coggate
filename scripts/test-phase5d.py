@@ -340,7 +340,7 @@ class RunnerSelfTests(unittest.TestCase):
             f"target/release/{target.shared_name}",
             f"target/release/{target.static_name}",
             "bindings/go/go.mod",
-            f"bindings/go/{LEGACY_SOURCE_STEM}/service.go",
+            "bindings/go/coggate/service.go",
             "bindings/go/examples/complete/main.go",
             f"bindings/java/target/{LEGACY_SOURCE_STEM}-java-0.1.0-SNAPSHOT.jar",
             "bindings/java/examples/Complete.java",
@@ -373,6 +373,15 @@ class RunnerSelfTests(unittest.TestCase):
         return assemble_artifact(
             source, parent / "output", target, tool_versions_fixture()
         )
+
+    def test_go_artifact_source_rejects_legacy_only_package_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = self._source_fixture(Path(directory), target_fixture())
+            current = source / "bindings/go/coggate"
+            legacy = source / "bindings/go" / ("agent" + "gate")
+            current.rename(legacy)
+            with self.assertRaisesRegex(RunnerError, "artifact path"):
+                collect_artifact_sources(source, target_fixture())
 
     def _remove_layout_path(self, root, relative):
         path = root / relative
@@ -961,11 +970,11 @@ class RunnerSelfTests(unittest.TestCase):
                     lambda: _walk_regular_files(artifact, exclude_metadata=True),
                 ),
                 (
-                    source / f"bindings/go/{LEGACY_SOURCE_STEM}/service.go",
+                    source / "bindings/go/coggate/service.go",
                     lambda: _collect_tree(
                         {},
                         source,
-                        f"bindings/go/{LEGACY_SOURCE_STEM}",
+                        "bindings/go/coggate",
                         "go/coggate",
                     ),
                 ),
@@ -5619,7 +5628,7 @@ def collect_artifact_sources(root: Path, target: Target) -> dict[str, Path]:
     _collect_tree(
         sources,
         root,
-        f"bindings/go/{LEGACY_SOURCE_STEM}",
+        "bindings/go/coggate",
         "go/coggate",
     )
     _collect_tree(

@@ -57,7 +57,7 @@ extern int32_t agGoKeyByID(uintptr_t, const uint8_t *, size_t, ag_host_buffer *)
 extern void agGoObserve(uintptr_t, const uint8_t *, size_t);
 extern void agGoHostReleased(uintptr_t, int32_t);
 
-static ag_lifecycle_status AG_CALL ag_go_store_issued_trampoline(void *user_data,
+static ag_lifecycle_status COGGATE_CALL ag_go_store_issued_trampoline(void *user_data,
                                                                  ag_byte_slice private_json,
                                                                  ag_byte_slice binding,
                                                                  ag_attempt_limit attempt_limit) {
@@ -65,7 +65,7 @@ static ag_lifecycle_status AG_CALL ag_go_store_issued_trampoline(void *user_data
                            binding.data, binding.len, attempt_limit);
 }
 
-static ag_begin_status AG_CALL ag_go_begin_attempt_trampoline(void *user_data,
+static ag_begin_status COGGATE_CALL ag_go_begin_attempt_trampoline(void *user_data,
                                                                ag_byte_slice identity_json,
                                                                ag_byte_slice binding,
                                                                int64_t server_time,
@@ -75,25 +75,25 @@ static ag_begin_status AG_CALL ag_go_begin_attempt_trampoline(void *user_data,
                             binding.data, binding.len, server_time, material_out, token_out);
 }
 
-static ag_lifecycle_status AG_CALL ag_go_finish_attempt_trampoline(void *user_data,
+static ag_lifecycle_status COGGATE_CALL ag_go_finish_attempt_trampoline(void *user_data,
                                                                     ag_byte_slice token,
                                                                     ag_attempt_outcome outcome) {
     return agGoFinishAttempt((uintptr_t)user_data, token.data, token.len, outcome);
 }
 
-static ag_key_status AG_CALL ag_go_active_key_trampoline(void *user_data,
+static ag_key_status COGGATE_CALL ag_go_active_key_trampoline(void *user_data,
                                                           ag_host_buffer *key_id_out,
                                                           ag_host_buffer *key_out) {
     return agGoActiveKey((uintptr_t)user_data, key_id_out, key_out);
 }
 
-static ag_key_status AG_CALL ag_go_key_by_id_trampoline(void *user_data,
+static ag_key_status COGGATE_CALL ag_go_key_by_id_trampoline(void *user_data,
                                                          ag_byte_slice key_id,
                                                          ag_host_buffer *key_out) {
     return agGoKeyByID((uintptr_t)user_data, key_id.data, key_id.len, key_out);
 }
 
-static void AG_CALL ag_go_observe_trampoline(void *user_data, ag_byte_slice event_json) {
+static void COGGATE_CALL ag_go_observe_trampoline(void *user_data, ag_byte_slice event_json) {
     agGoObserve((uintptr_t)user_data, event_json.data, event_json.len);
 }
 
@@ -165,7 +165,7 @@ static void ag_go_zero_bytes(uint8_t *data, size_t len) {
     while (len-- != 0) *cursor++ = 0;
 }
 
-static void AG_CALL ag_go_host_release(void *release_data, uint8_t *data, size_t len) {
+static void COGGATE_CALL ag_go_host_release(void *release_data, uint8_t *data, size_t len) {
     ag_go_host_allocation *allocation = (ag_go_host_allocation *)release_data;
     if (allocation == NULL) return;
     if (data == allocation->bytes && len == allocation->len &&
@@ -323,13 +323,13 @@ ag_go_resolver_test_result ag_go_test_resolve_exports(int missing_library,
 
 #if defined(_WIN32)
 
-typedef uint32_t (AG_CALL *ag_go_abi_version_fn)(void);
-typedef ag_byte_slice (AG_CALL *ag_go_core_version_fn)(void);
-typedef ag_status (AG_CALL *ag_go_service_create_fn)(const ag_lifecycle_callbacks *, const ag_key_callbacks *, const ag_observer_callbacks *, ag_service **);
-typedef ag_status (AG_CALL *ag_go_service_destroy_fn)(ag_service *);
-typedef ag_status (AG_CALL *ag_go_service_issue_fn)(ag_service *, ag_byte_slice, ag_byte_slice, ag_attempt_limit, ag_owned_buffer *);
-typedef ag_status (AG_CALL *ag_go_service_verify_fn)(ag_service *, ag_byte_slice, ag_byte_slice, ag_owned_buffer *);
-typedef ag_status (AG_CALL *ag_go_buffer_free_fn)(ag_owned_buffer *);
+typedef uint32_t (COGGATE_CALL *ag_go_abi_version_fn)(void);
+typedef ag_byte_slice (COGGATE_CALL *ag_go_core_version_fn)(void);
+typedef ag_status (COGGATE_CALL *ag_go_service_create_fn)(const ag_lifecycle_callbacks *, const ag_key_callbacks *, const ag_observer_callbacks *, ag_service **);
+typedef ag_status (COGGATE_CALL *ag_go_service_destroy_fn)(ag_service *);
+typedef ag_status (COGGATE_CALL *ag_go_service_issue_fn)(ag_service *, ag_byte_slice, ag_byte_slice, ag_attempt_limit, ag_owned_buffer *);
+typedef ag_status (COGGATE_CALL *ag_go_service_verify_fn)(ag_service *, ag_byte_slice, ag_byte_slice, ag_owned_buffer *);
+typedef ag_status (COGGATE_CALL *ag_go_buffer_free_fn)(ag_owned_buffer *);
 
 struct ag_go_native_exports {
     ag_go_abi_version_fn abi_version;
@@ -440,22 +440,22 @@ ag_status ag_go_windows_init(const uint16_t *path, int include_dll_directory) {
     return ag_go_init_status;
 }
 
-uint32_t AG_CALL ag_go_abi_version(void) { return ag_go_exports.abi_version ? ag_go_exports.abi_version() : 0; }
-ag_byte_slice AG_CALL ag_go_core_version(void) { ag_byte_slice empty = {0}; return ag_go_exports.core_version ? ag_go_exports.core_version() : empty; }
-ag_status AG_CALL ag_go_service_create(const ag_lifecycle_callbacks *a, const ag_key_callbacks *b, const ag_observer_callbacks *c, ag_service **d) { return ag_go_exports.service_create ? ag_go_exports.service_create(a, b, c, d) : AG_STATUS_INTERNAL_ERROR; }
-ag_status AG_CALL ag_go_service_destroy(ag_service *a) { return ag_go_exports.service_destroy ? ag_go_exports.service_destroy(a) : AG_STATUS_INTERNAL_ERROR; }
-ag_status AG_CALL ag_go_service_issue(ag_service *a, ag_byte_slice b, ag_byte_slice c, ag_attempt_limit d, ag_owned_buffer *e) { return ag_go_exports.service_issue ? ag_go_exports.service_issue(a, b, c, d, e) : AG_STATUS_INTERNAL_ERROR; }
-ag_status AG_CALL ag_go_service_verify(ag_service *a, ag_byte_slice b, ag_byte_slice c, ag_owned_buffer *d) { return ag_go_exports.service_verify ? ag_go_exports.service_verify(a, b, c, d) : AG_STATUS_INTERNAL_ERROR; }
-ag_status AG_CALL ag_go_buffer_free(ag_owned_buffer *a) { return ag_go_exports.buffer_free ? ag_go_exports.buffer_free(a) : AG_STATUS_INTERNAL_ERROR; }
+uint32_t COGGATE_CALL ag_go_abi_version(void) { return ag_go_exports.abi_version ? ag_go_exports.abi_version() : 0; }
+ag_byte_slice COGGATE_CALL ag_go_core_version(void) { ag_byte_slice empty = {0}; return ag_go_exports.core_version ? ag_go_exports.core_version() : empty; }
+ag_status COGGATE_CALL ag_go_service_create(const ag_lifecycle_callbacks *a, const ag_key_callbacks *b, const ag_observer_callbacks *c, ag_service **d) { return ag_go_exports.service_create ? ag_go_exports.service_create(a, b, c, d) : AG_STATUS_INTERNAL_ERROR; }
+ag_status COGGATE_CALL ag_go_service_destroy(ag_service *a) { return ag_go_exports.service_destroy ? ag_go_exports.service_destroy(a) : AG_STATUS_INTERNAL_ERROR; }
+ag_status COGGATE_CALL ag_go_service_issue(ag_service *a, ag_byte_slice b, ag_byte_slice c, ag_attempt_limit d, ag_owned_buffer *e) { return ag_go_exports.service_issue ? ag_go_exports.service_issue(a, b, c, d, e) : AG_STATUS_INTERNAL_ERROR; }
+ag_status COGGATE_CALL ag_go_service_verify(ag_service *a, ag_byte_slice b, ag_byte_slice c, ag_owned_buffer *d) { return ag_go_exports.service_verify ? ag_go_exports.service_verify(a, b, c, d) : AG_STATUS_INTERNAL_ERROR; }
+ag_status COGGATE_CALL ag_go_buffer_free(ag_owned_buffer *a) { return ag_go_exports.buffer_free ? ag_go_exports.buffer_free(a) : AG_STATUS_INTERNAL_ERROR; }
 
 #else
 
-uint32_t AG_CALL ag_go_abi_version(void) { return ag_abi_version(); }
-ag_byte_slice AG_CALL ag_go_core_version(void) { return ag_core_version(); }
-ag_status AG_CALL ag_go_service_create(const ag_lifecycle_callbacks *a, const ag_key_callbacks *b, const ag_observer_callbacks *c, ag_service **d) { return ag_service_create(a, b, c, d); }
-ag_status AG_CALL ag_go_service_destroy(ag_service *a) { return ag_service_destroy(a); }
-ag_status AG_CALL ag_go_service_issue(ag_service *a, ag_byte_slice b, ag_byte_slice c, ag_attempt_limit d, ag_owned_buffer *e) { return ag_service_issue(a, b, c, d, e); }
-ag_status AG_CALL ag_go_service_verify(ag_service *a, ag_byte_slice b, ag_byte_slice c, ag_owned_buffer *d) { return ag_service_verify(a, b, c, d); }
-ag_status AG_CALL ag_go_buffer_free(ag_owned_buffer *a) { return ag_buffer_free(a); }
+uint32_t COGGATE_CALL ag_go_abi_version(void) { return ag_abi_version(); }
+ag_byte_slice COGGATE_CALL ag_go_core_version(void) { return ag_core_version(); }
+ag_status COGGATE_CALL ag_go_service_create(const ag_lifecycle_callbacks *a, const ag_key_callbacks *b, const ag_observer_callbacks *c, ag_service **d) { return ag_service_create(a, b, c, d); }
+ag_status COGGATE_CALL ag_go_service_destroy(ag_service *a) { return ag_service_destroy(a); }
+ag_status COGGATE_CALL ag_go_service_issue(ag_service *a, ag_byte_slice b, ag_byte_slice c, ag_attempt_limit d, ag_owned_buffer *e) { return ag_service_issue(a, b, c, d, e); }
+ag_status COGGATE_CALL ag_go_service_verify(ag_service *a, ag_byte_slice b, ag_byte_slice c, ag_owned_buffer *d) { return ag_service_verify(a, b, c, d); }
+ag_status COGGATE_CALL ag_go_buffer_free(ag_owned_buffer *a) { return ag_buffer_free(a); }
 
 #endif

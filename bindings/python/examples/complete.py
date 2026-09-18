@@ -8,7 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "bindings" / "python" / "src"))
 
-from agentgate import (  # noqa: E402
+from coggate import (  # noqa: E402
     ActiveKeyResult,
     BeginAttemptResult,
     IssueRequest,
@@ -16,7 +16,7 @@ from agentgate import (  # noqa: E402
     Service,
     Submission,
 )
-from agentgate import _ffi  # noqa: E402
+from coggate import _ffi  # noqa: E402
 
 
 FIXTURE = json.loads(
@@ -84,11 +84,11 @@ class Observer:
 
 
 def main():
-    configured = os.environ.get("AGENTGATE_LIBRARY_PATH")
+    configured = os.environ.get("COGGATE_LIBRARY_PATH")
     library = Path(configured) if configured else ROOT / "target" / "release" / (
-        "agentgate_ffi.dll" if sys.platform == "win32" else
-        "libagentgate_ffi.dylib" if sys.platform == "darwin" else
-        "libagentgate_ffi.so"
+        "coggate_ffi.dll" if sys.platform == "win32" else
+        "libcoggate_ffi.dylib" if sys.platform == "darwin" else
+        "libcoggate_ffi.so"
     )
     lifecycle = Lifecycle()
     keys = Keys()

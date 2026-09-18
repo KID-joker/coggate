@@ -59,7 +59,7 @@ static const ag_binding_fixture_vectors AG_BINDING_FIXTURE_VECTORS = {
     "2026-08",
     AG_BINDING_FIXTURE_OLD_KEY,
     sizeof(AG_BINDING_FIXTURE_OLD_KEY),
-    "{\"answer_encoding\":\"base64url\",\"answer_mac\":\"b9cb8fd013b40e31c7bc3a1c33b7e36143ef98d045a924ed09ebd38ff07cec2c\",\"challenge_id\":\"Y2hhbGxlbmdlLTEyMzQ1Ng\",\"expires_at\":1788062408,\"generator_version\":\"1.0\",\"issued_at\":1788062400,\"mac_key_id\":\"2026-08\",\"nonce\":\"bm9uY2UtMTIzNDU2Nzg5MA\"}",
+    "{\"answer_encoding\":\"base64url\",\"answer_mac\":\"ccdffbb67b4c9da34f91d56d12970b311d7345e8bcf579d1326fc4a78633330c\",\"challenge_id\":\"Y2hhbGxlbmdlLTEyMzQ1Ng\",\"expires_at\":1788062408,\"generator_version\":\"1.0\",\"issued_at\":1788062400,\"mac_key_id\":\"2026-08\",\"nonce\":\"bm9uY2UtMTIzNDU2Nzg5MA\"}",
     "[\"event\",\"challenge_id\",\"generator_version\",\"disposition\",\"elapsed_since_issue_us\",\"duration_us\"]",
 };
 

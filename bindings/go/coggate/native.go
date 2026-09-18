@@ -1,4 +1,4 @@
-package agentgate
+package coggate
 
 /*
 #cgo CFLAGS: -I${SRCDIR}/../../../packages/ffi/include
@@ -162,7 +162,7 @@ func resolveWindowsNativeLibraryRequest(explicitPath, environmentPath string) (s
 		includeDLLDirectory = path != ""
 	}
 	if path == "" {
-		return "agentgate_ffi.dll", false, nil
+		return "coggate_ffi.dll", false, nil
 	}
 	if !filepath.IsAbs(path) || strings.IndexByte(path, 0) >= 0 {
 		return "", false, errorForStatus(int32(C.AG_STATUS_INVALID_ARGUMENT))

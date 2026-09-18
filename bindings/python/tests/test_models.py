@@ -61,7 +61,7 @@ class AbiLayoutTests(unittest.TestCase):
         )
 
     def test_ctypes_layouts_and_constants_match_c_header(self):
-        from agentgate import _ffi
+        from coggate import _ffi
 
         structures = {
             "AgByteSlice": _ffi.AgByteSlice,
@@ -102,7 +102,7 @@ class AbiLayoutTests(unittest.TestCase):
             "AgObserverCallbacks": "ag_observer_callbacks",
         }
         lines = [
-            '#include "agentgate.h"', "#include <stddef.h>", "#include <stdio.h>",
+            '#include "coggate.h"', "#include <stddef.h>", "#include <stdio.h>",
             "int main(void) {",
         ]
         for python_name, structure in structures.items():
@@ -160,7 +160,7 @@ class AbiLayoutTests(unittest.TestCase):
             self.assertEqual(getattr(_ffi, name), expected[("C", name)])
 
     def test_all_callback_prototypes_use_cdecl_and_exact_types(self):
-        from agentgate import _ffi
+        from coggate import _ffi
 
         self.assertIs(_ffi.AgHostRelease._restype_, None)
         self.assertEqual(_ffi.AgHostRelease._argtypes_, (
@@ -228,25 +228,25 @@ class _FakeLibrary:
 
 class LibraryLoaderTests(unittest.TestCase):
     def test_explicit_path_precedes_environment_and_uses_cdecl_loader(self):
-        from agentgate import _ffi
+        from coggate import _ffi
 
         library = _FakeLibrary()
-        with mock.patch.dict(os.environ, {"AGENTGATE_LIBRARY_PATH": "env-secret.dll"}), mock.patch.object(
+        with mock.patch.dict(os.environ, {"COGGATE_LIBRARY_PATH": "env-secret.dll"}), mock.patch.object(
             _ffi.ctypes, "CDLL", return_value=library
         ) as loader, mock.patch.object(_ffi.ctypes.util, "find_library") as find:
-            loaded = _ffi.load_library(Path("explicit") / "agentgate_ffi.dll")
+            loaded = _ffi.load_library(Path("explicit") / "coggate_ffi.dll")
 
         self.assertIs(loaded, library)
-        loader.assert_called_once_with(os.fspath(Path("explicit") / "agentgate_ffi.dll"))
+        loader.assert_called_once_with(os.fspath(Path("explicit") / "coggate_ffi.dll"))
         find.assert_not_called()
         self.assertIs(_ffi._library_class("win32"), ctypes.CDLL)
         self.assertIs(_ffi._callback_factory("win32"), ctypes.CFUNCTYPE)
 
     def test_environment_precedes_find_library_and_platform_names(self):
-        from agentgate import _ffi
+        from coggate import _ffi
 
         library = _FakeLibrary()
-        with mock.patch.dict(os.environ, {"AGENTGATE_LIBRARY_PATH": "configured-native"}), mock.patch.object(
+        with mock.patch.dict(os.environ, {"COGGATE_LIBRARY_PATH": "configured-native"}), mock.patch.object(
             _ffi.ctypes, "CDLL", return_value=library
         ) as loader, mock.patch.object(_ffi.ctypes.util, "find_library") as find:
             self.assertIs(_ffi.load_library(), library)
@@ -255,12 +255,12 @@ class LibraryLoaderTests(unittest.TestCase):
         find.assert_not_called()
 
     def test_defaults_try_find_library_then_platform_filename(self):
-        from agentgate import _ffi
+        from coggate import _ffi
 
         for platform, filename in (
-            ("linux", "libagentgate_ffi.so"),
-            ("darwin", "libagentgate_ffi.dylib"),
-            ("win32", "agentgate_ffi.dll"),
+            ("linux", "libcoggate_ffi.so"),
+            ("darwin", "libcoggate_ffi.dylib"),
+            ("win32", "coggate_ffi.dll"),
         ):
             with self.subTest(platform=platform):
                 library = _FakeLibrary()
@@ -281,7 +281,7 @@ class LibraryLoaderTests(unittest.TestCase):
                 self.assertEqual(attempts, ["discovered-name", filename])
 
     def test_loader_declares_every_exported_function_exactly(self):
-        from agentgate import _ffi
+        from coggate import _ffi
 
         library = _FakeLibrary()
         with mock.patch.object(_ffi.ctypes, "CDLL", return_value=library):
@@ -314,23 +314,23 @@ class LibraryLoaderTests(unittest.TestCase):
         self.assertIs(library.ag_buffer_free.restype, ctypes.c_int32)
 
     def test_loader_rejects_unsupported_abi_and_hides_candidate_names(self):
-        from agentgate import _ffi
+        from coggate import _ffi
 
         with mock.patch.object(_ffi.ctypes, "CDLL", return_value=_FakeLibrary(2)):
-            with self.assertRaisesRegex(RuntimeError, "unsupported AgentGate ABI version"):
+            with self.assertRaisesRegex(RuntimeError, "unsupported CogGate ABI version"):
                 _ffi.load_library("SECRET_LIBRARY_PATH")
         with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(
             _ffi.ctypes.util, "find_library", return_value=None
         ), mock.patch.object(_ffi.ctypes, "CDLL", side_effect=OSError("SECRET_LIBRARY_PATH")):
             with self.assertRaises(RuntimeError) as raised:
                 _ffi.load_library()
-        self.assertEqual(str(raised.exception), "AgentGate native library not found")
+        self.assertEqual(str(raised.exception), "CogGate native library not found")
         self.assertNotIn("SECRET_LIBRARY_PATH", repr(raised.exception))
 
 
 class ModelTests(unittest.TestCase):
     def test_models_round_trip_exact_canonical_json(self):
-        from agentgate.models import (
+        from coggate.models import (
             AnswerEncoding, PublicChallenge, RejectionReason, Submission,
             VerificationOutcome, VerificationStatus,
         )
@@ -353,7 +353,7 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(rejected.to_json(), '{"status":"rejected","reason":"nonce_mismatch"}')
 
     def test_json_parsing_rejects_unknown_duplicate_and_noncanonical_types(self):
-        from agentgate.models import PublicChallenge, Submission, VerificationOutcome
+        from coggate.models import PublicChallenge, Submission, VerificationOutcome
 
         invalid = [
             (Submission, '{"challenge_id":"id","nonce":"n","answer":"a","extra":1}'),
@@ -371,12 +371,12 @@ class ModelTests(unittest.TestCase):
         ]
         for model, payload in invalid:
             with self.subTest(model=model.__name__, payload=payload):
-                with self.assertRaisesRegex(ValueError, "invalid AgentGate JSON"):
+                with self.assertRaisesRegex(ValueError, "invalid CogGate JSON"):
                     model.from_json(payload)
 
     def test_models_are_frozen_validate_wrapper_inputs_and_hide_sensitive_values(self):
         from dataclasses import FrozenInstanceError
-        from agentgate.models import AttemptLimit, IssueRequest, Submission
+        from coggate.models import AttemptLimit, IssueRequest, Submission
 
         request = IssueRequest.v1(b"BINDING_SENTINEL", AttemptLimit.TWO)
         self.assertEqual(request.version, "1.0")
@@ -385,13 +385,13 @@ class ModelTests(unittest.TestCase):
             request.version = "2.0"
         for binding in (b"", b"x" * 257, bytearray(b"x"), "x"):
             with self.subTest(binding_type=type(binding).__name__, length=len(binding)):
-                with self.assertRaisesRegex(ValueError, "invalid AgentGate binding"):
+                with self.assertRaisesRegex(ValueError, "invalid CogGate binding"):
                     IssueRequest.v1(binding)
-        with self.assertRaisesRegex(ValueError, "invalid AgentGate attempt limit"):
+        with self.assertRaisesRegex(ValueError, "invalid CogGate attempt limit"):
             IssueRequest("1.0", b"x", 1)
 
         submission = Submission("ID_SENTINEL", "NONCE_SENTINEL", "ANSWER_SENTINEL")
-        with self.assertRaisesRegex(ValueError, "invalid AgentGate JSON"):
+        with self.assertRaisesRegex(ValueError, "invalid CogGate JSON"):
             Submission("\ud800", "nonce", "answer")
         request_text = str(request) + repr(request)
         submission_text = str(submission) + repr(submission)
@@ -401,7 +401,7 @@ class ModelTests(unittest.TestCase):
 
 class ErrorTests(unittest.TestCase):
     def test_status_mapping_is_closed_stable_and_secret_free(self):
-        from agentgate.errors import AgentGateError, code_for_status
+        from coggate.errors import CogGateError, code_for_status
 
         expected = {
             0: "ok", 1: "invalid_configuration", 2: "generation_failed",
@@ -412,13 +412,13 @@ class ErrorTests(unittest.TestCase):
         }
         self.assertEqual({status: code_for_status(status) for status in expected}, expected)
         for status in (-1, 8, 99, 103):
-            with self.assertRaisesRegex(ValueError, "invalid AgentGate status"):
+            with self.assertRaisesRegex(ValueError, "invalid CogGate status"):
                 code_for_status(status)
-        error = AgentGateError(7)
+        error = CogGateError(7)
         self.assertEqual(error.status, 7)
         self.assertEqual(error.code, "internal_error")
         self.assertEqual(str(error), "internal_error")
-        self.assertEqual(repr(error), "AgentGateError(code='internal_error')")
+        self.assertEqual(repr(error), "CogGateError(code='internal_error')")
         self.assertNotIn("SECRET_SENTINEL", str(error) + repr(error))
 
 

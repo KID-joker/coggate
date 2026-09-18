@@ -8,7 +8,7 @@ _I64_MAX = 2 ** 63 - 1
 
 
 def _invalid_json():
-    raise ValueError("invalid AgentGate JSON")
+    raise ValueError("invalid CogGate JSON")
 
 
 def _object_without_duplicates(pairs):
@@ -85,11 +85,11 @@ class IssueRequest(_SafeModel):
 
     def __post_init__(self):
         if not _is_utf8_string(self.version):
-            raise ValueError("invalid AgentGate version")
+            raise ValueError("invalid CogGate version")
         if type(self.binding) is not bytes or not 1 <= len(self.binding) <= 256:
-            raise ValueError("invalid AgentGate binding")
+            raise ValueError("invalid CogGate binding")
         if type(self.attempt_limit) is not AttemptLimit:
-            raise ValueError("invalid AgentGate attempt limit")
+            raise ValueError("invalid CogGate attempt limit")
 
     @classmethod
     def v1(cls, binding, attempt_limit=AttemptLimit.ONE):
@@ -104,7 +104,7 @@ class Submission(_SafeModel):
 
     def __post_init__(self):
         if any(not _is_utf8_string(value) for value in (self.challenge_id, self.nonce, self.answer)):
-            raise ValueError("invalid AgentGate JSON")
+            raise ValueError("invalid CogGate JSON")
 
     @classmethod
     def from_json(cls, payload):

@@ -1,6 +1,6 @@
 //go:build windows && amd64
 
-package agentgate
+package coggate
 
 /*
 #cgo CFLAGS: -I${SRCDIR}/../../../packages/ffi/include
@@ -22,7 +22,7 @@ func initializeNativeLibrary(explicitPath string) error {
 
 func loadWindowsNativeLibrary(explicitPath string) error {
 	path, includeDLLDirectory, err := resolveWindowsNativeLibraryRequest(
-		explicitPath, os.Getenv("AGENTGATE_LIBRARY_PATH"),
+		explicitPath, os.Getenv("COGGATE_LIBRARY_PATH"),
 	)
 	if err != nil {
 		return err

@@ -1,3 +1,3 @@
-module github.com/agentgate/agentgate/bindings/go
+module github.com/KID-joker/coggate/bindings/go
 
 go 1.24

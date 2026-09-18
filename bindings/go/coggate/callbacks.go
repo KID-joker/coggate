@@ -1,4 +1,4 @@
-package agentgate
+package coggate
 
 import (
 	"bytes"
@@ -52,7 +52,7 @@ const (
 	AttemptOutcomeSystemFailure
 )
 
-// BeginAttemptResult supplies lifecycle material and an optional token. AgentGate
+// BeginAttemptResult supplies lifecycle material and an optional token. CogGate
 // copies both outputs before returning from the callback.
 type BeginAttemptResult struct {
 	Status   BeginStatus

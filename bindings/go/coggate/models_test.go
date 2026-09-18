@@ -1,4 +1,4 @@
-package agentgate
+package coggate
 
 import (
 	"bytes"
@@ -340,7 +340,7 @@ func TestJSONMethodsUseStrictCodec(t *testing.T) {
 	}
 }
 
-func TestAgentGateErrorMapsStableCodesAndFailsClosed(t *testing.T) {
+func TestCogGateErrorMapsStableCodesAndFailsClosed(t *testing.T) {
 	cases := map[int32]string{
 		1: "invalid_configuration", 2: "generation_failed", 3: "invalid_challenge_material",
 		4: "invalid_answer_encoding", 5: "answer_mismatch", 6: "unsupported_generator_version",
@@ -351,18 +351,18 @@ func TestAgentGateErrorMapsStableCodesAndFailsClosed(t *testing.T) {
 	}
 	for status, code := range cases {
 		err := errorForStatus(status)
-		var agentGateErr *AgentGateError
-		if !errors.As(err, &agentGateErr) {
+		var cogGateErr *CogGateError
+		if !errors.As(err, &cogGateErr) {
 			t.Fatalf("status %d: wrong error type %T", status, err)
 		}
-		if agentGateErr.Code() != code || agentGateErr.Error() != code {
-			t.Fatalf("status %d: got code=%q error=%q", status, agentGateErr.Code(), agentGateErr.Error())
+		if cogGateErr.Code() != code || cogGateErr.Error() != code {
+			t.Fatalf("status %d: got code=%q error=%q", status, cogGateErr.Code(), cogGateErr.Error())
 		}
 	}
 	for _, status := range []int32{-1, 8, 99, 103, math.MaxInt32} {
 		err := errorForStatus(status)
-		var agentGateErr *AgentGateError
-		if !errors.As(err, &agentGateErr) || agentGateErr.Code() != "internal_error" || agentGateErr.Error() != "internal_error" {
+		var cogGateErr *CogGateError
+		if !errors.As(err, &cogGateErr) || cogGateErr.Code() != "internal_error" || cogGateErr.Error() != "internal_error" {
 			t.Fatalf("unknown status %d did not fail closed: %v", status, err)
 		}
 	}

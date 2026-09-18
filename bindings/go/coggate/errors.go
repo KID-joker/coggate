@@ -1,17 +1,17 @@
-package agentgate
+package coggate
 
-// AgentGateError is a stable, detail-free native status error.
-type AgentGateError struct {
+// CogGateError is a stable, detail-free native status error.
+type CogGateError struct {
 	code string
 }
 
 // Error returns only the stable error code.
-func (err *AgentGateError) Error() string {
+func (err *CogGateError) Error() string {
 	return err.code
 }
 
 // Code returns the stable error code.
-func (err *AgentGateError) Code() string {
+func (err *CogGateError) Code() string {
 	return err.code
 }
 
@@ -44,5 +44,5 @@ func errorForStatus(status int32) error {
 	default:
 		code = "internal_error"
 	}
-	return &AgentGateError{code: code}
+	return &CogGateError{code: code}
 }

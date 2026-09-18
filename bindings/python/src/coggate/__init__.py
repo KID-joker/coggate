@@ -1,4 +1,4 @@
-from .errors import AgentGateError
+from .errors import CogGateError
 from .models import (
     AnswerEncoding,
     AttemptLimit,
@@ -12,7 +12,7 @@ from .models import (
 from .service import ActiveKeyResult, BeginAttemptResult, KeyResult, Service
 
 __all__ = [
-    "AgentGateError",
+    "CogGateError",
     "AnswerEncoding",
     "AttemptLimit",
     "IssueRequest",

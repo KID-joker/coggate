@@ -18,22 +18,22 @@ FIXTURE_PATH = ROOT / "fixtures" / "bindings" / "v1.json"
 
 
 def _integration_library_path():
-    configured = os.environ.get("AGENTGATE_LIBRARY_PATH")
+    configured = os.environ.get("COGGATE_LIBRARY_PATH")
     if configured:
         return Path(configured)
     return ROOT / "target" / "release" / (
-        "agentgate_ffi.dll" if sys.platform == "win32" else
-        "libagentgate_ffi.dylib" if sys.platform == "darwin" else
-        "libagentgate_ffi.so"
+        "coggate_ffi.dll" if sys.platform == "win32" else
+        "libcoggate_ffi.dylib" if sys.platform == "darwin" else
+        "libcoggate_ffi.so"
     )
 
 
 LIBRARY_PATH = _integration_library_path()
 sys.path.insert(0, str(SRC))
 
-from agentgate import (  # noqa: E402
+from coggate import (  # noqa: E402
     ActiveKeyResult,
-    AgentGateError,
+    CogGateError,
     AttemptLimit,
     BeginAttemptResult,
     IssueRequest,
@@ -41,7 +41,7 @@ from agentgate import (  # noqa: E402
     Service,
     Submission,
 )
-from agentgate import _ffi  # noqa: E402
+from coggate import _ffi  # noqa: E402
 
 
 MANIFEST = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
@@ -55,9 +55,9 @@ def _hex(field):
 
 class HarnessConfigurationTests(unittest.TestCase):
     def test_explicit_runner_library_environment_precedes_release_default(self):
-        configured = Path("C:/native dir/agentgate_ffi.dll")
+        configured = Path("C:/native dir/coggate_ffi.dll")
         with mock.patch.dict(
-            os.environ, {"AGENTGATE_LIBRARY_PATH": str(configured)}
+            os.environ, {"COGGATE_LIBRARY_PATH": str(configured)}
         ):
             self.assertEqual(_integration_library_path(), configured)
 
@@ -210,7 +210,7 @@ class FixtureIntegrationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         if not LIBRARY_PATH.is_file():
-            raise RuntimeError("release AgentGate library required: {}".format(LIBRARY_PATH))
+            raise RuntimeError("release CogGate library required: {}".format(LIBRARY_PATH))
 
     def test_all_fifteen_shared_fixture_cases(self):
         self.assertEqual(len(CASES), 15)
@@ -231,7 +231,7 @@ class FixtureIntegrationTests(unittest.TestCase):
                         outcome = service.verify(
                             submission, bytes.fromhex(fixture["binding_hex"])
                         )
-                    except AgentGateError as error:
+                    except CogGateError as error:
                         self.assertNotEqual(fixture["expected_status"], 0)
                         self.assertEqual(error.status, fixture["expected_status"])
                         self.assertEqual(error.code, fixture["expected_code"])
@@ -283,9 +283,9 @@ class FixtureIntegrationTests(unittest.TestCase):
         with service:
             self.assertTrue(service.is_open)
         self.assertFalse(service.is_open)
-        with self.assertRaisesRegex(AgentGateError, "^invalid_argument$"):
+        with self.assertRaisesRegex(CogGateError, "^invalid_argument$"):
             service.issue(IssueRequest.v1(b"x"))
-        with self.assertRaisesRegex(AgentGateError, "^invalid_argument$"):
+        with self.assertRaisesRegex(CogGateError, "^invalid_argument$"):
             service.verify(Submission("id", "nonce", "answer"), b"x")
 
     def test_top_level_output_is_freed_before_parse_failure(self):
@@ -293,7 +293,7 @@ class FixtureIntegrationTests(unittest.TestCase):
         service, _, _, _, _ = _make_service(accepted)
         before = service._owned_free_count
         with mock.patch(
-            "agentgate.service.PublicChallenge.from_json",
+            "coggate.service.PublicChallenge.from_json",
             side_effect=ValueError("PARSE_SENTINEL"),
         ), self.assertRaisesRegex(ValueError, "PARSE_SENTINEL"):
             service.issue(IssueRequest.v1(_hex("binding_hex")))
@@ -304,7 +304,7 @@ class FixtureIntegrationTests(unittest.TestCase):
         accepted = next(case for case in CASES if case["id"] == "accepted")
         service, state, _, keys, observer = _make_service(accepted)
         keys.raise_lookup = True
-        with self.assertRaisesRegex(AgentGateError, "^internal_error$") as caught:
+        with self.assertRaisesRegex(CogGateError, "^internal_error$") as caught:
             service.verify(
                 Submission.from_json(json.dumps(accepted["submission"])),
                 _hex("binding_hex"),
@@ -316,14 +316,14 @@ class FixtureIntegrationTests(unittest.TestCase):
 
         service, _, lifecycle, _, _ = _make_service(accepted)
         lifecycle.raise_store = True
-        with self.assertRaisesRegex(AgentGateError, "^internal_error$") as caught:
+        with self.assertRaisesRegex(CogGateError, "^internal_error$") as caught:
             service.issue(IssueRequest.v1(b"x"))
         self.assertNotIn("STORE_SECRET_SENTINEL", repr(caught.exception))
         service.close()
 
         service, _, lifecycle, _, _ = _make_service(accepted)
         lifecycle.raise_finish = True
-        with self.assertRaisesRegex(AgentGateError, "^internal_error$") as caught:
+        with self.assertRaisesRegex(CogGateError, "^internal_error$") as caught:
             service.verify(
                 Submission.from_json(json.dumps(accepted["submission"])),
                 _hex("binding_hex"),
@@ -333,7 +333,7 @@ class FixtureIntegrationTests(unittest.TestCase):
 
         service, _, _, keys, _ = _make_service(accepted)
         keys.raise_active = True
-        with self.assertRaisesRegex(AgentGateError, "^internal_error$") as caught:
+        with self.assertRaisesRegex(CogGateError, "^internal_error$") as caught:
             service.issue(IssueRequest.v1(b"x"))
         self.assertNotIn("ACTIVE_KEY_SECRET_SENTINEL", repr(caught.exception))
         service.close()
@@ -355,7 +355,7 @@ class FixtureIntegrationTests(unittest.TestCase):
         def same_issue():
             try:
                 service_a.issue(IssueRequest.v1(b"x"))
-            except AgentGateError as error:
+            except CogGateError as error:
                 seen.append(error.code)
 
         lifecycle_a.reenter = same_issue
@@ -391,7 +391,7 @@ class FixtureIntegrationTests(unittest.TestCase):
     def _capture_code(action):
         try:
             action()
-        except AgentGateError as error:
+        except CogGateError as error:
             return error.code
         return "not_rejected"
 
@@ -458,7 +458,7 @@ class FixtureIntegrationTests(unittest.TestCase):
         self.assertIsNone(reference())
 
     def test_callback_registry_requires_exact_tuple_and_releases_once(self):
-        from agentgate.service import _AllocationRegistry
+        from coggate.service import _AllocationRegistry
 
         registry = _AllocationRegistry()
         release = _ffi.AgHostRelease(registry.release)
@@ -476,7 +476,7 @@ class FixtureIntegrationTests(unittest.TestCase):
         self.assertEqual(registry.release_count, 1)
 
     def test_double_output_allocation_failures_are_closed_without_transfer(self):
-        from agentgate import service as service_module
+        from coggate import service as service_module
 
         accepted = next(case for case in CASES if case["id"] == "accepted")
         state = FixtureState(accepted)
@@ -555,7 +555,7 @@ class FixtureIntegrationTests(unittest.TestCase):
                 self.assertEqual(bridge.outstanding_count, 0)
 
     def test_transfer_rolls_back_first_registration_when_second_conflicts(self):
-        from agentgate.service import _AllocationRegistry
+        from coggate.service import _AllocationRegistry
 
         registry = _AllocationRegistry()
         release = _ffi.AgHostRelease(registry.release)
@@ -563,7 +563,7 @@ class FixtureIntegrationTests(unittest.TestCase):
         pending = registry.pending(b"one", "material")
         first = _ffi.AgHostBuffer()
         second = _ffi.AgHostBuffer()
-        with self.assertRaisesRegex(RuntimeError, "invalid AgentGate callback allocation"):
+        with self.assertRaisesRegex(RuntimeError, "invalid CogGate callback allocation"):
             registry.transfer(
                 ((ctypes.pointer(first), pending), (ctypes.pointer(second), pending))
             )
@@ -575,7 +575,7 @@ class FixtureIntegrationTests(unittest.TestCase):
             )
 
     def test_required_zero_length_is_owned_but_optional_empty_is_canonical(self):
-        from agentgate.service import _AllocationRegistry
+        from coggate.service import _AllocationRegistry
 
         registry = _AllocationRegistry()
         release = _ffi.AgHostRelease(registry.release)
@@ -600,7 +600,7 @@ class FixtureIntegrationTests(unittest.TestCase):
         self.assertEqual(registry.release_count, 1)
 
     def test_destroy_non_ok_closes_once_and_never_retries(self):
-        from agentgate import service as service_module
+        from coggate import service as service_module
 
         class FakeLibrary:
             def __init__(self):
@@ -618,7 +618,7 @@ class FixtureIntegrationTests(unittest.TestCase):
         service._control = types.SimpleNamespace(native=native)
         service._bridge = object()
         service._finalizer = service_module._Finalizer(service._control)
-        with self.assertRaisesRegex(AgentGateError, "^internal_error$") as caught:
+        with self.assertRaisesRegex(CogGateError, "^internal_error$") as caught:
             service.close()
         self.assertNotIn("SECRET", repr(caught.exception))
         self.assertFalse(native.open)
@@ -630,7 +630,7 @@ class FixtureIntegrationTests(unittest.TestCase):
         self.assertEqual(native.destroy_count, 1)
 
     def test_destroy_base_exception_is_mapped_and_finalizer_swallows(self):
-        from agentgate import service as service_module
+        from coggate import service as service_module
 
         class RaisingLibrary:
             def __init__(self):
@@ -649,7 +649,7 @@ class FixtureIntegrationTests(unittest.TestCase):
         service._control = control
         service._bridge = object()
         service._finalizer = service_module._Finalizer(control)
-        with self.assertRaisesRegex(AgentGateError, "^internal_error$") as caught:
+        with self.assertRaisesRegex(CogGateError, "^internal_error$") as caught:
             service.close()
         self.assertNotIn("DESTROY_SECRET", str(caught.exception) + repr(caught.exception))
         self.assertFalse(native.open)

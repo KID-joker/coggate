@@ -1,17 +1,17 @@
-#ifndef AGENTGATE_GO_NATIVE_BRIDGE_H
-#define AGENTGATE_GO_NATIVE_BRIDGE_H
+#ifndef COGGATE_GO_NATIVE_BRIDGE_H
+#define COGGATE_GO_NATIVE_BRIDGE_H
 
 #include <stddef.h>
 #include <stdint.h>
 
-#if defined(_WIN32) && !defined(AGENTGATE_STATIC)
-#define AGENTGATE_STATIC
-#define AG_GO_UNDEF_AGENTGATE_STATIC
+#if defined(_WIN32) && !defined(COGGATE_STATIC)
+#define COGGATE_STATIC
+#define AG_GO_UNDEF_COGGATE_STATIC
 #endif
-#include "agentgate.h"
-#if defined(AG_GO_UNDEF_AGENTGATE_STATIC)
-#undef AGENTGATE_STATIC
-#undef AG_GO_UNDEF_AGENTGATE_STATIC
+#include "coggate.h"
+#if defined(AG_GO_UNDEF_COGGATE_STATIC)
+#undef COGGATE_STATIC
+#undef AG_GO_UNDEF_COGGATE_STATIC
 #endif
 
 #ifdef __cplusplus
@@ -75,19 +75,19 @@ ag_go_layout ag_go_layout_lifecycle_callbacks(void);
 ag_go_layout ag_go_layout_key_callbacks(void);
 ag_go_layout ag_go_layout_observer_callbacks(void);
 
-uint32_t AG_CALL ag_go_abi_version(void);
-ag_byte_slice AG_CALL ag_go_core_version(void);
-ag_status AG_CALL ag_go_service_create(const ag_lifecycle_callbacks *lifecycle,
+uint32_t COGGATE_CALL ag_go_abi_version(void);
+ag_byte_slice COGGATE_CALL ag_go_core_version(void);
+ag_status COGGATE_CALL ag_go_service_create(const ag_lifecycle_callbacks *lifecycle,
                                        const ag_key_callbacks *keys,
                                        const ag_observer_callbacks *observer,
                                        ag_service **out);
-ag_status AG_CALL ag_go_service_destroy(ag_service *service);
-ag_status AG_CALL ag_go_service_issue(ag_service *service, ag_byte_slice version,
+ag_status COGGATE_CALL ag_go_service_destroy(ag_service *service);
+ag_status COGGATE_CALL ag_go_service_issue(ag_service *service, ag_byte_slice version,
                                       ag_byte_slice binding, ag_attempt_limit attempt_limit,
                                       ag_owned_buffer *out);
-ag_status AG_CALL ag_go_service_verify(ag_service *service, ag_byte_slice submission_json,
+ag_status COGGATE_CALL ag_go_service_verify(ag_service *service, ag_byte_slice submission_json,
                                        ag_byte_slice binding, ag_owned_buffer *out);
-ag_status AG_CALL ag_go_buffer_free(ag_owned_buffer *buffer);
+ag_status COGGATE_CALL ag_go_buffer_free(ag_owned_buffer *buffer);
 
 ag_lifecycle_callbacks ag_go_make_lifecycle_callbacks(uintptr_t user_data);
 ag_key_callbacks ag_go_make_key_callbacks(uintptr_t user_data);

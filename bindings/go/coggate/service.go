@@ -1,4 +1,4 @@
-package agentgate
+package coggate
 
 import (
 	"bytes"
@@ -7,7 +7,7 @@ import (
 	"sync"
 )
 
-// Service is a serialized, explicitly closable AgentGate native service.
+// Service is a serialized, explicitly closable CogGate native service.
 // Calls from different goroutines wait for the current call to finish, including
 // waiting until an active callback returns. A callback must not synchronously
 // reenter the Service that invoked it: reentry will deadlock. Go cannot reliably
@@ -69,7 +69,7 @@ func (service *Service) Issue(request IssueRequest) (PublicChallenge, error) {
 }
 
 // Verify checks one submission. Lifecycle rejection is returned as an outcome;
-// native failures are returned as stable AgentGateError values.
+// native failures are returned as stable CogGateError values.
 func (service *Service) Verify(submission Submission, binding []byte) (VerificationOutcome, error) {
 	if service == nil {
 		return VerificationOutcome{}, errorForStatus(100)

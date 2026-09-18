@@ -1,4 +1,4 @@
-package agentgate
+package coggate
 
 import (
 	"bytes"
@@ -16,22 +16,22 @@ import (
 	"testing"
 )
 
-var testAgentGateLibrary = flag.String(
-	"agentgate-library", "", "absolute path to the AgentGate shared library",
+var testCogGateLibrary = flag.String(
+	"coggate-library", "", "absolute path to the CogGate shared library",
 )
 
 func TestMain(m *testing.M) {
 	flag.Parse()
-	if err := initializeNativeLibrary(*testAgentGateLibrary); err != nil {
-		fmt.Fprintf(os.Stderr, "agentgate native library initialization failed: %s\n", stableErrorCode(err))
+	if err := initializeNativeLibrary(*testCogGateLibrary); err != nil {
+		fmt.Fprintf(os.Stderr, "coggate native library initialization failed: %s\n", stableErrorCode(err))
 		os.Exit(1)
 	}
 	os.Exit(m.Run())
 }
 
-func TestAgentGateLibraryFlagIsRegistered(t *testing.T) {
-	if flag.Lookup("agentgate-library") == nil {
-		t.Fatal("--agentgate-library is not registered for the Go test binary")
+func TestCogGateLibraryFlagIsRegistered(t *testing.T) {
+	if flag.Lookup("coggate-library") == nil {
+		t.Fatal("--coggate-library is not registered for the Go test binary")
 	}
 }
 
@@ -524,7 +524,7 @@ func bytesOf(value byte, count int) []byte {
 }
 
 func stableErrorCode(err error) string {
-	if typed, ok := err.(*AgentGateError); ok {
+	if typed, ok := err.(*CogGateError); ok {
 		return typed.Code()
 	}
 	return ""
@@ -562,7 +562,7 @@ func TestWindowsLoaderSourceContract(t *testing.T) {
 			t.Errorf("loader source contains %q %d times, want exactly once", symbol, got)
 		}
 	}
-	for _, required := range []string{"AGENTGATE_LIBRARY_PATH", "filepath.IsAbs", "utf16.Encode", "agentgate_ffi.dll"} {
+	for _, required := range []string{"COGGATE_LIBRARY_PATH", "filepath.IsAbs", "utf16.Encode", "coggate_ffi.dll"} {
 		if !strings.Contains(goSource, required) {
 			t.Errorf("Go Windows loader sources lack %q", required)
 		}
@@ -597,7 +597,7 @@ func TestNativeInjectedResolverStateMachine(t *testing.T) {
 }
 
 func TestWindowsLibraryRequestValidationAndFlags(t *testing.T) {
-	absolute := filepath.Join(t.TempDir(), "Unicode 库 with spaces", "agentgate_ffi.dll")
+	absolute := filepath.Join(t.TempDir(), "Unicode 库 with spaces", "coggate_ffi.dll")
 	path, includeDirectory, err := resolveWindowsNativeLibraryRequest(absolute, "ignored")
 	if err != nil || path != absolute || !includeDirectory {
 		t.Fatalf("explicit request = (%q, %v, %v)", path, includeDirectory, err)
@@ -607,7 +607,7 @@ func TestWindowsLibraryRequestValidationAndFlags(t *testing.T) {
 		t.Fatalf("environment request = (%q, %v, %v)", path, includeDirectory, err)
 	}
 	path, includeDirectory, err = resolveWindowsNativeLibraryRequest("", "")
-	if err != nil || path != "agentgate_ffi.dll" || includeDirectory {
+	if err != nil || path != "coggate_ffi.dll" || includeDirectory {
 		t.Fatalf("default request = (%q, %v, %v)", path, includeDirectory, err)
 	}
 	for _, invalid := range []string{"relative.dll", absolute + "\x00suffix"} {
@@ -618,7 +618,7 @@ func TestWindowsLibraryRequestValidationAndFlags(t *testing.T) {
 }
 
 func TestNativeLibraryInitializationFailureIsSticky(t *testing.T) {
-	absolute := filepath.Join(t.TempDir(), "agentgate_ffi.dll")
+	absolute := filepath.Join(t.TempDir(), "coggate_ffi.dll")
 	for _, invalid := range []string{"relative.dll", absolute + "\x00suffix"} {
 		t.Run(fmt.Sprintf("first path %q", invalid), func(t *testing.T) {
 			var calls atomic.Int32
@@ -646,7 +646,7 @@ func TestNativeLibraryInitializationSuccessIsSticky(t *testing.T) {
 		_, _, err := resolveWindowsNativeLibraryRequest(path, "")
 		return err
 	}}
-	absolute := filepath.Join(t.TempDir(), "agentgate_ffi.dll")
+	absolute := filepath.Join(t.TempDir(), "coggate_ffi.dll")
 	if err := initializer.initialize(absolute); err != nil {
 		t.Fatalf("first initialization: %v", err)
 	}

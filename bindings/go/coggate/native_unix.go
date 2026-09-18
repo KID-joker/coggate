@@ -1,9 +1,9 @@
 //go:build !windows
 
-package agentgate
+package coggate
 
 /*
-#cgo LDFLAGS: -lagentgate_ffi
+#cgo LDFLAGS: -lcoggate_ffi
 */
 import "C"
 

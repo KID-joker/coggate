@@ -15,15 +15,15 @@ _STATUS_CODES = {
 
 def code_for_status(status):
     if type(status) is not int or status not in _STATUS_CODES:
-        raise ValueError("invalid AgentGate status")
+        raise ValueError("invalid CogGate status")
     return _STATUS_CODES[status]
 
 
-class AgentGateError(RuntimeError):
+class CogGateError(RuntimeError):
     def __init__(self, status):
         self.status = status
         self.code = code_for_status(status)
         super().__init__(self.code)
 
     def __repr__(self):
-        return "AgentGateError(code={!r})".format(self.code)
+        return "CogGateError(code={!r})".format(self.code)

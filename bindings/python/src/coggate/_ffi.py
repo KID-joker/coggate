@@ -146,7 +146,7 @@ class AgObserverCallbacks(ctypes.Structure):
 
 
 def _callback_factory(platform=None):
-    # agentgate.h defines AG_CALL as __cdecl, including on Windows.
+    # coggate.h defines AG_CALL as __cdecl, including on Windows.
     return ctypes.CFUNCTYPE
 
 
@@ -158,10 +158,10 @@ def _library_class(platform=None):
 def _platform_library_name(platform=None):
     platform = sys.platform if platform is None else platform
     if platform == "darwin":
-        return "libagentgate_ffi.dylib"
+        return "libcoggate_ffi.dylib"
     if platform == "win32":
-        return "agentgate_ffi.dll"
-    return "libagentgate_ffi.so"
+        return "coggate_ffi.dll"
+    return "libcoggate_ffi.so"
 
 
 def _configure_library(library):
@@ -202,9 +202,9 @@ def _load_candidate(candidate):
         library = _library_class()(os.fspath(candidate))
         _configure_library(library)
     except (OSError, AttributeError):
-        raise RuntimeError("AgentGate native library not found") from None
+        raise RuntimeError("CogGate native library not found") from None
     if library.ag_abi_version() != AG_ABI_VERSION_1:
-        raise RuntimeError("unsupported AgentGate ABI version")
+        raise RuntimeError("unsupported CogGate ABI version")
     return library
 
 
@@ -212,12 +212,12 @@ def load_library(path=None):
     if path is not None:
         return _load_candidate(path)
 
-    configured = os.environ.get("AGENTGATE_LIBRARY_PATH")
+    configured = os.environ.get("COGGATE_LIBRARY_PATH")
     if configured:
         return _load_candidate(configured)
 
     candidates = []
-    discovered = ctypes.util.find_library("agentgate_ffi")
+    discovered = ctypes.util.find_library("coggate_ffi")
     if discovered:
         candidates.append(discovered)
     platform_name = _platform_library_name()
@@ -227,6 +227,6 @@ def load_library(path=None):
         try:
             return _load_candidate(candidate)
         except RuntimeError as error:
-            if str(error) != "AgentGate native library not found":
+            if str(error) != "CogGate native library not found":
                 raise
-    raise RuntimeError("AgentGate native library not found")
+    raise RuntimeError("CogGate native library not found")

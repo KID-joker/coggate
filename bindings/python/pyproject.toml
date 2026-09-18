@@ -3,9 +3,9 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "agentgate"
+name = "coggate"
 version = "0.1.0"
-description = "Direct ctypes bindings for AgentGate"
+description = "Direct ctypes bindings for CogGate"
 requires-python = ">=3.11"
 dependencies = []
 

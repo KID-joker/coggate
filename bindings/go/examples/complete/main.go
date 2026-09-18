@@ -8,7 +8,7 @@ import (
 	"os"
 	"sync"
 
-	"github.com/agentgate/agentgate/bindings/go/agentgate"
+	"github.com/KID-joker/coggate/bindings/go/coggate"
 )
 
 type storedChallenge struct {
@@ -32,50 +32,50 @@ func (store *memoryLifecycle) seed(challengeID string, material, binding []byte)
 	}
 }
 
-func (store *memoryLifecycle) StoreIssued(privateJSON, binding []byte, _ agentgate.AttemptLimit) agentgate.LifecycleStatus {
+func (store *memoryLifecycle) StoreIssued(privateJSON, binding []byte, _ coggate.AttemptLimit) coggate.LifecycleStatus {
 	var identity struct {
 		ChallengeID string `json:"challenge_id"`
 	}
 	if json.Unmarshal(privateJSON, &identity) != nil || identity.ChallengeID == "" {
-		return agentgate.LifecycleStatusInternal
+		return coggate.LifecycleStatusInternal
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	store.challenges[identity.ChallengeID] = &storedChallenge{material: bytes.Clone(privateJSON), binding: bytes.Clone(binding)}
-	return agentgate.LifecycleStatusOK
+	return coggate.LifecycleStatusOK
 }
 
-func (store *memoryLifecycle) BeginAttempt(identityJSON, binding []byte, _ int64) agentgate.BeginAttemptResult {
+func (store *memoryLifecycle) BeginAttempt(identityJSON, binding []byte, _ int64) coggate.BeginAttemptResult {
 	var identity struct {
 		ChallengeID string `json:"challenge_id"`
 	}
 	if json.Unmarshal(identityJSON, &identity) != nil {
-		return agentgate.BeginAttemptResult{Status: agentgate.BeginStatusInternal}
+		return coggate.BeginAttemptResult{Status: coggate.BeginStatusInternal}
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	challenge := store.challenges[identity.ChallengeID]
 	if challenge == nil {
-		return agentgate.BeginAttemptResult{Status: agentgate.BeginStatusNotFound}
+		return coggate.BeginAttemptResult{Status: coggate.BeginStatusNotFound}
 	}
 	if challenge.consumed {
-		return agentgate.BeginAttemptResult{Status: agentgate.BeginStatusAlreadyConsumed}
+		return coggate.BeginAttemptResult{Status: coggate.BeginStatusAlreadyConsumed}
 	}
 	if !bytes.Equal(challenge.binding, binding) {
-		return agentgate.BeginAttemptResult{Status: agentgate.BeginStatusBindingMismatch}
+		return coggate.BeginAttemptResult{Status: coggate.BeginStatusBindingMismatch}
 	}
-	return agentgate.BeginAttemptResult{Status: agentgate.BeginStatusOK, Material: bytes.Clone(challenge.material), Token: []byte(identity.ChallengeID)}
+	return coggate.BeginAttemptResult{Status: coggate.BeginStatusOK, Material: bytes.Clone(challenge.material), Token: []byte(identity.ChallengeID)}
 }
 
-func (store *memoryLifecycle) FinishAttempt(token []byte, _ agentgate.AttemptOutcome) agentgate.LifecycleStatus {
+func (store *memoryLifecycle) FinishAttempt(token []byte, _ coggate.AttemptOutcome) coggate.LifecycleStatus {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	challenge := store.challenges[string(token)]
 	if challenge == nil {
-		return agentgate.LifecycleStatusConflict
+		return coggate.LifecycleStatusConflict
 	}
 	challenge.consumed = true
-	return agentgate.LifecycleStatusOK
+	return coggate.LifecycleStatusOK
 }
 
 type memoryKeys struct {
@@ -85,17 +85,17 @@ type memoryKeys struct {
 	oldKey    []byte
 }
 
-func (keys *memoryKeys) ActiveKey() agentgate.ActiveKeyResult {
-	return agentgate.ActiveKeyResult{Status: agentgate.KeyStatusOK, KeyID: keys.activeID, Key: bytes.Clone(keys.activeKey)}
+func (keys *memoryKeys) ActiveKey() coggate.ActiveKeyResult {
+	return coggate.ActiveKeyResult{Status: coggate.KeyStatusOK, KeyID: keys.activeID, Key: bytes.Clone(keys.activeKey)}
 }
-func (keys *memoryKeys) KeyByID(id string) agentgate.KeyResult {
+func (keys *memoryKeys) KeyByID(id string) coggate.KeyResult {
 	switch id {
 	case keys.activeID:
-		return agentgate.KeyResult{Status: agentgate.KeyStatusOK, Key: bytes.Clone(keys.activeKey)}
+		return coggate.KeyResult{Status: coggate.KeyStatusOK, Key: bytes.Clone(keys.activeKey)}
 	case keys.oldID:
-		return agentgate.KeyResult{Status: agentgate.KeyStatusOK, Key: bytes.Clone(keys.oldKey)}
+		return coggate.KeyResult{Status: coggate.KeyStatusOK, Key: bytes.Clone(keys.oldKey)}
 	default:
-		return agentgate.KeyResult{Status: agentgate.KeyStatusNotFound}
+		return coggate.KeyResult{Status: coggate.KeyStatusNotFound}
 	}
 }
 
@@ -104,7 +104,7 @@ type discardObserver struct{}
 func (discardObserver) Observe([]byte) {}
 
 func main() {
-	library := flag.String("library", "", "path to agentgate_ffi.dll on Windows")
+	library := flag.String("library", "", "path to coggate_ffi.dll on Windows")
 	answer := flag.String("answer", "YQ", "application-supplied unpadded base64url answer")
 	flag.Parse()
 	if err := run(*library, *answer); err != nil {
@@ -122,14 +122,14 @@ func run(library, answer string) error {
 	}
 	// External goroutines may call Issue, Verify, and Close concurrently; the
 	// Service serializes those calls and waits for the current call to finish.
-	service, err := agentgate.NewService(lifecycle, keys, discardObserver{}, library)
+	service, err := coggate.NewService(lifecycle, keys, discardObserver{}, library)
 	if err != nil {
 		return err
 	}
 	// Correctness must not depend on the finalizer; callers explicitly Close.
 	defer service.Close()
 
-	request, err := agentgate.NewV1IssueRequest(issueBinding)
+	request, err := coggate.NewV1IssueRequest(issueBinding)
 	if err != nil {
 		return err
 	}
@@ -140,14 +140,14 @@ func run(library, answer string) error {
 	fmt.Println("issue: ok")
 
 	// This accepted path uses the shared deterministic fixture. Applications do
-	// not reproduce AgentGate's MAC construction; they persist private material
+	// not reproduce CogGate's MAC construction; they persist private material
 	// from Issue and later return it from BeginAttempt in the same way.
 	fixtureBinding := []byte{0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77}
 	const fixtureChallengeID = "Y2hhbGxlbmdlLTEyMzQ1Ng"
 	const fixtureNonce = "bm9uY2UtMTIzNDU2Nzg5MA"
-	fixtureMaterial := []byte(`{"challenge_id":"Y2hhbGxlbmdlLTEyMzQ1Ng","generator_version":"1.0","nonce":"bm9uY2UtMTIzNDU2Nzg5MA","issued_at":1788062400,"expires_at":1788062408,"mac_key_id":"2026-08","answer_mac":"b9cb8fd013b40e31c7bc3a1c33b7e36143ef98d045a924ed09ebd38ff07cec2c","answer_encoding":"base64url"}`)
+	fixtureMaterial := []byte(`{"challenge_id":"Y2hhbGxlbmdlLTEyMzQ1Ng","generator_version":"1.0","nonce":"bm9uY2UtMTIzNDU2Nzg5MA","issued_at":1788062400,"expires_at":1788062408,"mac_key_id":"2026-08","answer_mac":"ccdffbb67b4c9da34f91d56d12970b311d7345e8bcf579d1326fc4a78633330c","answer_encoding":"base64url"}`)
 	lifecycle.seed(fixtureChallengeID, fixtureMaterial, fixtureBinding)
-	outcome, err := service.Verify(agentgate.Submission{
+	outcome, err := service.Verify(coggate.Submission{
 		ChallengeID: fixtureChallengeID, Nonce: fixtureNonce, Answer: answer,
 	}, fixtureBinding)
 	if err != nil {
@@ -159,7 +159,7 @@ func run(library, answer string) error {
 }
 
 func errorCode(err error) string {
-	if typed, ok := err.(*agentgate.AgentGateError); ok {
+	if typed, ok := err.(*coggate.CogGateError); ok {
 		return typed.Code()
 	}
 	return "internal_error"

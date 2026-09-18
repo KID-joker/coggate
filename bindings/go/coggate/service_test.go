@@ -1,4 +1,4 @@
-package agentgate
+package coggate
 
 import (
 	"bytes"

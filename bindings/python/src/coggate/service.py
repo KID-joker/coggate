@@ -4,7 +4,7 @@ import weakref
 from dataclasses import dataclass
 
 from . import _ffi
-from .errors import AgentGateError
+from .errors import CogGateError
 from .models import AttemptLimit, IssueRequest, PublicChallenge, Submission, VerificationOutcome
 
 
@@ -23,7 +23,7 @@ class BeginAttemptResult(_SafeResult):
 
     def __post_init__(self):
         if type(self.status) is not int or type(self.material) is not bytes or type(self.token) is not bytes:
-            raise ValueError("invalid AgentGate callback result")
+            raise ValueError("invalid CogGate callback result")
 
 
 @dataclass(frozen=True, repr=False)
@@ -34,7 +34,7 @@ class ActiveKeyResult(_SafeResult):
 
     def __post_init__(self):
         if type(self.status) is not int or type(self.key_id) is not str or type(self.key) is not bytes:
-            raise ValueError("invalid AgentGate callback result")
+            raise ValueError("invalid CogGate callback result")
 
 
 @dataclass(frozen=True, repr=False)
@@ -44,7 +44,7 @@ class KeyResult(_SafeResult):
 
     def __post_init__(self):
         if type(self.status) is not int or type(self.key) is not bytes:
-            raise ValueError("invalid AgentGate callback result")
+            raise ValueError("invalid CogGate callback result")
 
 
 def _slice_bytes(value):
@@ -94,7 +94,7 @@ class _AllocationRegistry:
                     address, length, buffer, label = pending
                     key = (address, length)
                     if key in self._allocations:
-                        raise RuntimeError("invalid AgentGate callback allocation")
+                        raise RuntimeError("invalid CogGate callback allocation")
                     self._allocations[key] = (buffer, label)
                     registered.append(key)
                     out[0] = _ffi.AgHostBuffer(
@@ -165,7 +165,7 @@ class _CallbackBridge:
                     AttemptLimit(attempt_limit),
                 )
                 if type(status) is not int:
-                    raise ValueError("invalid AgentGate callback result")
+                    raise ValueError("invalid CogGate callback result")
                 return status
             except BaseException:
                 return _ffi.AG_LIFECYCLE_STATUS_INTERNAL
@@ -178,7 +178,7 @@ class _CallbackBridge:
                     _slice_text(identity_json), _slice_bytes(binding), int(server_time)
                 )
                 if type(result) is not BeginAttemptResult:
-                    raise ValueError("invalid AgentGate callback result")
+                    raise ValueError("invalid CogGate callback result")
                 if result.status != _ffi.AG_BEGIN_STATUS_OK:
                     return result.status
                 material = current._registry.pending(result.material, "material")
@@ -194,7 +194,7 @@ class _CallbackBridge:
                 current = bridge()
                 status = current.lifecycle.finish_attempt(_slice_bytes(token), int(outcome))
                 if type(status) is not int:
-                    raise ValueError("invalid AgentGate callback result")
+                    raise ValueError("invalid CogGate callback result")
                 return status
             except BaseException:
                 return _ffi.AG_LIFECYCLE_STATUS_INTERNAL
@@ -205,7 +205,7 @@ class _CallbackBridge:
                 current = bridge()
                 result = current.keys.active_key()
                 if type(result) is not ActiveKeyResult:
-                    raise ValueError("invalid AgentGate callback result")
+                    raise ValueError("invalid CogGate callback result")
                 if result.status != _ffi.AG_KEY_STATUS_OK:
                     return result.status
                 key_id = current._registry.pending(result.key_id.encode("utf-8", errors="strict"), "active_key_id")
@@ -221,7 +221,7 @@ class _CallbackBridge:
                 current = bridge()
                 result = current.keys.key_by_id(_slice_text(key_id))
                 if type(result) is not KeyResult:
-                    raise ValueError("invalid AgentGate callback result")
+                    raise ValueError("invalid CogGate callback result")
                 if result.status != _ffi.AG_KEY_STATUS_OK:
                     return result.status
                 key = current._registry.pending(result.key, "key")
@@ -328,7 +328,7 @@ def _active_stack():
 
 def _reject_reentry(native):
     if native in _active_stack():
-        raise AgentGateError(_ffi.AG_STATUS_INVALID_ARGUMENT)
+        raise CogGateError(_ffi.AG_STATUS_INVALID_ARGUMENT)
 
 
 def _destroy(native, raise_errors):
@@ -349,7 +349,7 @@ def _destroy(native, raise_errors):
             # complete native destroy call, but are no longer needed afterward.
             native.abi_lifetime = None
     if raise_errors and status != _ffi.AG_STATUS_OK:
-        raise AgentGateError(status)
+        raise CogGateError(status)
 
 
 class _Finalizer:
@@ -375,7 +375,7 @@ class _Finalizer:
 class Service:
     def __init__(self, lifecycle, keys, observer=None, library_path=None):
         if lifecycle is None or keys is None:
-            raise AgentGateError(_ffi.AG_STATUS_INVALID_ARGUMENT)
+            raise CogGateError(_ffi.AG_STATUS_INVALID_ARGUMENT)
         library = _ffi.load_library(library_path)
         bridge = _CallbackBridge(lifecycle, keys, observer)
         control = _Control(library, bridge)
@@ -390,7 +390,7 @@ class Service:
             ctypes.byref(native.handle),
         ))
         if status != _ffi.AG_STATUS_OK:
-            raise AgentGateError(status)
+            raise CogGateError(status)
         native.open = True
         self._control = control
         self._bridge = bridge
@@ -415,7 +415,7 @@ class Service:
 
     def __enter__(self):
         if not self.is_open:
-            raise AgentGateError(_ffi.AG_STATUS_INVALID_ARGUMENT)
+            raise CogGateError(_ffi.AG_STATUS_INVALID_ARGUMENT)
         return self
 
     def __exit__(self, exception_type, exception, traceback):
@@ -432,7 +432,7 @@ class Service:
         _reject_reentry(native)
         with native.lock:
             if not native.open or not native.handle.value:
-                raise AgentGateError(_ffi.AG_STATUS_INVALID_ARGUMENT)
+                raise CogGateError(_ffi.AG_STATUS_INVALID_ARGUMENT)
             output = _ffi.AgOwnedBuffer()
             stack = _active_stack()
             stack.append(native)
@@ -441,7 +441,7 @@ class Service:
             finally:
                 popped = stack.pop()
                 if popped is not native:
-                    raise RuntimeError("invalid AgentGate call stack")
+                    raise RuntimeError("invalid CogGate call stack")
             del keepers
             payload = b""
             free_status = _ffi.AG_STATUS_OK
@@ -450,14 +450,14 @@ class Service:
                 free_status = int(native.library.ag_buffer_free(ctypes.byref(output)))
                 native.owned_free_count += 1
             if status != _ffi.AG_STATUS_OK:
-                raise AgentGateError(status)
+                raise CogGateError(status)
             if free_status != _ffi.AG_STATUS_OK:
-                raise AgentGateError(free_status)
+                raise CogGateError(free_status)
             return payload.decode("utf-8", errors="strict")
 
     def issue(self, request):
         if type(request) is not IssueRequest:
-            raise AgentGateError(_ffi.AG_STATUS_INVALID_ARGUMENT)
+            raise CogGateError(_ffi.AG_STATUS_INVALID_ARGUMENT)
         version, version_keeper = _borrow_bytes(request.version.encode("utf-8"))
         binding, binding_keeper = _borrow_bytes(request.binding)
         payload = self._invoke(
@@ -469,7 +469,7 @@ class Service:
 
     def verify(self, submission, binding):
         if type(submission) is not Submission or type(binding) is not bytes or not 1 <= len(binding) <= 256:
-            raise AgentGateError(_ffi.AG_STATUS_INVALID_ARGUMENT)
+            raise CogGateError(_ffi.AG_STATUS_INVALID_ARGUMENT)
         submission_slice, submission_keeper = _borrow_bytes(submission.to_json().encode("utf-8"))
         binding_slice, binding_keeper = _borrow_bytes(binding)
         payload = self._invoke(

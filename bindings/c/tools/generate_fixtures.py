@@ -125,7 +125,7 @@ KNOWN_VECTOR = {
     "generator_version": "1.0",
     "issued_at": 1788062400,
     "expires_at": 1788062408,
-    "answer_mac": "b9cb8fd013b40e31c7bc3a1c33b7e36143ef98d045a924ed09ebd38ff07cec2c",
+    "answer_mac": "ccdffbb67b4c9da34f91d56d12970b311d7345e8bcf579d1326fc4a78633330c",
 }
 OBSERVER_FIELDS = {
     "event",
