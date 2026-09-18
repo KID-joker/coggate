@@ -1,16 +1,16 @@
-package io.agentgate;
+package io.github.kidjoker.coggate;
 
-/** Detail-free exception exposing only a stable AgentGate error code. */
-public final class AgentGateException extends RuntimeException {
+/** Detail-free exception exposing only a stable CogGate error code. */
+public final class CogGateException extends RuntimeException {
   private final String code;
 
-  private AgentGateException(String code) {
+  private CogGateException(String code) {
     super(code, null, false, false);
     this.code = code;
   }
 
   /** Returns null for success, otherwise an exception for the native status. */
-  public static AgentGateException fromStatus(int status) {
+  public static CogGateException fromStatus(int status) {
     String code = switch (status) {
       case 0 -> null;
       case 1 -> "invalid_configuration";
@@ -25,11 +25,11 @@ public final class AgentGateException extends RuntimeException {
       case 102 -> "panic_caught";
       default -> "internal_error";
     };
-    return code == null ? null : new AgentGateException(code);
+    return code == null ? null : new CogGateException(code);
   }
 
-  static AgentGateException invalidArgument() {
-    return new AgentGateException("invalid_argument");
+  static CogGateException invalidArgument() {
+    return new CogGateException("invalid_argument");
   }
 
   public String code() {

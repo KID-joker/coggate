@@ -4,9 +4,11 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
 
-  <groupId>io.agentgate</groupId>
-  <artifactId>agentgate-java</artifactId>
+  <groupId>io.github.kid-joker</groupId>
+  <artifactId>coggate-java</artifactId>
   <version>0.1.0-SNAPSHOT</version>
+  <name>CogGate Java SDK</name>
+  <description>Java SDK and JNI bridge for CogGate</description>
 
   <properties>
     <maven.compiler.release>17</maven.compiler.release>
@@ -45,6 +47,20 @@
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-surefire-plugin</artifactId>
         <version>${maven.surefire.version}</version>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-jar-plugin</artifactId>
+        <version>3.4.2</version>
+        <configuration>
+          <archive>
+            <manifestEntries>
+              <Automatic-Module-Name>io.github.kidjoker.coggate</Automatic-Module-Name>
+              <Implementation-Title>CogGate Java SDK</Implementation-Title>
+              <Implementation-Version>${project.version}</Implementation-Version>
+            </manifestEntries>
+          </archive>
+        </configuration>
       </plugin>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>

@@ -1,4 +1,4 @@
-package io.agentgate;
+package io.github.kidjoker.coggate;
 
 /** Immutable public challenge contract. */
 public record PublicChallenge(
@@ -28,7 +28,7 @@ public record PublicChallenge(
       if (BASE64URL.wireValue.equals(value)) {
         return BASE64URL;
       }
-      throw AgentGateException.invalidArgument();
+      throw CogGateException.invalidArgument();
     }
   }
 
@@ -38,7 +38,7 @@ public record PublicChallenge(
         || !JsonCodec.isValidUnicode(nonce)
         || !JsonCodec.isValidUnicode(question)
         || answerEncoding == null) {
-      throw new IllegalArgumentException("invalid AgentGate public challenge");
+      throw new IllegalArgumentException("invalid CogGate public challenge");
     }
   }
 

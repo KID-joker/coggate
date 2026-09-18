@@ -1,4 +1,4 @@
-package io.agentgate;
+package io.github.kidjoker.coggate;
 
 /** Durable challenge lifecycle callbacks. Inputs are independent byte-array copies. */
 public interface Lifecycle {

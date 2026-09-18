@@ -1,4 +1,4 @@
-package io.agentgate;
+package io.github.kidjoker.coggate;
 
 /** Closed V1 verification-attempt budget. */
 public enum AttemptLimit {

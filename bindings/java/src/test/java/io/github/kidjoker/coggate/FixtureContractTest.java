@@ -1,4 +1,4 @@
-package io.agentgate;
+package io.github.kidjoker.coggate;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -38,7 +38,7 @@ final class FixtureContractTest {
 
   @BeforeAll
   static void load() throws IOException {
-    Service.loadNative(Path.of(System.getProperty("agentgate.jni.path")));
+    Service.loadNative(Path.of(System.getProperty("coggate.jni.path")));
     Path fixture = Path.of("..", "..", "fixtures", "bindings", "v1.json");
     manifest = parseManifest(Files.readAllBytes(fixture));
   }
@@ -173,7 +173,7 @@ final class FixtureContractTest {
       default -> "unknown";
     }));
     VerificationOutcome outcome = null;
-    AgentGateException error = null;
+    CogGateException error = null;
     long verifyWindowStart = java.time.Instant.now().getEpochSecond() - 1;
     try (Service service = new Service(lifecycle, keys,
         "release".equals(string(fixture, "operation")) ? null : observer)) {
@@ -190,7 +190,7 @@ final class FixtureContractTest {
       } else {
         try {
           outcome = service.verify(submission(fixture), binding(fixture));
-        } catch (AgentGateException caught) {
+        } catch (CogGateException caught) {
           error = caught;
         }
       }

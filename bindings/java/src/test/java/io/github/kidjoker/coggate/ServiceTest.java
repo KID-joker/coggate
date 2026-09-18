@@ -1,4 +1,4 @@
-package io.agentgate;
+package io.github.kidjoker.coggate;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
@@ -47,13 +47,13 @@ final class ServiceTest {
       + "\"generator_version\":\"1.0\",\"nonce\":\"bm9uY2UtMTIzNDU2Nzg5MA\","
       + "\"issued_at\":1788062400,\"expires_at\":1788062408,"
       + "\"mac_key_id\":\"2026-08\","
-      + "\"answer_mac\":\"b9cb8fd013b40e31c7bc3a1c33b7e36143ef98d045a924ed09ebd38ff07cec2c\","
+      + "\"answer_mac\":\"ccdffbb67b4c9da34f91d56d12970b311d7345e8bcf579d1326fc4a78633330c\","
       + "\"answer_encoding\":\"base64url\"}").getBytes(StandardCharsets.UTF_8);
 
   @BeforeAll
   static void loadNative() {
-    String path = System.getProperty("agentgate.jni.path");
-    assertNotNull(path, "-Dagentgate.jni.path must name the built JNI shim");
+    String path = System.getProperty("coggate.jni.path");
+    assertNotNull(path, "-Dcoggate.jni.path must name the built JNI shim");
     Service.loadNative(Path.of(path));
   }
 
@@ -108,11 +108,11 @@ final class ServiceTest {
       throw new IllegalStateException("CALLBACK_EXCEPTION_SENTINEL");
     }, null);
     try (Service service = new Service(lifecycle, keys(), null)) {
-      AgentGateException error = assertThrows(AgentGateException.class,
+      CogGateException error = assertThrows(CogGateException.class,
           () -> service.verify(submission(), BINDING));
       assertEquals("internal_error", error.code());
       assertFalse(error.toString().contains("CALLBACK_EXCEPTION_SENTINEL"));
-      assertFalse(error.toString().contains("agentgate_ffi"));
+      assertFalse(error.toString().contains("coggate_ffi"));
       assertDoesNotThrow(() -> service.close());
     }
   }
@@ -125,7 +125,7 @@ final class ServiceTest {
             Lifecycle.BeginStatus.OK, MATERIAL, hex("aabbccdd")),
         (token, outcome) -> { throw new IllegalStateException("FINISH_FAILURE_SENTINEL"); });
     try (Service service = new Service(lifecycle, keys(), event -> events.add(event.clone()))) {
-      AgentGateException error = assertThrows(AgentGateException.class,
+      CogGateException error = assertThrows(CogGateException.class,
           () -> service.verify(submission(), BINDING));
       assertEquals("internal_error", error.code());
       assertFalse((error + eventsText(events)).contains("FINISH_FAILURE_SENTINEL"));
@@ -223,8 +223,8 @@ final class ServiceTest {
     AtomicReference<Service> reference = new AtomicReference<>();
     List<String> errors = Collections.synchronizedList(new ArrayList<>());
     Lifecycle lifecycle = lifecycle((privateJson, binding, limit) -> {
-      errors.add(assertThrows(AgentGateException.class, reference.get()::close).code());
-      errors.add(assertThrows(AgentGateException.class,
+      errors.add(assertThrows(CogGateException.class, reference.get()::close).code());
+      errors.add(assertThrows(CogGateException.class,
           () -> reference.get().issue(IssueRequest.newV1IssueRequest(BINDING))).code());
       return Lifecycle.Status.OK;
     }, null, null);
@@ -233,9 +233,9 @@ final class ServiceTest {
     service.issue(IssueRequest.newV1IssueRequest(BINDING));
     assertEquals(List.of("invalid_argument", "invalid_argument"), errors);
     service.close();
-    assertEquals("invalid_argument", assertThrows(AgentGateException.class,
+    assertEquals("invalid_argument", assertThrows(CogGateException.class,
         () -> service.issue(IssueRequest.newV1IssueRequest(BINDING))).code());
-    assertEquals("invalid_argument", assertThrows(AgentGateException.class,
+    assertEquals("invalid_argument", assertThrows(CogGateException.class,
         () -> service.verify(submission(), BINDING)).code());
   }
 
@@ -249,7 +249,7 @@ final class ServiceTest {
     }, null, null);
     try (Service serviceB = new Service(lifecycleB, keys(), null)) {
       Lifecycle lifecycleA = lifecycle((privateJson, binding, limit) -> {
-        events.add(assertThrows(AgentGateException.class,
+        events.add(assertThrows(CogGateException.class,
             () -> serviceA.get().issue(IssueRequest.newV1IssueRequest(BINDING))).code());
         serviceB.issue(IssueRequest.newV1IssueRequest(BINDING));
         events.add("nested");
@@ -311,7 +311,7 @@ final class ServiceTest {
     Service service = new Service(lifecycle(), keys(), null);
     Service.setTestBeforeNativeHook(() -> { throw new IllegalStateException("ENCODE_SENTINEL"); });
     try {
-      AgentGateException error = assertThrows(AgentGateException.class,
+      CogGateException error = assertThrows(CogGateException.class,
           () -> service.verify(submission(), BINDING));
       assertEquals("internal_error", error.code());
       assertFalse(error.toString().contains("ENCODE_SENTINEL"));
@@ -350,21 +350,21 @@ final class ServiceTest {
   void nativeBuildAndWindowsLoadingUseExplicitRelocatableDependencies() throws IOException {
     String cmake = Files.readString(Path.of("CMakeLists.txt"));
     assertFalse(cmake.contains("${JNI_LIBRARIES}"));
-    assertFalse(cmake.contains("if(WIN32 AND AGENTGATE_RUNTIME_LIBRARY)"));
+    assertFalse(cmake.contains("if(WIN32 AND COGGATE_RUNTIME_LIBRARY)"));
     assertTrue(cmake.contains("copy_if_different"));
     assertTrue(cmake.contains("@loader_path"));
     assertTrue(cmake.contains("$ORIGIN"));
-    assertTrue(cmake.contains("option(AGENTGATE_STATIC_LINK"));
-    assertTrue(cmake.contains("AGENTGATE_STATIC"));
-    assertTrue(cmake.contains("WIN32 AND NOT AGENTGATE_STATIC_LINK"));
-    assertTrue(cmake.contains("AGENTGATE_RUNTIME_LIBRARY is required"));
+    assertTrue(cmake.contains("option(COGGATE_STATIC_LINK"));
+    assertTrue(cmake.contains("COGGATE_STATIC"));
+    assertTrue(cmake.contains("WIN32 AND NOT COGGATE_STATIC_LINK"));
+    assertTrue(cmake.contains("COGGATE_RUNTIME_LIBRARY is required"));
 
     String service = Files.readString(
-        Path.of("src", "main", "java", "io", "agentgate", "Service.java"));
+        Path.of("src", "main", "java", "io", "github", "kidjoker", "coggate", "Service.java"));
     int coreLoad = service.indexOf("System.load(core.toString())");
     int shimLoad = service.indexOf("System.load(shim.toString())");
     assertTrue(coreLoad >= 0 && shimLoad > coreLoad);
-    assertTrue(service.contains("agentgate_ffi.dll"));
+    assertTrue(service.contains("coggate_ffi.dll"));
     assertTrue(service.contains("Files.isRegularFile(core)"));
   }
 
@@ -375,7 +375,7 @@ final class ServiceTest {
         (identity, binding, time) -> new Lifecycle.BeginResult(
             Lifecycle.BeginStatus.OK, malformed, new byte[0]), null);
     try (Service service = new Service(lifecycle, keys(), null)) {
-      AgentGateException error = assertThrows(AgentGateException.class,
+      CogGateException error = assertThrows(CogGateException.class,
           () -> service.verify(submission(), BINDING));
       assertEquals("callback_failed", error.code());
       assertEquals("callback_failed", error.toString());
@@ -391,7 +391,7 @@ final class ServiceTest {
       public Result keyById(byte[] keyId) { return new Result(Status.OK, KEY); }
     };
     try (Service service = new Service(lifecycle(), keys, null)) {
-      AgentGateException error = assertThrows(AgentGateException.class,
+      CogGateException error = assertThrows(CogGateException.class,
           () -> service.issue(IssueRequest.newV1IssueRequest(BINDING)));
       assertEquals("callback_failed", error.code());
       assertEquals("callback_failed", error.toString());
@@ -498,12 +498,12 @@ final class ServiceTest {
     PublicChallenge challenge = issueService.issue(IssueRequest.newV1IssueRequest(BINDING));
     String issuePublic = String.valueOf(challenge) + issueService + eventsText(issueEvents);
     assertFalse(issuePublic.contains("ACTIVE_KEY_SENTINEL"));
-    AgentGateException keyError = assertThrows(AgentGateException.class,
+    CogGateException keyError = assertThrows(CogGateException.class,
         () -> issueService.verify(submission(), BINDING));
     assertEquals("internal_error", keyError.code());
     assertFalse((keyError + eventsText(issueEvents)).contains("KEY_SENTINEL"));
     issueService.close();
-    AgentGateException closed = assertThrows(AgentGateException.class,
+    CogGateException closed = assertThrows(CogGateException.class,
         () -> issueService.issue(IssueRequest.newV1IssueRequest(
             "CLOSED_SERVICE_SENTINEL".getBytes(StandardCharsets.UTF_8))));
     assertEquals("invalid_argument", closed.code());

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import io
+import json
 import os
 import platform
 import re
@@ -114,9 +115,9 @@ def detect_capabilities(tool_lookup=shutil.which, version_output=_version_output
 def discover_library(root, explicit, system):
     root = Path(root)
     names = {
-        "Linux": "libagentgate_ffi.so",
-        "Darwin": "libagentgate_ffi.dylib",
-        "Windows": "agentgate_ffi.dll.lib",
+        "Linux": "libcoggate_ffi.so",
+        "Darwin": "libcoggate_ffi.dylib",
+        "Windows": "coggate_ffi.dll.lib",
     }
     if system not in names:
         raise RunnerError("unsupported platform: %s" % system)
@@ -254,7 +255,7 @@ def build_plan(
                     "test",
                     "./...",
                     "-args",
-                    "--agentgate-library",
+                    "--coggate-library",
                     runtime_library,
                 ),
                 root / "bindings" / "go",
@@ -286,11 +287,11 @@ def build_plan(
                     str(root / "bindings" / "java"),
                     "-B",
                     str(build),
-                    "-DAGENTGATE_LIBRARY=" + link_library,
-                    "-DAGENTGATE_RUNTIME_LIBRARY=" + runtime_library,
-                    "-DAGENTGATE_INCLUDE_DIR=" + str(root / "packages" / "ffi" / "include"),
+                    "-DCOGGATE_LIBRARY=" + link_library,
+                    "-DCOGGATE_RUNTIME_LIBRARY=" + runtime_library,
+                    "-DCOGGATE_INCLUDE_DIR=" + str(root / "packages" / "ffi" / "include"),
                     "-DMAVEN_EXECUTABLE=" + capabilities["maven"].path,
-                    "-DAGENTGATE_STATIC_LINK=OFF",
+                    "-DCOGGATE_STATIC_LINK=OFF",
                     "-DBUILD_TESTING=ON",
                 ),
                 root,
@@ -309,21 +310,17 @@ def build_plan(
             build_argv.extend(("--config", "Release"))
             ctest_argv.extend(("-C", "Release"))
         if system == "Windows":
-            shim = build / "Release" / "agentgate_jni.dll"
+            shim = build / "Release" / "coggate_jni.dll"
         elif system == "Darwin":
-            shim = build / "libagentgate_jni.dylib"
+            shim = build / "libcoggate_jni.dylib"
         else:
-            shim = build / "libagentgate_jni.so"
+            shim = build / "libcoggate_jni.so"
         classpath_separator = ";" if system == "Windows" else ":"
-        jackson = (
-            build / "m2" / "com" / "fasterxml" / "jackson" / "core" /
-            "jackson-core" / "2.18.3" / "jackson-core-2.18.3.jar"
-        )
+        main_jar = root / "bindings" / "java" / "target" / "coggate-java-0.1.0-SNAPSHOT.jar"
         classpath = classpath_separator.join(
             (
                 str(build),
-                str(root / "bindings" / "java" / "target" / "classes"),
-                str(jackson),
+                str(main_jar),
             )
         )
         commands.extend(
@@ -347,7 +344,7 @@ def build_plan(
                         capabilities["java"].path,
                         "-cp",
                         classpath,
-                        "io.agentgate.examples.Complete",
+                        "io.github.kidjoker.coggate.examples.Complete",
                         str(shim),
                     ),
                     root,
@@ -386,9 +383,9 @@ def build_plan(
             node_link_library = str(staged_library)
             node_runtime_library = str(staged_library)
         node_environment = (
-            ("AGENTGATE_INCLUDE_DIR", str(root / "packages" / "ffi" / "include")),
-            ("AGENTGATE_LIBRARY", node_link_library),
-            ("AGENTGATE_RUNTIME_LIBRARY", node_runtime_library),
+            ("COGGATE_INCLUDE_DIR", str(root / "packages" / "ffi" / "include")),
+            ("COGGATE_LIBRARY", node_link_library),
+            ("COGGATE_RUNTIME_LIBRARY", node_runtime_library),
         )
         node_gyp_argv = [capabilities["node_gyp"].path, "rebuild", "--release"]
         if path_is_file(node_root / "include" / "node" / "node_api.h"):
@@ -524,7 +521,7 @@ def run_phase5c(args, **injections):
                     )
                     staging_directory = Path(
                         stack.enter_context(
-                            temporary_directory(prefix="agentgate-phase5c-node-")
+                            temporary_directory(prefix="coggate-phase5c-node-")
                         )
                     )
                 plan = build_plan(
@@ -550,6 +547,49 @@ def run_phase5c(args, **injections):
 
 
 class RunnerSelfTests(unittest.TestCase):
+    def test_java_and_jni_use_only_coggate_branding(self):
+        java_root = ROOT / "bindings" / "java"
+        legacy = "agent" + "gate"
+        expected_package = java_root / "src" / "main" / "java" / "io" / "github" / "kidjoker" / "coggate"
+        expected_tests = java_root / "src" / "test" / "java" / "io" / "github" / "kidjoker" / "coggate"
+        expected_jni = java_root / "src" / "main" / "cpp" / "coggate_jni.cpp"
+        self.assertTrue(expected_package.is_dir())
+        self.assertTrue(expected_tests.is_dir())
+        self.assertTrue(expected_jni.is_file())
+        self.assertFalse((java_root / "src" / "main" / "java" / "io" / legacy).exists())
+        self.assertFalse((java_root / "src" / "test" / "java" / "io" / legacy).exists())
+        jni_source = expected_jni.read_text(encoding="utf-8")
+        self.assertIn("COGGATE_CALL", jni_source)
+        self.assertNotIn("AG_" + "CALL", jni_source)
+
+        pom = (java_root / "pom.xml").read_text(encoding="utf-8")
+        self.assertIn("<groupId>io.github.kid-joker</groupId>", pom)
+        self.assertIn("<artifactId>coggate-java</artifactId>", pom)
+        cmake = (java_root / "CMakeLists.txt").read_text(encoding="utf-8")
+        self.assertIn(
+            '"-Dcoggate.jni.path=$<TARGET_FILE:coggate_jni>" clean package)',
+            cmake,
+        )
+
+        fixture = json.loads(
+            (ROOT / "fixtures" / "bindings" / "v1.json").read_text(encoding="utf-8")
+        )
+        fixture_mac = fixture["vectors"]["private_material"]["answer_mac"]
+        example = (java_root / "examples" / "Complete.java").read_text(encoding="utf-8")
+        self.assertIn(fixture_mac, example)
+
+        source_paths = [java_root / "CMakeLists.txt", java_root / "pom.xml"]
+        source_paths.extend((java_root / "examples").rglob("*"))
+        source_paths.extend((java_root / "src").rglob("*"))
+        for path in source_paths:
+            self.assertNotIn(legacy, path.name.casefold(), str(path))
+            if path.is_file():
+                self.assertNotIn(
+                    legacy,
+                    path.read_text(encoding="utf-8").casefold(),
+                    str(path),
+                )
+
     def test_exact_version_parsing(self):
         self.assertEqual(parse_version("go version go1.24.3 windows/amd64"), (1, 24, 3))
         self.assertEqual(parse_version('openjdk version "17.0.12" 2024-07-16'), (17, 0, 12))
@@ -590,7 +630,7 @@ class RunnerSelfTests(unittest.TestCase):
         capabilities = self._capabilities()
         plan = build_plan(
             "node",
-            NativeLibrary(Path("/native/libagentgate_ffi.so"), Path("/native/libagentgate_ffi.so")),
+            NativeLibrary(Path("/native/libcoggate_ffi.so"), Path("/native/libcoggate_ffi.so")),
             capabilities,
             "Linux",
             Path("/repo"),
@@ -616,16 +656,16 @@ class RunnerSelfTests(unittest.TestCase):
         )
         self.assertTrue(all(command.cwd == Path("/repo/bindings/node") for command in plan))
         node_environment = dict(plan[0].env)
-        self.assertEqual(node_environment["AGENTGATE_INCLUDE_DIR"], "/repo/packages/ffi/include")
-        self.assertEqual(node_environment["AGENTGATE_LIBRARY"], "/native/libagentgate_ffi.so")
-        self.assertEqual(node_environment["AGENTGATE_RUNTIME_LIBRARY"], "/native/libagentgate_ffi.so")
+        self.assertEqual(node_environment["COGGATE_INCLUDE_DIR"], "/repo/packages/ffi/include")
+        self.assertEqual(node_environment["COGGATE_LIBRARY"], "/native/libcoggate_ffi.so")
+        self.assertEqual(node_environment["COGGATE_RUNTIME_LIBRARY"], "/native/libcoggate_ffi.so")
 
     def test_all_selection_skips_missing_runtime_but_rejects_bad_available_version(self):
         capabilities = self._capabilities()
         capabilities["go"] = Capability("Go", None, None)
         plan = build_plan(
             "all",
-            NativeLibrary(Path("/native/libagentgate_ffi.so"), Path("/native/libagentgate_ffi.so")),
+            NativeLibrary(Path("/native/libcoggate_ffi.so"), Path("/native/libcoggate_ffi.so")),
             capabilities,
             "Linux",
             Path("/repo"),
@@ -639,7 +679,7 @@ class RunnerSelfTests(unittest.TestCase):
     def test_shared_library_discovery_rejects_static_libraries(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            static = root / "libagentgate_ffi.a"
+            static = root / "libcoggate_ffi.a"
             static.write_bytes(b"archive")
             with self.assertRaisesRegex(RunnerError, "shared native library"):
                 discover_library(root, static, "Linux")
@@ -647,8 +687,8 @@ class RunnerSelfTests(unittest.TestCase):
     def test_windows_library_keeps_import_and_runtime_artifacts_separate(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            dll = root / "native path" / "agentgate_ffi.dll"
-            import_library = dll.with_name("agentgate_ffi.dll.lib")
+            dll = root / "native path" / "coggate_ffi.dll"
+            import_library = dll.with_name("coggate_ffi.dll.lib")
             dll.parent.mkdir()
             dll.write_bytes(b"dll")
             import_library.write_bytes(b"import")
@@ -660,15 +700,19 @@ class RunnerSelfTests(unittest.TestCase):
 
     def test_windows_release_commands_and_spaced_loader_paths(self):
         capabilities = self._capabilities()
-        dll = Path("C:/AgentGate native/agentgate_ffi.dll")
-        library = NativeLibrary(Path("C:/AgentGate native/agentgate_ffi.dll.lib"), dll)
+        dll = Path("C:/CogGate native/coggate_ffi.dll")
+        library = NativeLibrary(Path("C:/CogGate native/coggate_ffi.dll.lib"), dll)
         plan = build_plan("all", library, capabilities, "Windows", Path("C:/source tree"))
 
         java_build = next(command for command in plan if command.argv[:2] == ("/tools/cmake", "--build"))
         java_ctest = next(command for command in plan if command.argv[0] == "/tools/ctest")
         go = next(command for command in plan if command.argv[0] == "/tools/go")
         java_configure = next(command for command in plan if command.argv[:2] == ("/tools/cmake", "-S"))
-        java_example = next(command for command in plan if "io.agentgate.examples.Complete" in command.argv)
+        java_example = next(
+            command
+            for command in plan
+            if "io.github.kidjoker.coggate.examples.Complete" in command.argv
+        )
         node_build = next(command for command in plan if command.argv[0] == "/tools/node-gyp")
         node_test = next(command for command in plan if command.argv[:3] == ("/tools/node", "--expose-gc", "--test"))
         self.assertEqual(
@@ -681,21 +725,21 @@ class RunnerSelfTests(unittest.TestCase):
         )
         self.assertIn(("--config", "Release"), tuple(zip(java_build.argv, java_build.argv[1:])))
         self.assertIn(("-C", "Release"), tuple(zip(java_ctest.argv, java_ctest.argv[1:])))
-        self.assertIn("--agentgate-library", go.argv)
-        self.assertEqual(go.argv[go.argv.index("--agentgate-library") + 1], str(dll))
-        self.assertIn("-DAGENTGATE_LIBRARY=" + str(library.link_path), java_configure.argv)
-        self.assertIn("-DAGENTGATE_RUNTIME_LIBRARY=" + str(dll), java_configure.argv)
+        self.assertIn("--coggate-library", go.argv)
+        self.assertEqual(go.argv[go.argv.index("--coggate-library") + 1], str(dll))
+        self.assertIn("-DCOGGATE_LIBRARY=" + str(library.link_path), java_configure.argv)
+        self.assertIn("-DCOGGATE_RUNTIME_LIBRARY=" + str(dll), java_configure.argv)
         self.assertIn("-DMAVEN_EXECUTABLE=/tools/mvn", java_configure.argv)
-        self.assertEqual(java_example.argv[-1], "C:/source tree/target/phase5c/java/Release/agentgate_jni.dll")
+        self.assertEqual(java_example.argv[-1], "C:/source tree/target/phase5c/java/Release/coggate_jni.dll")
         self.assertEqual(node_build.argv[:3], ("/tools/node-gyp", "rebuild", "--release"))
-        self.assertEqual(dict(node_build.env)["AGENTGATE_LIBRARY"], str(library.link_path))
-        self.assertEqual(dict(node_build.env)["AGENTGATE_RUNTIME_LIBRARY"], str(dll))
-        self.assertEqual(dict(node_test.env)["AGENTGATE_RUNTIME_LIBRARY"], str(dll))
+        self.assertEqual(dict(node_build.env)["COGGATE_LIBRARY"], str(library.link_path))
+        self.assertEqual(dict(node_build.env)["COGGATE_RUNTIME_LIBRARY"], str(dll))
+        self.assertEqual(dict(node_test.env)["COGGATE_RUNTIME_LIBRARY"], str(dll))
 
     def test_go_plan_runs_tests_and_complete_example_with_explicit_library(self):
         library = NativeLibrary(
-            Path("/native path/libagentgate_ffi.dylib"),
-            Path("/native path/libagentgate_ffi.dylib"),
+            Path("/native path/libcoggate_ffi.dylib"),
+            Path("/native path/libcoggate_ffi.dylib"),
         )
 
         plan = build_plan("go", library, self._capabilities(), "Darwin", Path("/source tree"))
@@ -706,7 +750,7 @@ class RunnerSelfTests(unittest.TestCase):
             plan[1].argv,
             (
                 "/tools/go", "run", "./examples/complete", "--library",
-                "/native path/libagentgate_ffi.dylib",
+                "/native path/libcoggate_ffi.dylib",
             ),
         )
         self.assertEqual(plan[0].cwd, Path("/source tree/bindings/go"))
@@ -715,16 +759,16 @@ class RunnerSelfTests(unittest.TestCase):
     def test_java_plan_runs_maven_backed_ctest_and_complete_example(self):
         root = Path("/source tree/镜像 Ω")
         library = NativeLibrary(
-            Path("/native path/镜像 Ω/libagentgate_ffi.dylib"),
-            Path("/native path/镜像 Ω/libagentgate_ffi.dylib"),
+            Path("/native path/镜像 Ω/libcoggate_ffi.dylib"),
+            Path("/native path/镜像 Ω/libcoggate_ffi.dylib"),
         )
 
         plan = build_plan("java", library, self._capabilities(), "Darwin", root)
 
         configure, build, ctest, javac, java = plan
-        self.assertIn("-DAGENTGATE_INCLUDE_DIR=" + str(root / "packages/ffi/include"), configure.argv)
+        self.assertIn("-DCOGGATE_INCLUDE_DIR=" + str(root / "packages/ffi/include"), configure.argv)
         self.assertIn("-DMAVEN_EXECUTABLE=/tools/mvn", configure.argv)
-        self.assertIn("-DAGENTGATE_STATIC_LINK=OFF", configure.argv)
+        self.assertIn("-DCOGGATE_STATIC_LINK=OFF", configure.argv)
         self.assertIn("-DBUILD_TESTING=ON", configure.argv)
         self.assertIn("--no-tests=error", ctest.argv)
         self.assertFalse(any(argument.startswith("-DJAVA_EXECUTABLE=") for argument in configure.argv))
@@ -732,10 +776,18 @@ class RunnerSelfTests(unittest.TestCase):
         self.assertEqual(build.argv[:2], ("/tools/cmake", "--build"))
         self.assertEqual(ctest.argv[0], "/tools/ctest")
         self.assertEqual(javac.argv[0], "/tools/javac")
-        self.assertIn("jackson-core-2.18.3.jar", javac.argv[javac.argv.index("-cp") + 1])
+        classpath = javac.argv[javac.argv.index("-cp") + 1].split(":")
+        self.assertEqual(
+            classpath,
+            [
+                str(root / "target/phase5c/java"),
+                str(root / "bindings/java/target/coggate-java-0.1.0-SNAPSHOT.jar"),
+            ],
+        )
         self.assertEqual(java.argv[0], "/tools/java")
-        self.assertIn("io.agentgate.examples.Complete", java.argv)
-        self.assertEqual(java.argv[-1], str(root / "target/phase5c/java/libagentgate_jni.dylib"))
+        self.assertEqual(java.argv[java.argv.index("-cp") + 1], javac.argv[javac.argv.index("-cp") + 1])
+        self.assertIn("io.github.kidjoker.coggate.examples.Complete", java.argv)
+        self.assertEqual(java.argv[-1], str(root / "target/phase5c/java/libcoggate_jni.dylib"))
         self.assertTrue(all(dict(command.env)["JAVA_HOME"] == "/" for command in plan))
 
     def test_java_main_jar_is_configured_as_a_self_contained_shaded_output(self):
@@ -777,8 +829,8 @@ class RunnerSelfTests(unittest.TestCase):
 
     def test_node_unix_stages_spaced_native_library_before_gyp(self):
         library = NativeLibrary(
-            Path("/native path/镜像 Ω/libagentgate_ffi.dylib"),
-            Path("/native path/镜像 Ω/libagentgate_ffi.dylib"),
+            Path("/native path/镜像 Ω/libcoggate_ffi.dylib"),
+            Path("/native path/镜像 Ω/libcoggate_ffi.dylib"),
         )
 
         plan = build_plan(
@@ -795,8 +847,8 @@ class RunnerSelfTests(unittest.TestCase):
         self.assertEqual(plan[0].argv[-2], str(library.runtime_path))
         staged = plan[0].argv[-1]
         self.assertNotRegex(staged, r"\s")
-        self.assertEqual(dict(plan[1].env)["AGENTGATE_LIBRARY"], staged)
-        self.assertEqual(dict(plan[1].env)["AGENTGATE_RUNTIME_LIBRARY"], staged)
+        self.assertEqual(dict(plan[1].env)["COGGATE_LIBRARY"], staged)
+        self.assertEqual(dict(plan[1].env)["COGGATE_RUNTIME_LIBRARY"], staged)
 
     def test_node_gyp_uses_local_headers_only_when_the_header_exists(self):
         library = NativeLibrary(Path("/native/lib.so"), Path("/native/lib.so"))
@@ -827,8 +879,8 @@ class RunnerSelfTests(unittest.TestCase):
         capabilities = self._capabilities()
         parent = Path("/native path/镜像 Ω")
         library = NativeLibrary(
-            parent / "libagentgate_ffi.dylib",
-            parent / "libagentgate_ffi.dylib",
+            parent / "libcoggate_ffi.dylib",
+            parent / "libcoggate_ffi.dylib",
         )
         existing = {
             "CGO_LDFLAGS": "-Wl,-dead_strip",
@@ -875,8 +927,8 @@ class RunnerSelfTests(unittest.TestCase):
         command = build_plan(
             "go",
             NativeLibrary(
-                parent / "libagentgate_ffi.so",
-                parent / "libagentgate_ffi.so",
+                parent / "libcoggate_ffi.so",
+                parent / "libcoggate_ffi.so",
             ),
             self._capabilities(),
             "Linux",
@@ -898,10 +950,10 @@ class RunnerSelfTests(unittest.TestCase):
         self.assertNotIn("DYLD_LIBRARY_PATH", environment)
 
     def test_go_windows_plan_remains_runtime_loader_only(self):
-        dll = Path("C:/native path/agentgate_ffi.dll")
+        dll = Path("C:/native path/coggate_ffi.dll")
         command = build_plan(
             "go",
-            NativeLibrary(Path("C:/native path/agentgate_ffi.dll.lib"), dll),
+            NativeLibrary(Path("C:/native path/coggate_ffi.dll.lib"), dll),
             self._capabilities(),
             "Windows",
             environment={
@@ -913,7 +965,7 @@ class RunnerSelfTests(unittest.TestCase):
 
         self.assertEqual(command.env, ())
         self.assertEqual(
-            command.argv[command.argv.index("--agentgate-library") + 1],
+            command.argv[command.argv.index("--coggate-library") + 1],
             str(dll),
         )
 
@@ -959,7 +1011,7 @@ class RunnerSelfTests(unittest.TestCase):
     def test_visible_status_lines_cover_missing_pass_planned_and_fail(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            library = root / "libagentgate_ffi.so"
+            library = root / "libcoggate_ffi.so"
             library.write_bytes(b"shared")
 
             def invoke(path, dry_run, returncode=0):
@@ -1031,7 +1083,7 @@ class RunnerSelfTests(unittest.TestCase):
     def test_main_labels_invalid_and_unsupported_preflight_as_fail(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            static = root / "libagentgate_ffi.a"
+            static = root / "libcoggate_ffi.a"
             static.write_bytes(b"archive")
             cases = (
                 (["--runtime", "node", "--library", str(static)], lambda: "Linux"),
@@ -1057,7 +1109,7 @@ class RunnerSelfTests(unittest.TestCase):
     def test_cli_orchestration_uses_injected_platform_tools_versions_and_runner(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            library = root / "libagentgate_ffi.so"
+            library = root / "libcoggate_ffi.so"
             library.write_bytes(b"shared")
             calls = []
             args = argparse.Namespace(
@@ -1085,7 +1137,7 @@ class RunnerSelfTests(unittest.TestCase):
     def test_all_orchestration_reports_each_absent_runtime_capability(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            library = root / "libagentgate_ffi.so"
+            library = root / "libcoggate_ffi.so"
             library.write_bytes(b"shared")
             messages = []
             args = argparse.Namespace(runtime="all", library=library, phase5b_library=None, dry_run=True)

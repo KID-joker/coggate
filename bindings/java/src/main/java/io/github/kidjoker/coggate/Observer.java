@@ -1,4 +1,4 @@
-package io.agentgate;
+package io.github.kidjoker.coggate;
 
 /** Best-effort secret-safe event callback. Exceptions are swallowed by the JNI shim. */
 @FunctionalInterface

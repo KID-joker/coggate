@@ -1,4 +1,4 @@
-package io.agentgate;
+package io.github.kidjoker.coggate;
 
 import java.util.Objects;
 
@@ -16,7 +16,7 @@ public final class IssueRequest {
         || binding.length == 0
         || binding.length > MAX_BINDING_BYTES
         || attemptLimit == null) {
-      throw new IllegalArgumentException("invalid AgentGate issue request");
+      throw new IllegalArgumentException("invalid CogGate issue request");
     }
     this.version = version;
     this.binding = binding.clone();

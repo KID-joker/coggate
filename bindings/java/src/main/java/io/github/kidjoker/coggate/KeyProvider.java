@@ -1,4 +1,4 @@
-package io.agentgate;
+package io.github.kidjoker.coggate;
 
 /** Supplies the active signing key and exact historical key lookups. */
 public interface KeyProvider {

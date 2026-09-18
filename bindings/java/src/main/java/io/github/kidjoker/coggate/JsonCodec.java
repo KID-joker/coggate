@@ -1,4 +1,4 @@
-package io.agentgate;
+package io.github.kidjoker.coggate;
 
 import com.fasterxml.jackson.core.JsonFactory;
 import com.fasterxml.jackson.core.JsonGenerator;
@@ -13,7 +13,7 @@ import java.nio.charset.CharacterCodingException;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 
-/** Strict streaming JSON codec for the frozen AgentGate binding contract. */
+/** Strict streaming JSON codec for the frozen CogGate binding contract. */
 public final class JsonCodec {
   private static final JsonFactory FACTORY = JsonFactory.builder()
       .enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION)
@@ -61,7 +61,7 @@ public final class JsonCodec {
       }
       requireComplete(parser, unknown || !challengeIdSeen || !nonceSeen || !answerSeen);
       return new Submission(challengeId, nonce, answer);
-    } catch (AgentGateException error) {
+    } catch (CogGateException error) {
       throw error;
     } catch (IOException | IllegalArgumentException error) {
       throw invalid();
@@ -140,7 +140,7 @@ public final class JsonCodec {
       requireComplete(parser, unknown || seen != 127);
       return new PublicChallenge(
           challengeId, generatorVersion, nonce, issuedAt, expiresAt, question, answerEncoding);
-    } catch (AgentGateException error) {
+    } catch (CogGateException error) {
       throw error;
     } catch (IOException | IllegalArgumentException error) {
       throw invalid();
@@ -204,7 +204,7 @@ public final class JsonCodec {
             VerificationOutcome.RejectionReason.fromWireValue(reason));
       }
       throw invalid();
-    } catch (AgentGateException error) {
+    } catch (CogGateException error) {
       throw error;
     } catch (IOException | IllegalArgumentException error) {
       throw invalid();
@@ -301,7 +301,7 @@ public final class JsonCodec {
     ByteArrayOutputStream output = new ByteArrayOutputStream();
     try (JsonGenerator generator = FACTORY.createGenerator(output)) {
       writer.write(generator);
-    } catch (AgentGateException error) {
+    } catch (CogGateException error) {
       throw error;
     } catch (IOException | IllegalArgumentException error) {
       throw invalid();
@@ -309,8 +309,8 @@ public final class JsonCodec {
     return output.toByteArray();
   }
 
-  private static AgentGateException invalid() {
-    return AgentGateException.invalidArgument();
+  private static CogGateException invalid() {
+    return CogGateException.invalidArgument();
   }
 
   @FunctionalInterface

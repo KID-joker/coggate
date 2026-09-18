@@ -1,6 +1,6 @@
 #include <jni.h>
 
-#include "agentgate.h"
+#include "coggate.h"
 
 #include <algorithm>
 #include <atomic>
@@ -143,7 +143,7 @@ bool finish_audited_jni_operation(JNIEnv* env) noexcept {
     ++g_audited_jni_operations;
     if (g_inject_exception_after_operation == g_audited_jni_operations
         && !env->ExceptionCheck()) {
-      (void)env->FindClass("io/agentgate/DeliberatelyMissingForJniAuditTest");
+      (void)env->FindClass("io/github/kidjoker/coggate/DeliberatelyMissingForJniAuditTest");
     }
   }
   return clear_pending(env);
@@ -265,7 +265,7 @@ int enum_value(JNIEnv* env, jobject value, jmethodID method, int fallback) noexc
   return result;
 }
 
-void AG_CALL release_host(void* release_data, std::uint8_t* data, std::size_t len) {
+void COGGATE_CALL release_host(void* release_data, std::uint8_t* data, std::size_t len) {
   try {
     (void)len;
     auto* allocation = static_cast<HostAllocation*>(release_data);
@@ -323,7 +323,7 @@ bool host_buffer_from_array(JNIEnv* env, jbyteArray value, ag_host_buffer* outpu
   return true;
 }
 
-ag_lifecycle_status AG_CALL store_issued(void* user_data, ag_byte_slice private_json,
+ag_lifecycle_status COGGATE_CALL store_issued(void* user_data, ag_byte_slice private_json,
     ag_byte_slice binding, ag_attempt_limit limit) {
   try {
     EnvScope scope;
@@ -357,7 +357,7 @@ ag_lifecycle_status AG_CALL store_issued(void* user_data, ag_byte_slice private_
   }
 }
 
-ag_begin_status AG_CALL begin_attempt(void* user_data, ag_byte_slice identity,
+ag_begin_status COGGATE_CALL begin_attempt(void* user_data, ag_byte_slice identity,
     ag_byte_slice binding, std::int64_t server_time, ag_host_buffer* material_out,
     ag_host_buffer* token_out) {
   try {
@@ -420,7 +420,7 @@ ag_begin_status AG_CALL begin_attempt(void* user_data, ag_byte_slice identity,
   }
 }
 
-ag_lifecycle_status AG_CALL finish_attempt(void* user_data, ag_byte_slice token,
+ag_lifecycle_status COGGATE_CALL finish_attempt(void* user_data, ag_byte_slice token,
     ag_attempt_outcome outcome) {
   try {
     EnvScope scope;
@@ -450,7 +450,7 @@ ag_lifecycle_status AG_CALL finish_attempt(void* user_data, ag_byte_slice token,
   }
 }
 
-ag_key_status AG_CALL active_key(void* user_data, ag_host_buffer* key_id_out,
+ag_key_status COGGATE_CALL active_key(void* user_data, ag_host_buffer* key_id_out,
     ag_host_buffer* key_out) {
   try {
     EnvScope scope;
@@ -499,7 +499,7 @@ ag_key_status AG_CALL active_key(void* user_data, ag_host_buffer* key_id_out,
   }
 }
 
-ag_key_status AG_CALL key_by_id(void* user_data, ag_byte_slice key_id, ag_host_buffer* key_out) {
+ag_key_status COGGATE_CALL key_by_id(void* user_data, ag_byte_slice key_id, ag_host_buffer* key_out) {
   try {
     EnvScope scope;
     JNIEnv* env = scope.get();
@@ -539,7 +539,7 @@ ag_key_status AG_CALL key_by_id(void* user_data, ag_byte_slice key_id, ag_host_b
   }
 }
 
-void AG_CALL observe(void* user_data, ag_byte_slice event_json) {
+void COGGATE_CALL observe(void* user_data, ag_byte_slice event_json) {
   try {
     EnvScope scope;
     JNIEnv* env = scope.get();
@@ -628,58 +628,58 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void*) {
     g_vm = vm;
     JNIEnv* env = nullptr;
     if (vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_8) != JNI_OK) return JNI_ERR;
-    if (!cache_class(env, "io/agentgate/Service", &g_service_class)
-        || !cache_class(env, "io/agentgate/AgentGateException", &g_error_class)) return JNI_ERR;
+    if (!cache_class(env, "io/github/kidjoker/coggate/Service", &g_service_class)
+        || !cache_class(env, "io/github/kidjoker/coggate/CogGateException", &g_error_class)) return JNI_ERR;
     g_enter_callback = method_id(env, g_service_class, "enterCallback", "(J)V", true);
     g_exit_callback = method_id(env, g_service_class, "exitCallback", "(J)V", true);
     g_released = method_id(env, g_service_class, "released", "(I)V", true);
     g_error_from_status = method_id(env, g_error_class, "fromStatus",
-        "(I)Lio/agentgate/AgentGateException;", true);
+        "(I)Lio/github/kidjoker/coggate/CogGateException;", true);
 
-    jclass lifecycle = find_local_class(env, "io/agentgate/Lifecycle");
-    jclass lifecycle_status = find_local_class(env, "io/agentgate/Lifecycle$Status");
-    jclass begin_status = find_local_class(env, "io/agentgate/Lifecycle$BeginStatus");
-    jclass outcome = find_local_class(env, "io/agentgate/Lifecycle$AttemptOutcome");
-    jclass begin_result = find_local_class(env, "io/agentgate/Lifecycle$BeginResult");
-    jclass keys = find_local_class(env, "io/agentgate/KeyProvider");
-    jclass key_status = find_local_class(env, "io/agentgate/KeyProvider$Status");
-    jclass active_result = find_local_class(env, "io/agentgate/KeyProvider$ActiveResult");
-    jclass key_result = find_local_class(env, "io/agentgate/KeyProvider$Result");
-    jclass observer = find_local_class(env, "io/agentgate/Observer");
+    jclass lifecycle = find_local_class(env, "io/github/kidjoker/coggate/Lifecycle");
+    jclass lifecycle_status = find_local_class(env, "io/github/kidjoker/coggate/Lifecycle$Status");
+    jclass begin_status = find_local_class(env, "io/github/kidjoker/coggate/Lifecycle$BeginStatus");
+    jclass outcome = find_local_class(env, "io/github/kidjoker/coggate/Lifecycle$AttemptOutcome");
+    jclass begin_result = find_local_class(env, "io/github/kidjoker/coggate/Lifecycle$BeginResult");
+    jclass keys = find_local_class(env, "io/github/kidjoker/coggate/KeyProvider");
+    jclass key_status = find_local_class(env, "io/github/kidjoker/coggate/KeyProvider$Status");
+    jclass active_result = find_local_class(env, "io/github/kidjoker/coggate/KeyProvider$ActiveResult");
+    jclass key_result = find_local_class(env, "io/github/kidjoker/coggate/KeyProvider$Result");
+    jclass observer = find_local_class(env, "io/github/kidjoker/coggate/Observer");
     if (lifecycle == nullptr || lifecycle_status == nullptr || begin_status == nullptr
         || outcome == nullptr || begin_result == nullptr || keys == nullptr || key_status == nullptr
         || active_result == nullptr || key_result == nullptr || observer == nullptr) return JNI_ERR;
 
     g_store_issued = method_id(env, lifecycle, "storeIssued",
-        "([B[BLio/agentgate/AttemptLimit;)Lio/agentgate/Lifecycle$Status;");
+        "([B[BLio/github/kidjoker/coggate/AttemptLimit;)Lio/github/kidjoker/coggate/Lifecycle$Status;");
     g_begin_attempt = method_id(env, lifecycle, "beginAttempt",
-        "([B[BJ)Lio/agentgate/Lifecycle$BeginResult;");
+        "([B[BJ)Lio/github/kidjoker/coggate/Lifecycle$BeginResult;");
     g_finish_attempt = method_id(env, lifecycle, "finishAttempt",
-        "([BLio/agentgate/Lifecycle$AttemptOutcome;)Lio/agentgate/Lifecycle$Status;");
+        "([BLio/github/kidjoker/coggate/Lifecycle$AttemptOutcome;)Lio/github/kidjoker/coggate/Lifecycle$Status;");
     g_lifecycle_status_value = method_id(env, lifecycle_status, "value", "()I");
     g_begin_status_value = method_id(env, begin_status, "value", "()I");
     g_attempt_outcome_value = method_id(env, outcome, "value", "()I");
     g_begin_result_status = method_id(env, begin_result, "status",
-        "()Lio/agentgate/Lifecycle$BeginStatus;");
+        "()Lio/github/kidjoker/coggate/Lifecycle$BeginStatus;");
     g_begin_result_material = method_id(env, begin_result, "material", "()[B");
     g_begin_result_token = method_id(env, begin_result, "token", "()[B");
-    g_active_key = method_id(env, keys, "activeKey", "()Lio/agentgate/KeyProvider$ActiveResult;");
-    g_key_by_id = method_id(env, keys, "keyById", "([B)Lio/agentgate/KeyProvider$Result;");
+    g_active_key = method_id(env, keys, "activeKey", "()Lio/github/kidjoker/coggate/KeyProvider$ActiveResult;");
+    g_key_by_id = method_id(env, keys, "keyById", "([B)Lio/github/kidjoker/coggate/KeyProvider$Result;");
     g_key_status_value = method_id(env, key_status, "value", "()I");
     g_active_result_status = method_id(env, active_result, "status",
-        "()Lio/agentgate/KeyProvider$Status;");
+        "()Lio/github/kidjoker/coggate/KeyProvider$Status;");
     g_active_result_key_id = method_id(env, active_result, "keyId", "()[B");
     g_active_result_key = method_id(env, active_result, "key", "()[B");
-    g_result_status = method_id(env, key_result, "status", "()Lio/agentgate/KeyProvider$Status;");
+    g_result_status = method_id(env, key_result, "status", "()Lio/github/kidjoker/coggate/KeyProvider$Status;");
     g_result_key = method_id(env, key_result, "key", "()[B");
     g_observe = method_id(env, observer, "observe", "([B)V");
 
-    g_attempt_one = enum_constant(env, "io/agentgate/AttemptLimit", "ONE");
-    g_attempt_two = enum_constant(env, "io/agentgate/AttemptLimit", "TWO");
-    g_outcome_accepted = enum_constant(env, "io/agentgate/Lifecycle$AttemptOutcome", "ACCEPTED");
-    g_outcome_rejected = enum_constant(env, "io/agentgate/Lifecycle$AttemptOutcome", "REJECTED");
+    g_attempt_one = enum_constant(env, "io/github/kidjoker/coggate/AttemptLimit", "ONE");
+    g_attempt_two = enum_constant(env, "io/github/kidjoker/coggate/AttemptLimit", "TWO");
+    g_outcome_accepted = enum_constant(env, "io/github/kidjoker/coggate/Lifecycle$AttemptOutcome", "ACCEPTED");
+    g_outcome_rejected = enum_constant(env, "io/github/kidjoker/coggate/Lifecycle$AttemptOutcome", "REJECTED");
     g_outcome_system_failure = enum_constant(env,
-        "io/agentgate/Lifecycle$AttemptOutcome", "SYSTEM_FAILURE");
+        "io/github/kidjoker/coggate/Lifecycle$AttemptOutcome", "SYSTEM_FAILURE");
     if (env->ExceptionCheck() || g_enter_callback == nullptr || g_exit_callback == nullptr
         || g_released == nullptr
         || g_error_from_status == nullptr || g_store_issued == nullptr || g_begin_attempt == nullptr
@@ -698,7 +698,7 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void*) {
   }
 }
 
-JNIEXPORT jlong JNICALL Java_io_agentgate_Service_nativeCreate(
+JNIEXPORT jlong JNICALL Java_io_github_kidjoker_coggate_Service_nativeCreate(
     JNIEnv* env, jclass, jobject lifecycle, jobject keys, jobject observer) {
   try {
     if (lifecycle == nullptr || keys == nullptr || ag_abi_version() != AG_ABI_VERSION_1) {
@@ -760,7 +760,7 @@ JNIEXPORT jlong JNICALL Java_io_agentgate_Service_nativeCreate(
   }
 }
 
-JNIEXPORT jint JNICALL Java_io_agentgate_Service_nativeDestroy(JNIEnv* env, jclass, jlong handle) {
+JNIEXPORT jint JNICALL Java_io_github_kidjoker_coggate_Service_nativeDestroy(JNIEnv* env, jclass, jlong handle) {
   try {
     auto* state = reinterpret_cast<NativeState*>(handle);
     if (state == nullptr) return AG_STATUS_INVALID_ARGUMENT;
@@ -775,7 +775,7 @@ JNIEXPORT jint JNICALL Java_io_agentgate_Service_nativeDestroy(JNIEnv* env, jcla
   }
 }
 
-JNIEXPORT jbyteArray JNICALL Java_io_agentgate_Service_nativeIssue(JNIEnv* env, jclass,
+JNIEXPORT jbyteArray JNICALL Java_io_github_kidjoker_coggate_Service_nativeIssue(JNIEnv* env, jclass,
     jlong handle, jbyteArray version, jbyteArray binding, jint limit) {
   try {
     auto* state = reinterpret_cast<NativeState*>(handle);
@@ -805,7 +805,7 @@ JNIEXPORT jbyteArray JNICALL Java_io_agentgate_Service_nativeIssue(JNIEnv* env, 
   }
 }
 
-JNIEXPORT jbyteArray JNICALL Java_io_agentgate_Service_nativeVerify(JNIEnv* env, jclass,
+JNIEXPORT jbyteArray JNICALL Java_io_github_kidjoker_coggate_Service_nativeVerify(JNIEnv* env, jclass,
     jlong handle, jbyteArray submission, jbyteArray binding) {
   try {
     auto* state = reinterpret_cast<NativeState*>(handle);
@@ -835,7 +835,7 @@ JNIEXPORT jbyteArray JNICALL Java_io_agentgate_Service_nativeVerify(JNIEnv* env,
   }
 }
 
-JNIEXPORT jboolean JNICALL Java_io_agentgate_Service_nativeTestCallbackFromAttachedThread(
+JNIEXPORT jboolean JNICALL Java_io_github_kidjoker_coggate_Service_nativeTestCallbackFromAttachedThread(
     JNIEnv* env, jclass, jobject lifecycle) {
   try {
     jobject global = env->NewGlobalRef(lifecycle);
@@ -859,34 +859,34 @@ JNIEXPORT jboolean JNICALL Java_io_agentgate_Service_nativeTestCallbackFromAttac
   }
 }
 
-JNIEXPORT jlong JNICALL Java_io_agentgate_Service_nativeTestAttachCount(JNIEnv*, jclass) {
+JNIEXPORT jlong JNICALL Java_io_github_kidjoker_coggate_Service_nativeTestAttachCount(JNIEnv*, jclass) {
   return static_cast<jlong>(g_attaches.load(std::memory_order_relaxed));
 }
-JNIEXPORT jlong JNICALL Java_io_agentgate_Service_nativeTestDetachCount(JNIEnv*, jclass) {
+JNIEXPORT jlong JNICALL Java_io_github_kidjoker_coggate_Service_nativeTestDetachCount(JNIEnv*, jclass) {
   return static_cast<jlong>(g_detaches.load(std::memory_order_relaxed));
 }
-JNIEXPORT jlong JNICALL Java_io_agentgate_Service_nativeTestAllocationCount(JNIEnv*, jclass) {
+JNIEXPORT jlong JNICALL Java_io_github_kidjoker_coggate_Service_nativeTestAllocationCount(JNIEnv*, jclass) {
   return static_cast<jlong>(g_allocations.load(std::memory_order_relaxed));
 }
-JNIEXPORT jlong JNICALL Java_io_agentgate_Service_nativeTestReleaseCount(JNIEnv*, jclass) {
+JNIEXPORT jlong JNICALL Java_io_github_kidjoker_coggate_Service_nativeTestReleaseCount(JNIEnv*, jclass) {
   return static_cast<jlong>(g_releases.load(std::memory_order_relaxed));
 }
-JNIEXPORT jlong JNICALL Java_io_agentgate_Service_nativeTestDestroyCount(JNIEnv*, jclass) {
+JNIEXPORT jlong JNICALL Java_io_github_kidjoker_coggate_Service_nativeTestDestroyCount(JNIEnv*, jclass) {
   return static_cast<jlong>(g_destroys.load(std::memory_order_relaxed));
 }
-JNIEXPORT jlong JNICALL Java_io_agentgate_Service_nativeTestWipeCount(JNIEnv*, jclass) {
+JNIEXPORT jlong JNICALL Java_io_github_kidjoker_coggate_Service_nativeTestWipeCount(JNIEnv*, jclass) {
   return static_cast<jlong>(g_wipes.load(std::memory_order_relaxed));
 }
-JNIEXPORT jlong JNICALL Java_io_agentgate_Service_nativeTestWipeFailureCount(JNIEnv*, jclass) {
+JNIEXPORT jlong JNICALL Java_io_github_kidjoker_coggate_Service_nativeTestWipeFailureCount(JNIEnv*, jclass) {
   return static_cast<jlong>(g_wipe_failures.load(std::memory_order_relaxed));
 }
-JNIEXPORT jboolean JNICALL Java_io_agentgate_Service_nativeTestPendingExceptionCleanup(
+JNIEXPORT jboolean JNICALL Java_io_github_kidjoker_coggate_Service_nativeTestPendingExceptionCleanup(
     JNIEnv* env, jclass) {
   try {
     {
       CallbackScope callback(env, nullptr);
       if (!callback.entered()) return JNI_FALSE;
-      (void)env->FindClass("io/agentgate/DeliberatelyMissingForPendingExceptionTest");
+      (void)env->FindClass("io/github/kidjoker/coggate/DeliberatelyMissingForPendingExceptionTest");
       if (!env->ExceptionCheck()) return JNI_FALSE;
     }
     return env->ExceptionCheck() ? JNI_FALSE : JNI_TRUE;
@@ -895,14 +895,14 @@ JNIEXPORT jboolean JNICALL Java_io_agentgate_Service_nativeTestPendingExceptionC
     return JNI_FALSE;
   }
 }
-JNIEXPORT jboolean JNICALL Java_io_agentgate_Service_nativeTestPendingExceptionAudit(
+JNIEXPORT jboolean JNICALL Java_io_github_kidjoker_coggate_Service_nativeTestPendingExceptionAudit(
     JNIEnv* env, jclass, jobject result, jobject status) {
   try {
     if (result == nullptr || status == nullptr || clear_pending(env)) return JNI_FALSE;
     jweak weak = env->NewWeakGlobalRef(result);
     if (clear_pending(env) || weak == nullptr) return JNI_FALSE;
     const auto inject = [](JNIEnv* current) {
-      (void)current->FindClass("io/agentgate/DeliberatelyMissingForJniAuditTest");
+      (void)current->FindClass("io/github/kidjoker/coggate/DeliberatelyMissingForJniAuditTest");
       return current->ExceptionCheck();
     };
     const auto injected_operation_stops_sequence = [&](auto&& operation) {

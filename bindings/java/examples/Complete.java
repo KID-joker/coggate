@@ -1,13 +1,13 @@
-package io.agentgate.examples;
+package io.github.kidjoker.coggate.examples;
 
-import io.agentgate.AttemptLimit;
-import io.agentgate.IssueRequest;
-import io.agentgate.KeyProvider;
-import io.agentgate.Lifecycle;
-import io.agentgate.PublicChallenge;
-import io.agentgate.Service;
-import io.agentgate.Submission;
-import io.agentgate.VerificationOutcome;
+import io.github.kidjoker.coggate.AttemptLimit;
+import io.github.kidjoker.coggate.IssueRequest;
+import io.github.kidjoker.coggate.KeyProvider;
+import io.github.kidjoker.coggate.Lifecycle;
+import io.github.kidjoker.coggate.PublicChallenge;
+import io.github.kidjoker.coggate.Service;
+import io.github.kidjoker.coggate.Submission;
+import io.github.kidjoker.coggate.VerificationOutcome;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.concurrent.atomic.AtomicReference;
@@ -27,7 +27,7 @@ public final class Complete {
         + "\"generator_version\":\"1.0\",\"nonce\":\"bm9uY2UtMTIzNDU2Nzg5MA\","
         + "\"issued_at\":1788062400,\"expires_at\":1788062408,"
         + "\"mac_key_id\":\"2026-08\","
-        + "\"answer_mac\":\"b9cb8fd013b40e31c7bc3a1c33b7e36143ef98d045a924ed09ebd38ff07cec2c\","
+        + "\"answer_mac\":\"ccdffbb67b4c9da34f91d56d12970b311d7345e8bcf579d1326fc4a78633330c\","
         + "\"answer_encoding\":\"base64url\"}").getBytes(StandardCharsets.UTF_8);
     AtomicReference<byte[]> issuedMaterial = new AtomicReference<>();
     Lifecycle lifecycle = new Lifecycle() {

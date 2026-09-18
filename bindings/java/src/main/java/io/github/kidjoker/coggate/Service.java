@@ -1,4 +1,4 @@
-package io.agentgate;
+package io.github.kidjoker.coggate;
 
 import java.lang.ref.Cleaner;
 import java.nio.charset.StandardCharsets;
@@ -11,7 +11,7 @@ import java.util.Objects;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.IntConsumer;
 
-/** Thread-safe native AgentGate service with deterministic close semantics. */
+/** Thread-safe native CogGate service with deterministic close semantics. */
 public final class Service implements AutoCloseable {
   private static final Cleaner CLEANER = Cleaner.create();
   private static final ThreadLocal<List<Long>> ACTIVE_CALLBACKS = new ThreadLocal<>();
@@ -36,34 +36,34 @@ public final class Service implements AutoCloseable {
         Path shim = path.toAbsolutePath().normalize();
         try {
           if (System.getProperty("os.name", "").startsWith("Windows")) {
-            String configuredCore = System.getProperty("agentgate.core.path");
+            String configuredCore = System.getProperty("coggate.core.path");
             Path core = configuredCore == null || configuredCore.isBlank()
-                ? shim.resolveSibling("agentgate_ffi.dll")
+                ? shim.resolveSibling("coggate_ffi.dll")
                 : Path.of(configuredCore).toAbsolutePath().normalize();
             if (Files.isRegularFile(core)) System.load(core.toString());
           }
           System.load(shim.toString());
           loaded = true;
         } catch (LinkageError | RuntimeException error) {
-          throw new UnsatisfiedLinkError("AgentGate native library unavailable");
+          throw new UnsatisfiedLinkError("CogGate native library unavailable");
         }
       }
     }
   }
 
   public Service(Lifecycle lifecycle, KeyProvider keys, Observer observer) {
-    if (!loaded || lifecycle == null || keys == null) throw AgentGateException.invalidArgument();
+    if (!loaded || lifecycle == null || keys == null) throw CogGateException.invalidArgument();
     this.lifecycle = lifecycle;
     this.keys = keys;
     this.observer = observer;
     long handle = nativeCreate(lifecycle, keys, observer);
-    if (handle == 0) throw AgentGateException.fromStatus(7);
+    if (handle == 0) throw CogGateException.fromStatus(7);
     state = new State(handle);
     cleanable = CLEANER.register(this, state);
   }
 
   public PublicChallenge issue(IssueRequest request) {
-    if (request == null) throw AgentGateException.invalidArgument();
+    if (request == null) throw CogGateException.invalidArgument();
     long handle = beginCall();
     byte[] version = null;
     byte[] binding = null;
@@ -73,10 +73,10 @@ public final class Service implements AutoCloseable {
       binding = request.binding();
       return JsonCodec.decodePublicChallenge(
           nativeIssue(handle, version, binding, request.attemptLimit().value()));
-    } catch (AgentGateException error) {
+    } catch (CogGateException error) {
       throw error;
     } catch (RuntimeException error) {
-      throw AgentGateException.fromStatus(7);
+      throw CogGateException.fromStatus(7);
     } finally {
       if (version != null) Arrays.fill(version, (byte) 0);
       if (binding != null) Arrays.fill(binding, (byte) 0);
@@ -86,7 +86,7 @@ public final class Service implements AutoCloseable {
 
   public VerificationOutcome verify(Submission submission, byte[] binding) {
     if (submission == null || binding == null || binding.length == 0 || binding.length > 256) {
-      throw AgentGateException.invalidArgument();
+      throw CogGateException.invalidArgument();
     }
     long handle = beginCall();
     byte[] payload = null;
@@ -96,10 +96,10 @@ public final class Service implements AutoCloseable {
       payload = JsonCodec.encodeSubmission(submission);
       bindingCopy = binding.clone();
       return JsonCodec.decodeOutcome(nativeVerify(handle, payload, bindingCopy));
-    } catch (AgentGateException error) {
+    } catch (CogGateException error) {
       throw error;
     } catch (RuntimeException error) {
-      throw AgentGateException.fromStatus(7);
+      throw CogGateException.fromStatus(7);
     } finally {
       if (payload != null) Arrays.fill(payload, (byte) 0);
       if (bindingCopy != null) Arrays.fill(bindingCopy, (byte) 0);
@@ -109,7 +109,7 @@ public final class Service implements AutoCloseable {
 
   @Override
   public void close() {
-    if (inCallback()) throw AgentGateException.invalidArgument();
+    if (inCallback()) throw CogGateException.invalidArgument();
     boolean interrupted = false;
     synchronized (lock) {
       closed = true;
@@ -124,16 +124,16 @@ public final class Service implements AutoCloseable {
     int status = state.destroy();
     cleanable.clean();
     if (interrupted) Thread.currentThread().interrupt();
-    AgentGateException error = AgentGateException.fromStatus(status);
+    CogGateException error = CogGateException.fromStatus(status);
     if (error != null) throw error;
   }
 
   private long beginCall() {
-    if (inCallback()) throw AgentGateException.invalidArgument();
+    if (inCallback()) throw CogGateException.invalidArgument();
     synchronized (lock) {
-      if (closed) throw AgentGateException.invalidArgument();
+      if (closed) throw CogGateException.invalidArgument();
       long handle = state.handle.get();
-      if (handle == 0) throw AgentGateException.invalidArgument();
+      if (handle == 0) throw CogGateException.invalidArgument();
       inFlight++;
       return handle;
     }

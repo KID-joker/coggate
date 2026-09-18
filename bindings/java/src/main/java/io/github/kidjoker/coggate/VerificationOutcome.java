@@ -1,4 +1,4 @@
-package io.agentgate;
+package io.github.kidjoker.coggate;
 
 import java.util.Objects;
 
@@ -43,7 +43,7 @@ public final class VerificationOutcome {
           return reason;
         }
       }
-      throw AgentGateException.invalidArgument();
+      throw CogGateException.invalidArgument();
     }
   }
 

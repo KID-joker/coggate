@@ -342,20 +342,20 @@ class RunnerSelfTests(unittest.TestCase):
             "bindings/go/go.mod",
             "bindings/go/coggate/service.go",
             "bindings/go/examples/complete/main.go",
-            f"bindings/java/target/{LEGACY_SOURCE_STEM}-java-0.1.0-SNAPSHOT.jar",
+            "bindings/java/target/coggate-java-0.1.0-SNAPSHOT.jar",
             "bindings/java/examples/Complete.java",
             "bindings/node/package.json",
             "bindings/node/lib/index.js",
             "bindings/node/examples/complete.js",
-            f"bindings/node/build/Release/{LEGACY_SOURCE_STEM}.node",
+            "bindings/node/build/Release/coggate.node",
             f"bindings/node/build/Release/{target.shared_name}",
             "tests/qualification/abi_probe.c",
             "tests/qualification/abi_probe.cpp",
         ]
         shim = {
-            "Linux": f"target/phase5c/java/lib{LEGACY_SOURCE_STEM}_jni.so",
-            "Darwin": f"target/phase5c/java/lib{LEGACY_SOURCE_STEM}_jni.dylib",
-            "Windows": f"target/phase5c/java/Release/{LEGACY_SOURCE_STEM}_jni.dll",
+            "Linux": "target/phase5c/java/libcoggate_jni.so",
+            "Darwin": "target/phase5c/java/libcoggate_jni.dylib",
+            "Windows": "target/phase5c/java/Release/coggate_jni.dll",
         }[target.system]
         paths.append(shim)
         if target.import_name is not None:
@@ -705,7 +705,7 @@ class RunnerSelfTests(unittest.TestCase):
             self.assertIn("java/coggate-java-0.1.0-SNAPSHOT.jar", sources)
             (
                 linux_root
-                / f"bindings/java/target/{LEGACY_SOURCE_STEM}-java-0.1.0-SNAPSHOT.jar"
+                / "bindings/java/target/coggate-java-0.1.0-SNAPSHOT.jar"
             ).unlink()
             with self.assertRaisesRegex(RunnerError, "JAR"):
                 collect_artifact_sources(linux_root, target_fixture())
@@ -719,21 +719,38 @@ class RunnerSelfTests(unittest.TestCase):
             java_target = parent / "jars"
             java_target.mkdir()
             for name in (
-                f"{LEGACY_SOURCE_STEM}-java-0.1.0-SNAPSHOT-sources.jar",
-                f"{LEGACY_SOURCE_STEM}-java-0.1.0-SNAPSHOT-javadoc.jar",
-                f"original-{LEGACY_SOURCE_STEM}-java-0.1.0-SNAPSHOT.jar",
-                f"{LEGACY_SOURCE_STEM}-java-0.1.0-SNAPSHOT.jar",
+                "coggate-java-0.1.0-SNAPSHOT-sources.jar",
+                "coggate-java-0.1.0-SNAPSHOT-javadoc.jar",
+                "original-coggate-java-0.1.0-SNAPSHOT.jar",
+                "coggate-java-0.1.0-SNAPSHOT.jar",
             ):
                 (java_target / name).write_text(name, encoding="utf-8")
             self.assertEqual(
                 select_maven_main_jar(java_target).name,
-                f"{LEGACY_SOURCE_STEM}-java-0.1.0-SNAPSHOT.jar",
+                "coggate-java-0.1.0-SNAPSHOT.jar",
             )
-            (java_target / f"{LEGACY_SOURCE_STEM}-java-0.1.0.jar").write_text(
+            (java_target / "coggate-java-0.1.0.jar").write_text(
                 "other", encoding="utf-8"
             )
             with self.assertRaisesRegex(RunnerError, "JAR"):
                 select_maven_main_jar(java_target)
+
+    def test_collection_rejects_legacy_only_java_and_jni_outputs(self):
+        legacy = "agent" + "gate"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            java_target = root / "java-target"
+            java_target.mkdir()
+            (java_target / f"{legacy}-java-0.1.0-SNAPSHOT.jar").write_bytes(b"jar")
+            with self.assertRaisesRegex(RunnerError, "coggate-java"):
+                select_maven_main_jar(java_target)
+
+            source = self._source_fixture(root / "source", target_fixture())
+            new_jni = source / "target/phase5c/java/libcoggate_jni.so"
+            old_jni = new_jni.with_name(f"lib{legacy}_jni.so")
+            new_jni.replace(old_jni)
+            with self.assertRaisesRegex(RunnerError, "coggate_jni"):
+                collect_artifact_sources(source, target_fixture())
 
     def test_collection_layout_and_jni_mapping_are_exact_on_every_platform(self):
         expected_shims = {
@@ -1751,6 +1768,8 @@ Dump of file coggate_ffi.dll
         self.assertIn("-DCOGGATE_STATIC", plan[4].argv)
         self.assertEqual(plan[9].argv[-2:], ("--coggate-library", str(artifact / "native/libcoggate_ffi.so")))
         self.assertEqual(plan[10].argv[-2:], ("--library", str(artifact / "native/libcoggate_ffi.so")))
+        self.assertIn("io.github.kidjoker.coggate.examples.Complete", plan[12].argv)
+        self.assertEqual(plan[12].argv[-1], str(artifact / "java/libcoggate_jni.so"))
         self.assertEqual(plan[-1].cwd, artifact / "node")
 
     def test_posix_go_smoke_uses_only_quoted_extracted_cgo_paths(self):
@@ -1815,6 +1834,8 @@ Dump of file coggate_ffi.dll
             "-Dcoggate.core.path=" + str(artifact / "native/coggate_ffi.dll"),
             java.argv,
         )
+        self.assertIn("io.github.kidjoker.coggate.examples.Complete", java.argv)
+        self.assertEqual(java.argv[-1], str(artifact / "java/coggate_jni.dll"))
 
     def test_artifact_smoke_copies_to_unicode_child_and_verifies_before_and_after(self):
         temporary_roots = []
@@ -3955,7 +3976,6 @@ PLATFORM_TARGETS = MappingProxyType(
 )
 
 COGGATE_VERSION = "0.1.0"
-LEGACY_SOURCE_STEM = "agent" + "gate"
 ABI_VERSION = 1
 MANIFEST_NAME = "manifest.json"
 CHECKSUM_NAME = "SHA256SUMS"
@@ -4545,7 +4565,7 @@ def smoke_plan(
     java_argv = [java, "-cp", classpath]
     if target.system == "Windows":
         java_argv.append("-Dcoggate.core.path=" + str(shared_library))
-    java_argv.extend(("io.coggate.examples.Complete", str(shim)))
+    java_argv.extend(("io.github.kidjoker.coggate.examples.Complete", str(shim)))
     commands.append(
         PlannedCommand(
             tuple(java_argv), artifact / "java", java_environment,
@@ -5531,12 +5551,12 @@ def select_maven_main_jar(java_target: Path) -> Path:
         _require_regular_file(path, "Maven JAR")
         observed.append(path.name)
         if (
-            path.name.startswith(f"{LEGACY_SOURCE_STEM}-java-")
+            path.name.startswith("coggate-java-")
             and not path.name.endswith(("-sources.jar", "-javadoc.jar"))
             and not path.name.startswith("original-")
         ):
             candidates.append(path)
-    expected = f"{LEGACY_SOURCE_STEM}-java-0.1.0-SNAPSHOT.jar"
+    expected = "coggate-java-0.1.0-SNAPSHOT.jar"
     if len(candidates) != 1 or candidates[0].name != expected:
         raise RunnerError(
             "expected exactly one Maven main JAR named "
@@ -5599,7 +5619,7 @@ def collect_artifact_sources(root: Path, target: Target) -> dict[str, Path]:
             root, "bindings/node/examples/complete.js"
         ),
         "node/build/Release/coggate.node": _source_file(
-            root, f"bindings/node/build/Release/{LEGACY_SOURCE_STEM}.node"
+            root, "bindings/node/build/Release/coggate.node"
         ),
         f"node/build/Release/{target.shared_name}": _source_file(
             root,
@@ -5614,12 +5634,12 @@ def collect_artifact_sources(root: Path, target: Target) -> dict[str, Path]:
             root, f"target/release/{target.import_name}", "native library"
         )
     jni_source = (
-        f"target/phase5c/java/Release/{LEGACY_SOURCE_STEM}_jni.dll"
+        "target/phase5c/java/Release/coggate_jni.dll"
         if target.system == "Windows"
         else (
-            f"target/phase5c/java/lib{LEGACY_SOURCE_STEM}_jni.so"
+            "target/phase5c/java/libcoggate_jni.so"
             if target.system == "Linux"
-            else f"target/phase5c/java/lib{LEGACY_SOURCE_STEM}_jni.dylib"
+            else "target/phase5c/java/libcoggate_jni.dylib"
         )
     )
     sources[f"java/{JNI_SHIM_NAMES[target.system]}"] = _source_file(

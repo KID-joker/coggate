@@ -1,106 +1,106 @@
 cmake_minimum_required(VERSION 3.20)
-project(agentgate_java_jni LANGUAGES CXX)
+project(coggate_java_jni LANGUAGES CXX)
 
 include(CTest)
 find_package(JNI REQUIRED)
 
-set(AGENTGATE_INCLUDE_DIR "" CACHE PATH "Directory containing agentgate.h")
-set(AGENTGATE_LIBRARY "" CACHE FILEPATH "AgentGate native link library")
-set(AGENTGATE_RUNTIME_LIBRARY "" CACHE FILEPATH "Optional AgentGate runtime DLL/dylib")
-option(AGENTGATE_STATIC_LINK "Link AgentGate into the JNI shim statically" OFF)
-set(AGENTGATE_MAVEN_REPOSITORY "${CMAKE_BINARY_DIR}/m2" CACHE PATH
+set(COGGATE_INCLUDE_DIR "" CACHE PATH "Directory containing coggate.h")
+set(COGGATE_LIBRARY "" CACHE FILEPATH "CogGate native link library")
+set(COGGATE_RUNTIME_LIBRARY "" CACHE FILEPATH "Optional CogGate runtime DLL/dylib")
+option(COGGATE_STATIC_LINK "Link CogGate into the JNI shim statically" OFF)
+set(COGGATE_MAVEN_REPOSITORY "${CMAKE_BINARY_DIR}/m2" CACHE PATH
     "Isolated Maven local repository used by CTest")
 
-if(NOT EXISTS "${AGENTGATE_INCLUDE_DIR}/agentgate.h")
-  message(FATAL_ERROR "AGENTGATE_INCLUDE_DIR must contain agentgate.h")
+if(NOT EXISTS "${COGGATE_INCLUDE_DIR}/coggate.h")
+  message(FATAL_ERROR "COGGATE_INCLUDE_DIR must contain coggate.h")
 endif()
-if(NOT EXISTS "${AGENTGATE_LIBRARY}")
-  message(FATAL_ERROR "AGENTGATE_LIBRARY must name the AgentGate link library")
+if(NOT EXISTS "${COGGATE_LIBRARY}")
+  message(FATAL_ERROR "COGGATE_LIBRARY must name the CogGate link library")
 endif()
 
-add_library(agentgate_jni SHARED src/main/cpp/agentgate_jni.cpp)
-target_compile_features(agentgate_jni PRIVATE cxx_std_17)
-target_include_directories(agentgate_jni PRIVATE "${AGENTGATE_INCLUDE_DIR}" ${JNI_INCLUDE_DIRS})
-target_link_libraries(agentgate_jni PRIVATE "${AGENTGATE_LIBRARY}")
-if(AGENTGATE_STATIC_LINK)
-  target_compile_definitions(agentgate_jni PRIVATE AGENTGATE_STATIC)
+add_library(coggate_jni SHARED src/main/cpp/coggate_jni.cpp)
+target_compile_features(coggate_jni PRIVATE cxx_std_17)
+target_include_directories(coggate_jni PRIVATE "${COGGATE_INCLUDE_DIR}" ${JNI_INCLUDE_DIRS})
+target_link_libraries(coggate_jni PRIVATE "${COGGATE_LIBRARY}")
+if(COGGATE_STATIC_LINK)
+  target_compile_definitions(coggate_jni PRIVATE COGGATE_STATIC)
 endif()
-set_target_properties(agentgate_jni PROPERTIES
+set_target_properties(coggate_jni PROPERTIES
   CXX_EXTENSIONS OFF
   POSITION_INDEPENDENT_CODE ON)
 
 if(MSVC)
-  target_compile_options(agentgate_jni PRIVATE /W4 /WX /EHsc)
+  target_compile_options(coggate_jni PRIVATE /W4 /WX /EHsc)
 else()
-  target_compile_options(agentgate_jni PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  target_compile_options(coggate_jni PRIVATE -Wall -Wextra -Wpedantic -Werror)
 endif()
 
 if(APPLE)
-  set_target_properties(agentgate_jni PROPERTIES
+  set_target_properties(coggate_jni PROPERTIES
     BUILD_RPATH "@loader_path"
     INSTALL_RPATH "@loader_path")
 elseif(UNIX)
-  set_target_properties(agentgate_jni PROPERTIES
+  set_target_properties(coggate_jni PROPERTIES
     BUILD_RPATH "$ORIGIN"
     INSTALL_RPATH "$ORIGIN")
 endif()
 
-set(AGENTGATE_RUNTIME_SOURCE "")
-if(WIN32 AND NOT AGENTGATE_STATIC_LINK)
-  if(NOT AGENTGATE_RUNTIME_LIBRARY)
+set(COGGATE_RUNTIME_SOURCE "")
+if(WIN32 AND NOT COGGATE_STATIC_LINK)
+  if(NOT COGGATE_RUNTIME_LIBRARY)
     message(FATAL_ERROR
-      "AGENTGATE_RUNTIME_LIBRARY is required for a shared Windows build")
+      "COGGATE_RUNTIME_LIBRARY is required for a shared Windows build")
   endif()
-  if(NOT EXISTS "${AGENTGATE_RUNTIME_LIBRARY}")
-    message(FATAL_ERROR "AGENTGATE_RUNTIME_LIBRARY does not exist")
+  if(NOT EXISTS "${COGGATE_RUNTIME_LIBRARY}")
+    message(FATAL_ERROR "COGGATE_RUNTIME_LIBRARY does not exist")
   endif()
-  set(AGENTGATE_RUNTIME_SOURCE "${AGENTGATE_RUNTIME_LIBRARY}")
-elseif(NOT AGENTGATE_STATIC_LINK AND AGENTGATE_RUNTIME_LIBRARY)
-  if(NOT EXISTS "${AGENTGATE_RUNTIME_LIBRARY}")
-    message(FATAL_ERROR "AGENTGATE_RUNTIME_LIBRARY does not exist")
+  set(COGGATE_RUNTIME_SOURCE "${COGGATE_RUNTIME_LIBRARY}")
+elseif(NOT COGGATE_STATIC_LINK AND COGGATE_RUNTIME_LIBRARY)
+  if(NOT EXISTS "${COGGATE_RUNTIME_LIBRARY}")
+    message(FATAL_ERROR "COGGATE_RUNTIME_LIBRARY does not exist")
   endif()
-  set(AGENTGATE_RUNTIME_SOURCE "${AGENTGATE_RUNTIME_LIBRARY}")
-elseif(NOT AGENTGATE_STATIC_LINK AND UNIX)
-  set(AGENTGATE_RUNTIME_SOURCE "${AGENTGATE_LIBRARY}")
+  set(COGGATE_RUNTIME_SOURCE "${COGGATE_RUNTIME_LIBRARY}")
+elseif(NOT COGGATE_STATIC_LINK AND UNIX)
+  set(COGGATE_RUNTIME_SOURCE "${COGGATE_LIBRARY}")
 endif()
 
-if(AGENTGATE_RUNTIME_SOURCE)
-  add_custom_command(TARGET agentgate_jni POST_BUILD
+if(COGGATE_RUNTIME_SOURCE)
+  add_custom_command(TARGET coggate_jni POST_BUILD
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-      "${AGENTGATE_RUNTIME_SOURCE}" "$<TARGET_FILE_DIR:agentgate_jni>"
+      "${COGGATE_RUNTIME_SOURCE}" "$<TARGET_FILE_DIR:coggate_jni>"
     VERBATIM)
 endif()
 
-if(APPLE AND NOT AGENTGATE_STATIC_LINK)
+if(APPLE AND NOT COGGATE_STATIC_LINK)
   find_program(OTOOL_EXECUTABLE NAMES otool REQUIRED)
   find_program(INSTALL_NAME_TOOL_EXECUTABLE NAMES install_name_tool REQUIRED)
-  execute_process(COMMAND "${OTOOL_EXECUTABLE}" -D "${AGENTGATE_LIBRARY}"
-    RESULT_VARIABLE AGENTGATE_OTOOL_RESULT
-    OUTPUT_VARIABLE AGENTGATE_OTOOL_OUTPUT
+  execute_process(COMMAND "${OTOOL_EXECUTABLE}" -D "${COGGATE_LIBRARY}"
+    RESULT_VARIABLE COGGATE_OTOOL_RESULT
+    OUTPUT_VARIABLE COGGATE_OTOOL_OUTPUT
     OUTPUT_STRIP_TRAILING_WHITESPACE)
-  if(NOT AGENTGATE_OTOOL_RESULT EQUAL 0)
-    message(FATAL_ERROR "Unable to inspect AgentGate dylib install name")
+  if(NOT COGGATE_OTOOL_RESULT EQUAL 0)
+    message(FATAL_ERROR "Unable to inspect CogGate dylib install name")
   endif()
-  string(REPLACE "\n" ";" AGENTGATE_OTOOL_LINES "${AGENTGATE_OTOOL_OUTPUT}")
-  list(GET AGENTGATE_OTOOL_LINES -1 AGENTGATE_INSTALL_NAME)
-  get_filename_component(AGENTGATE_RUNTIME_BASENAME "${AGENTGATE_RUNTIME_SOURCE}" NAME)
-  add_custom_command(TARGET agentgate_jni POST_BUILD
+  string(REPLACE "\n" ";" COGGATE_OTOOL_LINES "${COGGATE_OTOOL_OUTPUT}")
+  list(GET COGGATE_OTOOL_LINES -1 COGGATE_INSTALL_NAME)
+  get_filename_component(COGGATE_RUNTIME_BASENAME "${COGGATE_RUNTIME_SOURCE}" NAME)
+  add_custom_command(TARGET coggate_jni POST_BUILD
     COMMAND "${INSTALL_NAME_TOOL_EXECUTABLE}" -change
-      "${AGENTGATE_INSTALL_NAME}" "@rpath/${AGENTGATE_RUNTIME_BASENAME}"
-      "$<TARGET_FILE:agentgate_jni>"
+      "${COGGATE_INSTALL_NAME}" "@rpath/${COGGATE_RUNTIME_BASENAME}"
+      "$<TARGET_FILE:coggate_jni>"
     VERBATIM)
 endif()
 
 if(BUILD_TESTING)
   find_program(MAVEN_EXECUTABLE NAMES mvn mvn.cmd)
   if(MAVEN_EXECUTABLE)
-    add_test(NAME java_maven_tests
+    add_test(NAME java_maven_package
       COMMAND "${MAVEN_EXECUTABLE}" -q
-        "-Dmaven.repo.local=${AGENTGATE_MAVEN_REPOSITORY}"
-        "-Dagentgate.jni.path=$<TARGET_FILE:agentgate_jni>" test)
-    set_tests_properties(java_maven_tests PROPERTIES
+        "-Dmaven.repo.local=${COGGATE_MAVEN_REPOSITORY}"
+        "-Dcoggate.jni.path=$<TARGET_FILE:coggate_jni>" clean package)
+    set_tests_properties(java_maven_package PROPERTIES
       WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   else()
-    message(WARNING "Maven not found; java_maven_tests is not registered")
+    message(WARNING "Maven not found; java_maven_package is not registered")
   endif()
 endif()

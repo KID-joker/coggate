@@ -1,4 +1,4 @@
-package io.agentgate;
+package io.github.kidjoker.coggate;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -180,21 +180,21 @@ final class JsonCodecTest {
 
   @Test
   void statusMappingIsExactAndUnknownFailsClosed() {
-    assertNull(AgentGateException.fromStatus(0));
+    assertNull(CogGateException.fromStatus(0));
     assertEquals(List.of(
             "invalid_configuration", "generation_failed", "invalid_challenge_material",
             "invalid_answer_encoding", "answer_mismatch", "unsupported_generator_version",
             "internal_error", "invalid_argument", "callback_failed", "panic_caught"),
         Arrays.stream(new int[] {1, 2, 3, 4, 5, 6, 7, 100, 101, 102})
-            .mapToObj(status -> AgentGateException.fromStatus(status).code())
+            .mapToObj(status -> CogGateException.fromStatus(status).code())
             .toList());
-    assertEquals("internal_error", AgentGateException.fromStatus(-1).code());
-    assertEquals("internal_error", AgentGateException.fromStatus(999).code());
+    assertEquals("internal_error", CogGateException.fromStatus(-1).code());
+    assertEquals("internal_error", CogGateException.fromStatus(999).code());
   }
 
   @Test
   void errorTextContainsOnlyStableCodeAndNoStackOrCause() {
-    AgentGateException error = AgentGateException.fromStatus(5);
+    CogGateException error = CogGateException.fromStatus(5);
     assertEquals("answer_mismatch", error.code());
     assertEquals("answer_mismatch", error.getMessage());
     assertEquals("answer_mismatch", error.toString());
@@ -210,7 +210,7 @@ final class JsonCodecTest {
   }
 
   private static void assertInvalid(org.junit.jupiter.api.function.Executable executable) {
-    AgentGateException error = assertThrows(AgentGateException.class, executable);
+    CogGateException error = assertThrows(CogGateException.class, executable);
     assertEquals("invalid_argument", error.code());
     assertEquals("invalid_argument", error.toString());
   }
