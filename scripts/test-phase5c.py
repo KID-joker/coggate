@@ -354,7 +354,6 @@ def build_plan(
         )
     if "node" in available:
         node_root = Path(capabilities["node"].path).resolve().parent.parent
-        node_link_library = link_library
         node_runtime_library = runtime_library
         if system != "Windows" and (
             re.search(r"\s", link_library) or re.search(r"\s", runtime_library)
@@ -380,13 +379,8 @@ def build_plan(
                     root,
                 )
             )
-            node_link_library = str(staged_library)
             node_runtime_library = str(staged_library)
-        node_environment = (
-            ("COGGATE_INCLUDE_DIR", str(root / "packages" / "ffi" / "include")),
-            ("COGGATE_LIBRARY", node_link_library),
-            ("COGGATE_RUNTIME_LIBRARY", node_runtime_library),
-        )
+        node_environment = (("COGGATE_LIBRARY_PATH", node_runtime_library),)
         node_gyp_argv = [capabilities["node_gyp"].path, "rebuild", "--release"]
         if path_is_file(node_root / "include" / "node" / "node_api.h"):
             node_gyp_argv.append("--nodedir=" + str(node_root))
@@ -406,6 +400,8 @@ def build_plan(
                         "test/models.test.js",
                         "test/fixtures.test.js",
                         "test/service.test.js",
+                        "test/branding.test.js",
+                        "test/package.test.js",
                     ),
                     node_cwd,
                     node_environment,
@@ -648,6 +644,8 @@ class RunnerSelfTests(unittest.TestCase):
                 "test/models.test.js",
                 "test/fixtures.test.js",
                 "test/service.test.js",
+                "test/branding.test.js",
+                "test/package.test.js",
             ),
         )
         self.assertEqual(
@@ -655,10 +653,10 @@ class RunnerSelfTests(unittest.TestCase):
             ("/tools/node", "examples/complete.js"),
         )
         self.assertTrue(all(command.cwd == Path("/repo/bindings/node") for command in plan))
-        node_environment = dict(plan[0].env)
-        self.assertEqual(node_environment["COGGATE_INCLUDE_DIR"], "/repo/packages/ffi/include")
-        self.assertEqual(node_environment["COGGATE_LIBRARY"], "/native/libcoggate_ffi.so")
-        self.assertEqual(node_environment["COGGATE_RUNTIME_LIBRARY"], "/native/libcoggate_ffi.so")
+        self.assertEqual(
+            dict(plan[0].env),
+            {"COGGATE_LIBRARY_PATH": "/native/libcoggate_ffi.so"},
+        )
 
     def test_all_selection_skips_missing_runtime_but_rejects_bad_available_version(self):
         capabilities = self._capabilities()
@@ -716,11 +714,13 @@ class RunnerSelfTests(unittest.TestCase):
         node_build = next(command for command in plan if command.argv[0] == "/tools/node-gyp")
         node_test = next(command for command in plan if command.argv[:3] == ("/tools/node", "--expose-gc", "--test"))
         self.assertEqual(
-            node_test.argv[-3:],
+            node_test.argv[-5:],
             (
                 "test/models.test.js",
                 "test/fixtures.test.js",
                 "test/service.test.js",
+                "test/branding.test.js",
+                "test/package.test.js",
             ),
         )
         self.assertIn(("--config", "Release"), tuple(zip(java_build.argv, java_build.argv[1:])))
@@ -732,9 +732,8 @@ class RunnerSelfTests(unittest.TestCase):
         self.assertIn("-DMAVEN_EXECUTABLE=/tools/mvn", java_configure.argv)
         self.assertEqual(java_example.argv[-1], "C:/source tree/target/phase5c/java/Release/coggate_jni.dll")
         self.assertEqual(node_build.argv[:3], ("/tools/node-gyp", "rebuild", "--release"))
-        self.assertEqual(dict(node_build.env)["COGGATE_LIBRARY"], str(library.link_path))
-        self.assertEqual(dict(node_build.env)["COGGATE_RUNTIME_LIBRARY"], str(dll))
-        self.assertEqual(dict(node_test.env)["COGGATE_RUNTIME_LIBRARY"], str(dll))
+        self.assertEqual(dict(node_build.env), {"COGGATE_LIBRARY_PATH": str(dll)})
+        self.assertEqual(dict(node_test.env), {"COGGATE_LIBRARY_PATH": str(dll)})
 
     def test_go_plan_runs_tests_and_complete_example_with_explicit_library(self):
         library = NativeLibrary(
@@ -847,8 +846,7 @@ class RunnerSelfTests(unittest.TestCase):
         self.assertEqual(plan[0].argv[-2], str(library.runtime_path))
         staged = plan[0].argv[-1]
         self.assertNotRegex(staged, r"\s")
-        self.assertEqual(dict(plan[1].env)["COGGATE_LIBRARY"], staged)
-        self.assertEqual(dict(plan[1].env)["COGGATE_RUNTIME_LIBRARY"], staged)
+        self.assertEqual(dict(plan[1].env), {"COGGATE_LIBRARY_PATH": staged})
 
     def test_node_gyp_uses_local_headers_only_when_the_header_exists(self):
         library = NativeLibrary(Path("/native/lib.so"), Path("/native/lib.so"))

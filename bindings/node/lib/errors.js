@@ -15,14 +15,14 @@ const STATUS_CODES = new Map([
 
 const STABLE_CODES = new Set(STATUS_CODES.values());
 
-export class AgentGateError extends Error {
+export class CogGateError extends Error {
   constructor(code) {
     const stableCode = STABLE_CODES.has(code) ? code : 'internal_error';
     super(stableCode);
     Object.defineProperty(this, 'name', {
       configurable: false,
       enumerable: false,
-      value: 'AgentGateError',
+      value: 'CogGateError',
       writable: false,
     });
     Object.defineProperty(this, 'code', {
@@ -44,17 +44,17 @@ export class AgentGateError extends Error {
   }
 
   [inspect.custom]() {
-    return `AgentGateError(${this.code})`;
+    return `CogGateError(${this.code})`;
   }
 }
 
-Object.freeze(AgentGateError.prototype);
+Object.freeze(CogGateError.prototype);
 
 export function errorForStatus(status) {
   if (status === 0) return null;
-  return new AgentGateError(STATUS_CODES.get(status) ?? 'internal_error');
+  return new CogGateError(STATUS_CODES.get(status) ?? 'internal_error');
 }
 
 export function invalidArgument() {
-  return new AgentGateError('invalid_argument');
+  return new CogGateError('invalid_argument');
 }

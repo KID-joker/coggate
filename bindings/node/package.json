@@ -1,12 +1,36 @@
 {
-  "name": "@agentgate/native",
+  "name": "coggate",
   "version": "0.0.0",
+  "description": "Native Node.js SDK for CogGate",
   "private": true,
   "type": "module",
+  "main": "./lib/index.js",
+  "types": "./lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "import": "./lib/index.js"
+    }
+  },
+  "files": [
+    "README.md",
+    "lib",
+    "build/Release/coggate.node",
+    "build/Release/libcoggate_ffi.so",
+    "build/Release/libcoggate_ffi.dylib",
+    "build/Release/coggate_ffi.dll",
+    "scripts/verify-package.mjs"
+  ],
+  "readme": "README.md",
+  "gypfile": true,
   "engines": {
     "node": ">=22"
   },
   "scripts": {
-    "test": "node --test"
+    "build": "node-gyp rebuild --release",
+    "install": "node -e \"\"",
+    "prepack": "node scripts/verify-package.mjs",
+    "test": "node --expose-gc --test",
+    "example": "node examples/complete.js"
   }
 }

@@ -345,6 +345,8 @@ class RunnerSelfTests(unittest.TestCase):
             "bindings/java/target/coggate-java-0.1.0-SNAPSHOT.jar",
             "bindings/java/examples/Complete.java",
             "bindings/node/package.json",
+            "bindings/node/README.md",
+            "bindings/node/scripts/verify-package.mjs",
             "bindings/node/lib/index.js",
             "bindings/node/examples/complete.js",
             "bindings/node/build/Release/coggate.node",
@@ -382,6 +384,79 @@ class RunnerSelfTests(unittest.TestCase):
             current.rename(legacy)
             with self.assertRaisesRegex(RunnerError, "artifact path"):
                 collect_artifact_sources(source, target_fixture())
+
+    def test_node_artifact_source_rejects_dynamically_named_retired_addon(self):
+        retired = "agent" + "gate"
+        with tempfile.TemporaryDirectory() as directory:
+            source = self._source_fixture(Path(directory), target_fixture())
+            current = source / "bindings/node/build/Release/coggate.node"
+            current.replace(current.with_name(f"{retired}.node"))
+            with self.assertRaisesRegex(RunnerError, "retired Node addon"):
+                collect_artifact_sources(source, target_fixture())
+
+    def test_node_artifact_source_rejects_retired_addon_beside_current_addon(self):
+        retired = "agent" + "gate"
+        with tempfile.TemporaryDirectory() as directory:
+            source = self._source_fixture(Path(directory), target_fixture())
+            current = source / "bindings/node/build/Release/coggate.node"
+            current.with_name(f"{retired}.node").write_bytes(current.read_bytes())
+            with self.assertRaisesRegex(RunnerError, "retired Node addon"):
+                collect_artifact_sources(source, target_fixture())
+
+    def test_node_artifact_source_rejects_retired_addon_symlink(self):
+        retired = "agent" + "gate"
+        with tempfile.TemporaryDirectory() as directory:
+            source = self._source_fixture(Path(directory), target_fixture())
+            current = source / "bindings/node/build/Release/coggate.node"
+            current.with_name(f"{retired}.node").symlink_to(current)
+            with self.assertRaisesRegex(RunnerError, "retired Node addon"):
+                collect_artifact_sources(source, target_fixture())
+
+    def test_node_artifact_source_rejects_retired_branding_in_collected_text(self):
+        retired = "agent" + "gate"
+        with tempfile.TemporaryDirectory() as directory:
+            source = self._source_fixture(Path(directory), target_fixture())
+            node_index = source / "bindings/node/lib/index.js"
+            node_index.write_text(f"export const product = '{retired}';\n", encoding="utf-8")
+            with self.assertRaisesRegex(RunnerError, "retired product name"):
+                collect_artifact_sources(source, target_fixture())
+
+    def test_collected_node_text_contains_only_current_branding(self):
+        retired = ("agent" + "gate").encode()
+        with tempfile.TemporaryDirectory() as directory:
+            source = self._source_fixture(Path(directory), target_fixture())
+            collected = collect_artifact_sources(source, target_fixture())
+            for destination, path in collected.items():
+                if destination == "node/package.json" or destination.startswith(
+                    ("node/lib/", "node/examples/")
+                ):
+                    self.assertNotIn(retired, path.read_bytes().lower(), destination)
+
+    def test_assembly_rechecks_node_branding_during_the_copy(self):
+        retired = "agent" + "gate"
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            parent = Path(directory)
+            source = self._source_fixture(parent / "source", target_fixture())
+            node_index = source / "bindings/node/lib/index.js"
+            real_copy = _copy_file_at
+
+            def replace_before_copy(path, *args, **kwargs):
+                if Path(path) == node_index:
+                    node_index.write_text(
+                        f"export const product = '{retired}';\n", encoding="utf-8"
+                    )
+                return real_copy(path, *args, **kwargs)
+
+            replacement = mock.Mock(side_effect=replace_before_copy)
+            with mock.patch.dict(
+                assemble_artifact.__globals__, {"_copy_file_at": replacement}
+            ), self.assertRaisesRegex(RunnerError, "retired product name"):
+                assemble_artifact(
+                    source,
+                    parent / "output",
+                    target_fixture(),
+                    tool_versions_fixture(),
+                )
 
     def _remove_layout_path(self, root, relative):
         path = root / relative
@@ -452,6 +527,8 @@ class RunnerSelfTests(unittest.TestCase):
             f"java/{target.shared_name}",
             "java/examples/Complete.java",
             "node/package.json",
+            "node/README.md",
+            "node/scripts/verify-package.mjs",
             "node/examples/complete.js",
             "node/build/Release/coggate.node",
             f"node/build/Release/{target.shared_name}",
@@ -777,6 +854,8 @@ class RunnerSelfTests(unittest.TestCase):
                         f"java/{target.shared_name}",
                         "java/examples/Complete.java",
                         "node/package.json",
+                        "node/README.md",
+                        "node/scripts/verify-package.mjs",
                         "node/lib/index.js",
                         "node/examples/complete.js",
                         "node/build/Release/coggate.node",
@@ -1772,6 +1851,17 @@ Dump of file coggate_ffi.dll
         self.assertEqual(plan[12].argv[-1], str(artifact / "java/libcoggate_jni.so"))
         self.assertEqual(plan[-1].cwd, artifact / "node")
 
+    def test_node_smoke_uses_only_packaged_sibling_runtime(self):
+        artifact = Path("/isolated/路径 with spaces Ω/coggate")
+        plan = smoke_plan(
+            target_fixture(), artifact, Path("/fresh/smoke build"),
+            complete_capabilities(),
+        )
+        node = next(command for command in plan if command.purpose == "smoke-node-complete")
+        self.assertEqual(dict(node.env), {})
+        self.assertEqual(node.cwd, artifact / "node")
+        self.assertEqual(node.argv, ("/tools/node", "examples/complete.js"))
+
     def test_posix_go_smoke_uses_only_quoted_extracted_cgo_paths(self):
         artifact = Path("/isolated/路径 with spaces Ω/coggate")
         plan = smoke_plan(
@@ -1933,6 +2023,23 @@ Dump of file coggate_ffi.dll
                     command_runner=runner, copy_file=tampering_copy,
                 )
             runner.assert_not_called()
+
+    def test_artifact_smoke_rejects_missing_or_corrupt_packaged_node_runtime(self):
+        for mutation in ("missing", "corrupt"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                artifact = self._assembled_fixture(Path(directory))
+                runtime = artifact / "node/build/Release/libcoggate_ffi.so"
+                if mutation == "missing":
+                    runtime.unlink()
+                else:
+                    runtime.write_bytes(b"corrupt native package runtime")
+                runner = mock.Mock(side_effect=AssertionError("must not execute"))
+                with self.assertRaisesRegex(RunnerError, "missing|size|sha256"):
+                    run_artifact_smoke(
+                        target_fixture(), artifact, complete_capabilities(),
+                        command_runner=runner,
+                    )
+                runner.assert_not_called()
 
     def test_artifact_smoke_rejects_regular_header_replacement_before_go(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -4573,18 +4680,9 @@ def smoke_plan(
         )
     )
 
-    node_environment = (
-        ("COGGATE_LIBRARY", str(shared_library)),
-        ("COGGATE_RUNTIME_LIBRARY", str(shared_library)),
-    )
-    if target.system in {"Linux", "Darwin"}:
-        loader_variable = (
-            "LD_LIBRARY_PATH" if target.system == "Linux" else "DYLD_LIBRARY_PATH"
-        )
-        node_environment += ((loader_variable, str(native)),)
     commands.append(
         PlannedCommand(
-            (node, "examples/complete.js"), artifact / "node", node_environment,
+            (node, "examples/complete.js"), artifact / "node", (),
             purpose="smoke-node-complete",
         )
     )
@@ -5200,6 +5298,8 @@ def _required_artifact_singletons(target: Target) -> set[str]:
         f"java/{target.shared_name}",
         "java/examples/Complete.java",
         "node/package.json",
+        "node/README.md",
+        "node/scripts/verify-package.mjs",
         "node/examples/complete.js",
         "node/build/Release/coggate.node",
         f"node/build/Release/{target.shared_name}",
@@ -5594,6 +5694,18 @@ def _collect_tree(
 def collect_artifact_sources(root: Path, target: Target) -> dict[str, Path]:
     root = Path(root)
     _require_directory(root, "repository root")
+    node_addon = root / "bindings/node/build/Release/coggate.node"
+    retired_addon = node_addon.with_name(("agent" + "gate") + ".node")
+    try:
+        retired_addon.lstat()
+    except FileNotFoundError:
+        pass
+    except OSError as error:
+        raise RunnerError(
+            f"retired Node addon is inaccessible: {retired_addon}"
+        ) from error
+    else:
+        raise RunnerError(f"retired Node addon is not accepted: {retired_addon}")
     sources = {
         "include/coggate.h": _source_file(
             root, "packages/ffi/include/coggate.h"
@@ -5615,11 +5727,15 @@ def collect_artifact_sources(root: Path, target: Target) -> dict[str, Path]:
             root, "bindings/java/examples/Complete.java"
         ),
         "node/package.json": _source_file(root, "bindings/node/package.json"),
+        "node/README.md": _source_file(root, "bindings/node/README.md"),
+        "node/scripts/verify-package.mjs": _source_file(
+            root, "bindings/node/scripts/verify-package.mjs"
+        ),
         "node/examples/complete.js": _source_file(
             root, "bindings/node/examples/complete.js"
         ),
         "node/build/Release/coggate.node": _source_file(
-            root, "bindings/node/build/Release/coggate.node"
+            root, node_addon.relative_to(root).as_posix()
         ),
         f"node/build/Release/{target.shared_name}": _source_file(
             root,
@@ -5655,6 +5771,20 @@ def collect_artifact_sources(root: Path, target: Target) -> dict[str, Path]:
         sources, root, "bindings/go/examples/complete", "go/examples/complete"
     )
     _collect_tree(sources, root, "bindings/node/lib", "node/lib")
+    retired = ("agent" + "gate").encode()
+    for destination, source in sources.items():
+        if destination in {
+            "node/package.json",
+            "node/README.md",
+            "node/scripts/verify-package.mjs",
+        } or destination.startswith(
+            ("node/lib/", "node/examples/")
+        ):
+            content = _read_regular_bytes(source, "Node artifact source", root)
+            if retired in content.lower():
+                raise RunnerError(
+                    f"Node artifact source contains retired product name: {source}"
+                )
     return dict(sorted(sources.items()))
 
 
@@ -5934,6 +6064,38 @@ def _hash_file_at(root_descriptor: int, relative: str) -> tuple[int, str]:
     return size, digest.hexdigest()
 
 
+def _is_node_text_artifact(relative: str) -> bool:
+    return relative in {
+        "node/package.json",
+        "node/README.md",
+        "node/scripts/verify-package.mjs",
+    } or relative.startswith(
+        ("node/lib/", "node/examples/")
+    )
+
+
+def _copy_artifact_stream(source, destination, relative: str, digest=None) -> int:
+    node_content = bytearray() if _is_node_text_artifact(relative) else None
+    size = 0
+    while True:
+        chunk = source.read(1024 * 1024)
+        if not chunk:
+            break
+        destination.write(chunk)
+        if digest is not None:
+            digest.update(chunk)
+        size += len(chunk)
+        if node_content is not None:
+            if size > MAX_METADATA_BYTES:
+                raise RunnerError(f"Node artifact source exceeds the size limit: {relative}")
+            node_content.extend(chunk)
+    if node_content is not None and ("agent" + "gate").encode() in node_content.lower():
+        raise RunnerError(
+            f"Node artifact source contains retired product name: {relative}"
+        )
+    return size
+
+
 def _copy_file_at(
     source: Path, source_root: Path, root_descriptor: int, relative: str
 ) -> tuple[int, str]:
@@ -5941,7 +6103,6 @@ def _copy_file_at(
     parent = _open_tree_directory(root_descriptor, parts[:-1], create=True)
     destination_descriptor = None
     digest = hashlib.sha256()
-    size = 0
     try:
         destination_descriptor = os.open(
             parts[-1],
@@ -5952,13 +6113,7 @@ def _copy_file_at(
         with _open_regular_file(source, trusted_root=source_root) as input_file, os.fdopen(
             destination_descriptor, "wb", closefd=False
         ) as output_file:
-            while True:
-                chunk = input_file.read(1024 * 1024)
-                if not chunk:
-                    break
-                output_file.write(chunk)
-                digest.update(chunk)
-                size += len(chunk)
+            size = _copy_artifact_stream(input_file, output_file, relative, digest)
     finally:
         if destination_descriptor is not None:
             os.close(destination_descriptor)
@@ -6258,7 +6413,7 @@ def safe_copy_file(
             trusted_root=source.parent if source_root is None else source_root,
         ) as source_file:
             with destination.open("xb") as destination_file:
-                shutil.copyfileobj(source_file, destination_file)
+                _copy_artifact_stream(source_file, destination_file, normalized)
     except (OSError, RunnerError) as error:
         if destination.exists() or destination.is_symlink():
             destination.unlink()

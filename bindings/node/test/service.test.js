@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 import {
-  AgentGateError,
+  CogGateError,
   IssueRequest,
   Service,
   Submission,
@@ -16,7 +16,7 @@ import {
 
 const binding = Uint8Array.from([0, 17, 34, 51, 68, 85, 102, 119]);
 const key = Uint8Array.from(Buffer.from('3031323334353637383961626364656630313233343536373839616263646566', 'hex'));
-const material = new TextEncoder().encode('{"challenge_id":"Y2hhbGxlbmdlLTEyMzQ1Ng","generator_version":"1.0","nonce":"bm9uY2UtMTIzNDU2Nzg5MA","issued_at":1788062400,"expires_at":1788062408,"mac_key_id":"2026-08","answer_mac":"b9cb8fd013b40e31c7bc3a1c33b7e36143ef98d045a924ed09ebd38ff07cec2c","answer_encoding":"base64url"}');
+const material = new TextEncoder().encode('{"challenge_id":"Y2hhbGxlbmdlLTEyMzQ1Ng","generator_version":"1.0","nonce":"bm9uY2UtMTIzNDU2Nzg5MA","issued_at":1788062400,"expires_at":1788062408,"mac_key_id":"2026-08","answer_mac":"ccdffbb67b4c9da34f91d56d12970b311d7345e8bcf579d1326fc4a78633330c","answer_encoding":"base64url"}');
 
 function providers(overrides = {}) {
   return {
@@ -47,7 +47,7 @@ test('addon exposes N-API 9 and synchronous service issue/verify/close', () => {
   service.close();
   service.close();
   assert.throws(() => service.issue(newV1IssueRequest(binding)),
-    (error) => error instanceof AgentGateError && error.code === 'invalid_argument');
+    (error) => error instanceof CogGateError && error.code === 'invalid_argument');
 });
 
 test('issue callback receives exact private schema, binding, limit and challenge-correlated values', () => {
@@ -192,7 +192,7 @@ test('injected N-API property failure fails closed and the next call stays healt
     nonce: 'bm9uY2UtMTIzNDU2Nzg5MA', answer: 'YQ' });
   Service.testFailNextNapi();
   assert.throws(() => service.verify(submission, binding),
-    (error) => error instanceof AgentGateError && error.code === 'internal_error');
+    (error) => error instanceof CogGateError && error.code === 'internal_error');
   assert.equal(service.verify(submission, binding).status, 'accepted');
   service.close();
 });
@@ -269,17 +269,17 @@ test('unclosed service and provider closure cycle finalize with one native destr
 test('macOS addon is loader-relative and relocates through spaces and non-BMP paths',
   { skip: process.platform !== 'darwin' }, () => {
     const release = fileURLToPath(new URL('../build/Release/', import.meta.url));
-    const addonPath = join(release, 'agentgate.node');
-    const dependency = join(release, 'libagentgate_ffi.dylib');
+    const addonPath = join(release, 'coggate.node');
+    const dependency = join(release, 'libcoggate_ffi.dylib');
     const linked = spawnSync('otool', ['-L', addonPath], { encoding: 'utf8' });
     assert.equal(linked.status, 0, linked.stderr);
     const dependencies = linked.stdout.split(/\r?\n/).slice(1).join('\n');
-    assert.match(dependencies, /@rpath\/libagentgate_ffi\.dylib/);
-    assert.doesNotMatch(dependencies, /agentgate\/.worktrees\/|target\/release/);
+    assert.match(dependencies, /@rpath\/libcoggate_ffi\.dylib/);
+    assert.doesNotMatch(dependencies, /coggate-complete-rename\/|target\/release/);
     const identifier = spawnSync('otool', ['-D', dependency], { encoding: 'utf8' });
     assert.equal(identifier.status, 0, identifier.stderr);
-    assert.match(identifier.stdout.split(/\r?\n/).at(-2) ?? '', /^@rpath\/libagentgate_ffi\.dylib$/);
-    const destination = mkdtempSync(join(tmpdir(), 'AgentGate Node 雪🚀 '));
+    assert.match(identifier.stdout.split(/\r?\n/).at(-2) ?? '', /^@rpath\/libcoggate_ffi\.dylib$/);
+    const destination = mkdtempSync(join(tmpdir(), 'CogGate Node 雪🚀 '));
     try {
       const copiedAddon = join(destination, basename(addonPath));
       copyFileSync(addonPath, copiedAddon);
@@ -297,16 +297,16 @@ test('macOS addon is loader-relative and relocates through spaces and non-BMP pa
 
 test('binding config guards Darwin tooling and declares synchronized native state', () => {
   const gyp = readFileSync(new URL('../binding.gyp', import.meta.url), 'utf8');
-  const addonSource = readFileSync(new URL('../src/addon.cc', import.meta.url), 'utf8');
+  const addonSource = readFileSync(new URL('../src/coggate.cc', import.meta.url), 'utf8');
   assert.match(gyp, /process\.platform\s*===\s*['"]darwin['"]/);
   assert.match(gyp, /install_name_tool.*-id/s);
   assert.match(
     gyp,
-    /"inputs": \["<\(PRODUCT_DIR\)\/agentgate\.node", "<\(agentgate_runtime_source\)"\]/,
+    /"inputs": \["<\(PRODUCT_DIR\)\/coggate\.node", "<\(coggate_library_path\)"\]/,
   );
   assert.match(gyp, /\["OS=='win'",\s*\{[\s\S]*?"ExceptionHandling":\s*1[\s\S]*?"WarningLevel":\s*4[\s\S]*?"TreatWarningAsError":\s*True[\s\S]*?"AdditionalOptions":\s*\["\/std:c\+\+17"\]/);
-  assert.match(gyp, /\["OS=='win' and agentgate_static!='1' and agentgate_runtime_library!=''",/);
-  assert.match(gyp, /\["agentgate_static=='1'",\s*\{\s*"defines":\s*\["AGENTGATE_STATIC"\]/);
+  assert.match(gyp, /\["OS=='win'",/);
+  assert.doesNotMatch(gyp, /STATIC/);
   assert.match(addonSource, /std::mutex/);
 });
 
@@ -315,10 +315,10 @@ test('service option reflection failures normalize without exposing getter text'
     enumerable: true, get() { throw new Error('OPTIONS_GETTER_SENTINEL'); },
   });
   Object.defineProperty(options, 'keys', { enumerable: true, value: providers().keys });
-  assert.throws(() => new Service(options), (error) => error instanceof AgentGateError &&
+  assert.throws(() => new Service(options), (error) => error instanceof CogGateError &&
     error.code === 'invalid_argument' && !String(error).includes('SENTINEL'));
   const { proxy, revoke } = Proxy.revocable({}, {});
   revoke();
-  assert.throws(() => new Service(proxy), (error) => error instanceof AgentGateError &&
+  assert.throws(() => new Service(proxy), (error) => error instanceof CogGateError &&
     error.code === 'invalid_argument');
 });

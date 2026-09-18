@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
-import { AgentGateError, Service, Submission } from '../lib/index.js';
+import { CogGateError, Service, Submission } from '../lib/index.js';
 
 class StrictJson {
   constructor(text) { this.text = text; this.index = 0; }
@@ -316,7 +316,7 @@ test('every shared fixture exercises the native wrapper contract exactly', () =>
         assert.equal(outcome.reason ?? undefined, fixture.expected_outcome.reason);
       }
     } else {
-      assert.ok(error instanceof AgentGateError, `${fixture.id}: stable error`);
+      assert.ok(error instanceof CogGateError, `${fixture.id}: stable error`);
       assert.equal(error.code, fixture.expected_code);
     }
     const publicText = JSON.stringify({ trace: harness.trace, events: harness.events,

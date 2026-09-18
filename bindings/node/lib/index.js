@@ -1,4 +1,4 @@
-export { AgentGateError, errorForStatus } from './errors.js';
+export { CogGateError, errorForStatus } from './errors.js';
 export {
   AttemptLimit,
   AnswerEncoding,

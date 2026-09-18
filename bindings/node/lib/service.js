@@ -5,7 +5,7 @@ import { decodePublicChallenge, decodeVerificationOutcome, encodeSubmission } fr
 import { IssueRequest, Submission } from './models.js';
 
 const require = createRequire(import.meta.url);
-const addon = require('../build/Release/agentgate.node');
+const addon = require('../build/Release/coggate.node');
 const encoder = new TextEncoder();
 const uint8ArrayPrototype = Uint8Array.prototype;
 const uint8ArraySlice = Uint8Array.prototype.slice;

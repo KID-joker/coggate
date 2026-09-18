@@ -1,6 +1,6 @@
 #include <node_api.h>
 
-#include "agentgate.h"
+#include "coggate.h"
 
 #include <atomic>
 #include <cmath>
@@ -222,7 +222,7 @@ class CallGuard {
   bool entered_{};
 };
 
-void AG_CALL release_host(void* release_data, std::uint8_t* data, std::size_t len) {
+void COGGATE_CALL release_host(void* release_data, std::uint8_t* data, std::size_t len) {
   try {
     (void)len;
     auto* allocation = static_cast<HostAllocation*>(release_data);
@@ -276,7 +276,7 @@ bool output_buffer(State* state, napi_value value, ag_host_buffer* output,
   return true;
 }
 
-ag_lifecycle_status AG_CALL store_issued(void* opaque, ag_byte_slice private_json,
+ag_lifecycle_status COGGATE_CALL store_issued(void* opaque, ag_byte_slice private_json,
     ag_byte_slice binding, ag_attempt_limit limit) {
   try {
     auto* state = static_cast<State*>(opaque);
@@ -301,7 +301,7 @@ ag_lifecycle_status AG_CALL store_issued(void* opaque, ag_byte_slice private_jso
   } catch (...) { return AG_LIFECYCLE_STATUS_INTERNAL; }
 }
 
-ag_begin_status AG_CALL begin_attempt(void* opaque, ag_byte_slice identity,
+ag_begin_status COGGATE_CALL begin_attempt(void* opaque, ag_byte_slice identity,
     ag_byte_slice binding, std::int64_t server_time, ag_host_buffer* material_out,
     ag_host_buffer* token_out) {
   try {
@@ -343,7 +343,7 @@ ag_begin_status AG_CALL begin_attempt(void* opaque, ag_byte_slice identity,
   } catch (...) { return AG_BEGIN_STATUS_INTERNAL; }
 }
 
-ag_lifecycle_status AG_CALL finish_attempt(void* opaque, ag_byte_slice token,
+ag_lifecycle_status COGGATE_CALL finish_attempt(void* opaque, ag_byte_slice token,
     ag_attempt_outcome outcome) {
   try {
     auto* state = static_cast<State*>(opaque);
@@ -365,7 +365,7 @@ ag_lifecycle_status AG_CALL finish_attempt(void* opaque, ag_byte_slice token,
   } catch (...) { return AG_LIFECYCLE_STATUS_INTERNAL; }
 }
 
-ag_key_status AG_CALL active_key(void* opaque, ag_host_buffer* key_id_out,
+ag_key_status COGGATE_CALL active_key(void* opaque, ag_host_buffer* key_id_out,
     ag_host_buffer* key_out) {
   try {
     auto* state = static_cast<State*>(opaque);
@@ -398,7 +398,7 @@ ag_key_status AG_CALL active_key(void* opaque, ag_host_buffer* key_id_out,
   } catch (...) { return AG_KEY_STATUS_UNAVAILABLE; }
 }
 
-ag_key_status AG_CALL key_by_id(void* opaque, ag_byte_slice key_id, ag_host_buffer* key_out) {
+ag_key_status COGGATE_CALL key_by_id(void* opaque, ag_byte_slice key_id, ag_host_buffer* key_out) {
   try {
     auto* state = static_cast<State*>(opaque);
     CallbackGuard guard(state);
@@ -425,7 +425,7 @@ ag_key_status AG_CALL key_by_id(void* opaque, ag_byte_slice key_id, ag_host_buff
   } catch (...) { return AG_KEY_STATUS_UNAVAILABLE; }
 }
 
-void AG_CALL observe(void* opaque, ag_byte_slice event_json) {
+void COGGATE_CALL observe(void* opaque, ag_byte_slice event_json) {
   try {
     observations.fetch_add(1, std::memory_order_relaxed);
     auto* state = static_cast<State*>(opaque);

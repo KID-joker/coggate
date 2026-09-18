@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { inspect } from 'node:util';
 import test from 'node:test';
 
-import { AgentGateError, errorForStatus } from '../lib/errors.js';
+import { CogGateError, errorForStatus } from '../lib/errors.js';
 import {
   decodePublicChallenge,
   decodeSubmission,
@@ -27,7 +27,7 @@ const utf8 = (value) => Buffer.from(value, 'utf8');
 
 function assertInvalid(action) {
   assert.throws(action, (error) => {
-    assert.ok(error instanceof AgentGateError);
+    assert.ok(error instanceof CogGateError);
     assert.equal(error.code, 'invalid_argument');
     assert.equal(error.message, 'invalid_argument');
     assert.equal(String(error), 'invalid_argument');
@@ -158,7 +158,7 @@ test('model constructors reject malicious subclasses before they can leak secret
   for (const construct of cases) {
     let caught;
     try { construct(); } catch (error) { caught = error; }
-    assert.ok(caught instanceof AgentGateError);
+    assert.ok(caught instanceof CogGateError);
     assert.equal(caught.code, 'invalid_argument');
     for (const rendered of [String(caught), inspect(caught), JSON.stringify(caught)]) {
       assert.equal(rendered.includes(sentinel), false);
@@ -272,7 +272,7 @@ test('all JSON decoders normalize revoked typed-array proxies to stable errors',
   revoke();
   for (const decode of [decodeSubmission, decodePublicChallenge, decodeVerificationOutcome]) {
     assert.throws(() => decode(proxy), (error) => {
-      assert.ok(error instanceof AgentGateError);
+      assert.ok(error instanceof CogGateError);
       assert.equal(error.code, 'invalid_argument');
       assert.equal(error.message, 'invalid_argument');
       assert.equal(error.stack, undefined);
@@ -373,9 +373,9 @@ test('native status mapping is exact and unknown values fail closed', () => {
 test('errors expose and render only their stable code', () => {
   const error = errorForStatus(5, new Error('NATIVE_SECRET'));
   assert.ok(error instanceof Error);
-  assert.ok(error instanceof AgentGateError);
+  assert.ok(error instanceof CogGateError);
   assert.deepEqual(Object.keys(error), ['code']);
-  assert.equal(error.name, 'AgentGateError');
+  assert.equal(error.name, 'CogGateError');
   assert.equal(error.message, 'answer_mismatch');
   assert.equal(error.stack, undefined);
   assert.equal(error.cause, undefined);
