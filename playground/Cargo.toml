@@ -1,0 +1,41 @@
+[package]
+name = "coggate-playground"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+homepage = "https://github.com/KID-joker/coggate"
+repository = "https://github.com/KID-joker/coggate"
+publish = false
+
+[workspace]
+resolver = "2"
+
+[dependencies]
+axum = "0.8"
+base64 = "0.22"
+coggate-contracts = { path = "../packages/contracts" }
+coggate-core = { path = "../packages/core" }
+getrandom = "0.3"
+hex = "0.4"
+idna = "=1.0.3"
+idna_adapter = "=1.2.0"
+jsonwebtoken = { version = "9.3", default-features = false, features = ["use_pem"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+subtle = "2.6"
+tempfile = "3"
+thiserror = "2"
+time = "=0.3.36"
+tokio = { version = "1", features = ["full"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+url = "=2.5.4"
+
+[dev-dependencies]
+http-body-util = "0.1"
+tower = { version = "0.5", features = ["util"] }

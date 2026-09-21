@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>CogGate Playground 试炼场</title>
+</head>
+<body>
+  <main>
+    <h1>CogGate 试炼场</h1>
+    <p id="status">正在加载场次…</p>
+    <section>
+      <h2>规则</h2>
+      <p>每次提交只运行一道新题。脚本从标准输入读取题面，并向标准输出写一个不带 padding 的 base64url 答案。</p>
+      <p>沙箱无网络、仅可使用标准库；每个 GitHub 账号每天最多提交 10 次。首位通过者将封场，通关脚本会发布到公开 GitHub Issue。</p>
+    </section>
+    <section>
+      <h2>当前题目预览</h2>
+      <pre id="preview">预览准备中…</pre>
+    </section>
+    <section>
+      <h2>提交脚本</h2>
+      <label>语言 <select id="language"></select></label>
+      <p><textarea id="source" rows="20" cols="100" placeholder="脚本源码"></textarea></p>
+      <label><input id="consent" type="checkbox"> 我同意通关脚本将自动公开到 GitHub Issue</label>
+      <p><button id="submit">使用 GitHub 登录并运行</button></p>
+      <pre id="result"></pre>
+    </section>
+  </main>
+  <script src="/app.js" defer></script>
+</body>
+</html>

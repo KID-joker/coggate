@@ -1,0 +1,54 @@
+services:
+  caddy:
+    image: ${CADDY_IMAGE:?set an immutable Caddy image digest}
+    restart: unless-stopped
+    environment:
+      ARENA_DOMAIN: ${ARENA_DOMAIN:?set the public domain}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - playground-web
+
+  playground-web:
+    image: ${ARENA_WEB_IMAGE:?set an immutable Arena Web image digest}
+    restart: unless-stopped
+    user: "65532:65532"
+    env_file: .env
+    environment:
+      ARENA_LISTEN: 0.0.0.0:8080
+      ARENA_DATABASE_PATH: /var/lib/coggate-playground/playground.sqlite3
+      ARENA_RUNNER_SOCKET: /run/coggate-playground/runner.sock
+      ARENA_MAC_KEYRING_PATH: /run/secrets/mac-keyring.json
+      GITHUB_APP_PRIVATE_KEY_PATH: /run/secrets/github-app.pem
+    volumes:
+      - playground-data:/var/lib/coggate-playground
+      - runner-socket:/run/coggate-playground
+      - ./secrets/mac-keyring.json:/run/secrets/mac-keyring.json:ro
+      - ./secrets/github-app.pem:/run/secrets/github-app.pem:ro
+    depends_on:
+      - runner-broker
+
+  runner-broker:
+    image: ${ARENA_BROKER_IMAGE:?set an immutable Runner Broker image digest}
+    restart: unless-stopped
+    user: "0:65532"
+    env_file: .env
+    environment:
+      ARENA_RUNNER_SOCKET: /run/coggate-playground/runner.sock
+      ARENA_WEB_UID: "65532"
+    group_add:
+      - ${DOCKER_GID:?set the host Docker socket group id}
+    volumes:
+      - runner-socket:/run/coggate-playground
+      - /var/run/docker.sock:/var/run/docker.sock
+
+volumes:
+  playground-data:
+  runner-socket:
+  caddy-data:
+  caddy-config:
