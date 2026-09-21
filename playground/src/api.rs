@@ -3,10 +3,10 @@ use std::{convert::Infallible, sync::Arc, time::Duration};
 use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, Path, Query, State},
-    http::{HeaderMap, HeaderValue, StatusCode, header},
+    http::{HeaderMap, HeaderValue, StatusCode, Uri, header},
     middleware::{self, Next},
     response::{
-        Html, IntoResponse, Redirect, Response, Sse,
+        IntoResponse, Redirect, Response, Sse,
         sse::{Event, KeepAlive},
     },
     routing::{get, post},
@@ -29,8 +29,7 @@ use crate::{
     worker::{SubmissionWorker, WorkerEvent},
 };
 
-const INDEX_HTML: &str = include_str!("../static/index.html");
-const APP_JS: &str = include_str!("../static/app.js");
+include!(concat!(env!("OUT_DIR"), "/static_assets.rs"));
 
 #[derive(Clone)]
 pub struct AppState {
@@ -141,7 +140,6 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/", get(index))
         .route("/healthz", get(healthz))
-        .route("/app.js", get(app_js))
         .route("/api/v1/arena", get(arena))
         .route("/api/v1/arena/preview", get(preview))
         .route("/api/v1/arena/events", get(arena_events))
@@ -155,6 +153,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/v1/submissions/{id}", get(get_submission))
         .route("/api/v1/submissions/{id}/events", get(submission_events))
+        .fallback(get(static_asset))
         .layer(DefaultBodyLimit::max(body_limit))
         .layer(middleware::from_fn(security_headers))
         .with_state(state)
@@ -171,13 +170,13 @@ async fn security_headers(request: axum::extract::Request, next: Next) -> Respon
     headers.insert("referrer-policy", HeaderValue::from_static("no-referrer"));
     headers.insert(
         "content-security-policy",
-        HeaderValue::from_static("default-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"),
+        HeaderValue::from_static("default-src 'self'; connect-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"),
     );
     response
 }
 
-async fn index() -> Html<&'static str> {
-    Html(INDEX_HTML)
+async fn index() -> Response {
+    asset_response("index.html")
 }
 
 async fn healthz(State(state): State<AppState>) -> StatusCode {
@@ -188,14 +187,29 @@ async fn healthz(State(state): State<AppState>) -> StatusCode {
     }
 }
 
-async fn app_js() -> impl IntoResponse {
+async fn static_asset(uri: Uri) -> Response {
+    asset_response(uri.path().trim_start_matches('/'))
+}
+
+fn asset_response(path: &str) -> Response {
+    let Some((content, content_type)) = embedded_asset(path) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let cache_control = if path == "index.html" {
+        "no-cache"
+    } else if path.starts_with("assets/") {
+        "public, max-age=31536000, immutable"
+    } else {
+        "public, max-age=3600"
+    };
     (
-        [(
-            header::CONTENT_TYPE,
-            "application/javascript; charset=utf-8",
-        )],
-        APP_JS,
+        [
+            (header::CONTENT_TYPE, content_type),
+            (header::CACHE_CONTROL, cache_control),
+        ],
+        content,
     )
+        .into_response()
 }
 
 async fn arena(State(state): State<AppState>) -> ArenaResult<impl IntoResponse> {
@@ -445,5 +459,15 @@ mod tests {
             HeaderValue::from_static("xarena_session=no; arena_session=yes"),
         );
         assert_eq!(cookie(&headers, SESSION_COOKIE).as_deref(), Some("yes"));
+    }
+
+    #[test]
+    fn production_frontend_is_embedded() {
+        let (index, content_type) = embedded_asset("index.html").expect("index must be embedded");
+        let index = std::str::from_utf8(index).expect("index must be UTF-8");
+        assert_eq!(content_type, "text/html; charset=utf-8");
+        assert!(index.contains("CogGate Playground"));
+        assert!(index.contains("id=\"editor\""));
+        assert!(embedded_asset("../Cargo.toml").is_none());
     }
 }

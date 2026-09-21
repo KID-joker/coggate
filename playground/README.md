@@ -38,6 +38,15 @@ Only run `open-round` after all seven digest-pinned images have passed compile, 
 
 Start the broker first, then the web process. The broker refuses startup without all seven image digests and `ARENA_WEB_UID`, and rejects Unix peers with any other UID.
 
+Build the desktop web workspace after changing files below `playground/web`. The generated assets are embedded into the Rust binary:
+
+```sh
+cd playground/web
+pnpm install --frozen-lockfile
+pnpm run build
+cd ../..
+```
+
 ```sh
 cargo run --manifest-path playground/Cargo.toml --bin arena-runner
 cargo run --manifest-path playground/Cargo.toml --bin coggate-playground
@@ -52,6 +61,7 @@ Failed source is needed only while queued or recoverably compiling. Every failur
 ## Verification
 
 ```sh
+cd playground/web && pnpm run build && cd ../..
 cargo test --manifest-path playground/Cargo.toml
 cargo clippy --manifest-path playground/Cargo.toml --all-targets -- -D warnings
 ```

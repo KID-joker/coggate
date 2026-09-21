@@ -1,0 +1,20 @@
+:root {
+  color-scheme: dark;
+  --bg: #0b0e12;
+  --surface: #0e1116;
+  --surface-1: #11151b;
+  --surface-2: #181d25;
+  --surface-3: #202631;
+  --line: #232a34;
+  --line-strong: #333c49;
+  --text: #edf1f7;
+  --muted: #a0a9b7;
+  --dim: #697484;
+  --accent: #58cfff;
+  --accent-glow: rgba(88, 207, 255, .25);
+  --success: #4ade80;
+  --warning: #facc15;
+  --danger: #fb7185;
+  --font-sans: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+}

@@ -1,6 +1,15 @@
+FROM node:22-bookworm-slim AS frontend
+WORKDIR /web
+RUN corepack enable && corepack prepare pnpm@11.17.0 --activate
+COPY playground/web/package.json playground/web/pnpm-lock.yaml playground/web/pnpm-workspace.yaml ./
+RUN pnpm install --frozen-lockfile
+COPY playground/web/ ./
+RUN pnpm run build
+
 FROM rust:1.85-bookworm AS build
 WORKDIR /src
 COPY . .
+COPY --from=frontend /static /src/playground/static
 RUN cargo build --locked --release --manifest-path playground/Cargo.toml
 
 FROM debian:bookworm-slim AS web
