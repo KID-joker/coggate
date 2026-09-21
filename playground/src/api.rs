@@ -88,31 +88,36 @@ impl AppState {
 
         let preview_state = self.clone();
         tokio::spawn(async move {
-            let mut revision = 0_i64;
             loop {
                 if let Ok(round) = preview_state.database.current_round() {
                     if round.status == "OPEN" {
-                        revision += 1;
-                        let binding = format!("preview:{}:{revision}", round.id);
-                        let mut service = ChallengeService::new(
-                            SqliteLifecycle::new(preview_state.database.clone()),
-                            preview_state.keys.clone(),
-                        );
-                        match IssueRequest::v1(binding.as_bytes())
-                            .map_err(|_| ())
-                            .and_then(|request| service.issue_challenge(request).map_err(|_| ()))
-                        {
-                            Ok(challenge) => {
-                                *preview_state.preview.write().await = Some(PreviewView {
-                                    round_id: round.id,
-                                    epoch: round.epoch,
-                                    revision,
-                                    refresh_at: now_unix() + 10,
-                                    challenge,
-                                });
-                                let _ = preview_state.arena_events.send("preview_refreshed".into());
+                        let already_generated = preview_state
+                            .preview
+                            .read()
+                            .await
+                            .as_ref()
+                            .is_some_and(|preview| preview.round_id == round.id);
+                        if !already_generated {
+                            *preview_state.preview.write().await = None;
+                            let binding = format!("preview:{}", round.id);
+                            let mut service = ChallengeService::new(
+                                SqliteLifecycle::new(preview_state.database.clone()),
+                                preview_state.keys.clone(),
+                            );
+                            match IssueRequest::v1(binding.as_bytes())
+                                .map_err(|_| ())
+                                .and_then(|request| {
+                                    service.issue_challenge(request).map_err(|_| ())
+                                }) {
+                                Ok(challenge) => {
+                                    *preview_state.preview.write().await = Some(PreviewView {
+                                        round_id: round.id,
+                                        epoch: round.epoch,
+                                        challenge,
+                                    });
+                                }
+                                Err(()) => tracing::warn!("preview generation failed"),
                             }
-                            Err(()) => tracing::warn!("preview generation failed"),
                         }
                     } else {
                         *preview_state.preview.write().await = None;
@@ -226,9 +231,8 @@ async fn preview(State(state): State<AppState>) -> ArenaResult<Response> {
         .read()
         .await
         .clone()
-        .filter(|value| value.challenge.expires_at >= now_unix())
         .ok_or(ArenaError::NotFound)?;
-    let etag = format!("\"{}:{}\"", preview.round_id, preview.revision);
+    let etag = format!("\"{}\"", preview.round_id);
     let mut response = Json(preview).into_response();
     response.headers_mut().insert(
         header::CACHE_CONTROL,
@@ -468,6 +472,8 @@ mod tests {
         assert_eq!(content_type, "text/html; charset=utf-8");
         assert!(index.contains("CogGate Playground"));
         assert!(index.contains("id=\"editor\""));
+        assert!(index.contains("FIXED FOR ROUND"));
+        assert!(!index.contains("refresh-countdown"));
         assert!(embedded_asset("../Cargo.toml").is_none());
     }
 }

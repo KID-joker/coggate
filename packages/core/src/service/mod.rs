@@ -1289,7 +1289,7 @@ mod tests {
             assert_eq!(first, second, "seed {seed:?}");
             let (public, material, event) = first;
 
-            assert_eq!(public.expires_at - public.issued_at, 15);
+            assert_eq!(public.expires_at - public.issued_at, 30);
             assert_eq!(public.challenge_id, expected_challenge_id);
             assert_eq!(public.nonce, expected_nonce);
             for token in [&public.challenge_id, &public.nonce] {

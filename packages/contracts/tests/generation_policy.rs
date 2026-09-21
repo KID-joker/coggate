@@ -8,7 +8,7 @@ const THREE_FRAGMENTS: Option<u8> = fragment_count_for_secret_length(MIN_SECRET_
 fn exposes_unified_generation_limits() {
     assert_eq!(MIN_SECRET_LENGTH, 8);
     assert_eq!(MAX_SECRET_LENGTH, 16);
-    assert_eq!(CHALLENGE_TTL_SECONDS, 15);
+    assert_eq!(CHALLENGE_TTL_SECONDS, 30);
 }
 
 #[test]

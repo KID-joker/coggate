@@ -38,8 +38,6 @@ export interface Challenge {
 export interface Preview {
   round_id: string;
   epoch: number;
-  revision: number;
-  refresh_at: number;
   challenge: Challenge;
 }
 

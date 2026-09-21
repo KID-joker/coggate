@@ -40,15 +40,15 @@ pub fn issue_body(work: &crate::model::IssueWork) -> String {
         fence.push('`');
     }
     format!(
-        "# CogGate 试炼场通关\n\n通关者：[@{login}](https://github.com/{login})\n\n\
-- Round：`{round}`（epoch {epoch}）\n\
-- SDK：`{sdk}` (`{commit}`)\n\
-- Generator：`{generator}`\n\
-- 求解语言：`{language}`\n\
-- Runner image：`{image}`\n\
-- 源码 SHA-256：`{sha}`\n\
-- 编译耗时：{compile} ms\n\
-- 运行耗时：{run} ms\n\n\
+        "# CogGate Playground cleared\n\nSolver: [@{login}](https://github.com/{login})\n\n\
+- Round: `{round}` (epoch {epoch})\n\
+- SDK: `{sdk}` (`{commit}`)\n\
+- Generator: `{generator}`\n\
+- Solution language: `{language}`\n\
+- Runner image: `{image}`\n\
+- Source SHA-256: `{sha}`\n\
+- Compile time: {compile} ms\n\
+- Run time: {run} ms\n\n\
 {fence}{language}\n{source}\n{fence}\n\n{marker}\n",
         login = work.github_login,
         round = work.round_id,

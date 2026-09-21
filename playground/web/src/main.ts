@@ -44,37 +44,37 @@ const TERMINAL = new Set([
 ]);
 
 const verdicts: Record<string, { title: string; description: string; tone: 'running' | 'success' | 'error'; icon: string }> = {
-  ACCEPTED: { title: '已进入队列', description: '正在等待安全运行环境。', tone: 'running', icon: '…' },
-  COMPILING: { title: '正在编译', description: '使用选定语言的固定工具链编译源码。', tone: 'running', icon: '…' },
-  READY: { title: '编译完成', description: '即将生成本次运行的实际题目。', tone: 'running', icon: '…' },
-  CHALLENGE_ISSUED: { title: '题目已生成', description: '实际题目已绑定到本次提交。', tone: 'running', icon: '…' },
-  RUNNING: { title: '正在隔离运行', description: '网络已禁用，执行资源受到限制。', tone: 'running', icon: '…' },
-  VERIFYING: { title: '正在验证答案', description: 'CogGate 正在验证脚本输出。', tone: 'running', icon: '…' },
-  VERIFIED_ACCEPTED_PENDING_FINALIZE: { title: '答案正确', description: '正在原子确认首位通关者。', tone: 'running', icon: '…' },
-  PASSED: { title: '通关成功', description: '你是本场首位通过者，试炼场已经封场。', tone: 'success', icon: '✓' },
-  CORRECT_BUT_LOST_RACE: { title: '答案正确，但未抢到首位', description: '另一位选手先完成了最终确认。', tone: 'error', icon: '!' },
-  COMPILE_ERROR: { title: '编译失败', description: '查看“编译输出”定位错误。', tone: 'error', icon: '×' },
-  RUNTIME_ERROR: { title: '运行错误', description: '程序以非零状态退出。', tone: 'error', icon: '×' },
-  TIMED_OUT: { title: '运行超时', description: '程序超过了允许的执行时间。', tone: 'error', icon: '×' },
-  OUTPUT_LIMIT_EXCEEDED: { title: '输出超限', description: '程序输出超过了沙箱限制。', tone: 'error', icon: '×' },
-  INVALID_OUTPUT: { title: '输出格式错误', description: '请只输出不带 padding 的 base64url 答案。', tone: 'error', icon: '×' },
-  CHALLENGE_EXPIRED: { title: '题目已过期', description: '实际题目在验证前超过有效期，请重新提交。', tone: 'error', icon: '×' },
-  WRONG_ANSWER: { title: '答案错误', description: '脚本运行完成，但输出未通过 CogGate 验证。', tone: 'error', icon: '×' },
-  ARENA_CLOSED: { title: '试炼场已关闭', description: '已有选手率先通过，本次提交没有继续执行。', tone: 'error', icon: '×' },
-  INTERNAL_ERROR: { title: '系统错误', description: '本次执行未完成，请稍后重试。', tone: 'error', icon: '×' },
+  ACCEPTED: { title: 'Queued', description: 'Waiting for a secure execution slot.', tone: 'running', icon: '…' },
+  COMPILING: { title: 'Compiling', description: 'Building the source with the selected fixed toolchain.', tone: 'running', icon: '…' },
+  READY: { title: 'Compilation complete', description: 'Generating the actual challenge for this run.', tone: 'running', icon: '…' },
+  CHALLENGE_ISSUED: { title: 'Challenge issued', description: 'The actual challenge is now bound to this submission.', tone: 'running', icon: '…' },
+  RUNNING: { title: 'Running in isolation', description: 'Network access is disabled and execution resources are limited.', tone: 'running', icon: '…' },
+  VERIFYING: { title: 'Verifying answer', description: 'CogGate is validating the program output.', tone: 'running', icon: '…' },
+  VERIFIED_ACCEPTED_PENDING_FINALIZE: { title: 'Correct answer', description: 'Atomically confirming the first solver.', tone: 'running', icon: '…' },
+  PASSED: { title: 'Challenge cleared', description: 'You are the first solver. The arena is now closed.', tone: 'success', icon: '✓' },
+  CORRECT_BUT_LOST_RACE: { title: 'Correct, but not first', description: 'Another solver completed finalization first.', tone: 'error', icon: '!' },
+  COMPILE_ERROR: { title: 'Compilation failed', description: 'Open the Compiler tab to inspect the error.', tone: 'error', icon: '×' },
+  RUNTIME_ERROR: { title: 'Runtime error', description: 'The program exited with a non-zero status.', tone: 'error', icon: '×' },
+  TIMED_OUT: { title: 'Time limit exceeded', description: 'The program exceeded the allowed execution time.', tone: 'error', icon: '×' },
+  OUTPUT_LIMIT_EXCEEDED: { title: 'Output limit exceeded', description: 'The program produced more output than the sandbox allows.', tone: 'error', icon: '×' },
+  INVALID_OUTPUT: { title: 'Invalid output', description: 'Print only an unpadded base64url answer.', tone: 'error', icon: '×' },
+  CHALLENGE_EXPIRED: { title: 'Challenge expired', description: 'The actual challenge expired before verification. Submit again.', tone: 'error', icon: '×' },
+  WRONG_ANSWER: { title: 'Wrong answer', description: 'The program ran, but its output failed CogGate verification.', tone: 'error', icon: '×' },
+  ARENA_CLOSED: { title: 'Arena closed', description: 'Another solver finished first, so this submission did not continue.', tone: 'error', icon: '×' },
+  INTERNAL_ERROR: { title: 'System error', description: 'This execution could not be completed. Try again later.', tone: 'error', icon: '×' },
 };
 
 const errorMessages: Record<string, string> = {
-  arena_closed: '试炼场已经关闭。',
-  epoch_changed: '场次已更新，请确认新题目后重新提交。',
-  quota_exhausted: '今日 10 次提交额度已经用完。',
-  submission_in_flight: '你已有一个提交正在运行。',
-  queue_full: '当前运行队列已满，请稍后再试。',
-  publication_consent_required: '请先同意公开通关代码。',
-  source_empty: '代码不能为空。',
-  payload_too_large: '代码超过了允许的大小。',
-  forbidden: '当前 GitHub 账号无法提交。',
-  internal_error: '服务暂时不可用，请稍后重试。',
+  arena_closed: 'The arena is closed.',
+  epoch_changed: 'The round changed. Review the new challenge before submitting again.',
+  quota_exhausted: 'You have used all 10 attempts for today.',
+  submission_in_flight: 'You already have a submission running.',
+  queue_full: 'The execution queue is full. Try again shortly.',
+  publication_consent_required: 'Agree to publish winning code before submitting.',
+  source_empty: 'Source code cannot be empty.',
+  payload_too_large: 'The source exceeds the allowed size.',
+  forbidden: 'This GitHub account is not allowed to submit.',
+  internal_error: 'The service is temporarily unavailable. Try again later.',
 };
 
 class ApiError extends Error {
@@ -249,7 +249,7 @@ function populateLanguages(arena: Arena): void {
 }
 
 function arenaStatusLabel(status: Arena['status']): string {
-  return { PREPARING: '准备中', OPEN: '开放中', SOLVED: '已通关', MAINTENANCE: '维护中', ARCHIVED: '已归档' }[status];
+  return { PREPARING: 'PREPARING', OPEN: 'OPEN', SOLVED: 'SOLVED', MAINTENANCE: 'MAINTENANCE', ARCHIVED: 'ARCHIVED' }[status];
 }
 
 function renderArena(): void {
@@ -262,8 +262,8 @@ function renderArena(): void {
   element('round-label').textContent = `ROUND ${arena.epoch}`;
   element('sdk-label').textContent = `SDK ${arena.sdk_version}`;
   element('source-limit').textContent = formatBytes(arena.source_limit_bytes);
-  element('language-count').textContent = `${arena.supported_languages.length} 种`;
-  element('daily-limit').textContent = `${arena.daily_limit} 次`;
+  element('language-count').textContent = `${arena.supported_languages.length} runtimes`;
+  element('daily-limit').textContent = `${arena.daily_limit} runs`;
 
   const banner = element('winner-banner');
   if (arena.winner) {
@@ -291,7 +291,7 @@ function renderAccount(): void {
     element('logout').hidden = false;
     renderQuota(state.me.quota);
   } else {
-    element('account-name').textContent = '提交时登录 GitHub';
+    element('account-name').textContent = 'Sign in with GitHub on submit';
     element('logout').hidden = true;
     element('quota').hidden = true;
   }
@@ -324,23 +324,13 @@ async function loadPreview(): Promise<void> {
     element('preview-skeleton').hidden = true;
   } catch (error) {
     if (error instanceof ApiError && error.status === 404) {
-      element('preview').textContent = '当前场次暂时没有可用预览。';
+      element('preview').textContent = 'No preview is available for the current round.';
       element('preview').hidden = false;
       element('preview-skeleton').hidden = true;
       return;
     }
     throw error;
   }
-}
-
-function updateCountdown(): void {
-  if (!state.preview) {
-    element('refresh-countdown').textContent = '—';
-    return;
-  }
-  const remaining = Math.max(0, state.preview.refresh_at - Math.floor(Date.now() / 1000));
-  element('refresh-countdown').textContent = `00:${String(remaining).padStart(2, '0')}`;
-  if (remaining === 0) void loadPreview().catch(() => undefined);
 }
 
 function updateSubmitButton(): void {
@@ -351,10 +341,10 @@ function updateSubmitButton(): void {
   const quotaAvailable = !state.me || state.me.quota.remaining_today > 0;
   button.disabled = !open || !agreed || !source || !quotaAvailable || state.submitting;
   element('submit-label').textContent = state.submitting
-    ? '正在运行'
+    ? 'Running'
     : state.me
-      ? '提交并运行'
-      : 'GitHub 登录并提交';
+      ? 'Submit & run'
+      : 'Sign in with GitHub & submit';
 }
 
 function stepIndex(status: string): number {
@@ -366,7 +356,7 @@ function stepIndex(status: string): number {
 }
 
 function renderJudgeSteps(status: string, terminal: boolean): void {
-  const labels = ['排队', '编译', '生成题目', '隔离运行', '验证'];
+  const labels = ['Queue', 'Compile', 'Issue challenge', 'Sandbox', 'Verify'];
   const current = stepIndex(status);
   element('judge-steps').replaceChildren(...labels.map((label, index) => {
     const item = document.createElement('li');
@@ -396,10 +386,10 @@ function renderSubmission(submission: Submission): void {
   indicator.className = `tab-indicator is-${terminal ? (submission.status === 'PASSED' ? 'success' : 'error') : 'running'}`;
   element('actual-panel').textContent = submission.challenge
     ? `# challenge ${submission.challenge.challenge_id}\n# generator ${submission.challenge.generator_version}\n# expires ${new Date(submission.challenge.expires_at * 1000).toLocaleString()}\n\n${submission.challenge.question}`
-    : '实际运行题目会在判题结束后显示。';
-  element('compile-panel').textContent = submission.execution.compile_output || '编译器没有产生输出。';
-  element('stdout-panel').textContent = `${submission.execution.stdout ?? '暂无标准输出。'}${submission.execution.stdout_truncated ? '\n\n[输出已截断]' : ''}`;
-  element('stderr-panel').textContent = `${submission.execution.stderr ?? '暂无标准错误。'}${submission.execution.stderr_truncated ? '\n\n[输出已截断]' : ''}`;
+    : 'The actual challenge appears after judging completes.';
+  element('compile-panel').textContent = submission.execution.compile_output || 'The compiler produced no output.';
+  element('stdout-panel').textContent = `${submission.execution.stdout ?? 'No standard output.'}${submission.execution.stdout_truncated ? '\n\n[Output truncated]' : ''}`;
+  element('stderr-panel').textContent = `${submission.execution.stderr ?? 'No standard error.'}${submission.execution.stderr_truncated ? '\n\n[Output truncated]' : ''}`;
   renderQuota(submission.quota);
   if (state.me) state.me.quota = submission.quota;
 
@@ -477,7 +467,7 @@ async function submit(restored?: Draft): Promise<void> {
     sessionStorage.removeItem('coggate:pending-submission');
     state.submitting = false;
     const code = error instanceof ApiError ? error.body.error ?? '' : '';
-    showToast(errorMessages[code] ?? '提交失败，请稍后重试。', 'error');
+    showToast(errorMessages[code] ?? 'Submission failed. Try again later.', 'error');
     if (code === 'epoch_changed' || code === 'arena_closed') await loadArena();
     updateSubmitButton();
   }
@@ -526,10 +516,10 @@ function clearResult(): void {
   state.submission = null;
   element('empty-result').hidden = false;
   element('result-content').hidden = true;
-  element('actual-panel').textContent = '实际运行题目会在判题结束后显示。';
-  element('compile-panel').textContent = '暂无编译输出。';
-  element('stdout-panel').textContent = '暂无标准输出。';
-  element('stderr-panel').textContent = '暂无标准错误。';
+  element('actual-panel').textContent = 'The actual challenge appears after judging completes.';
+  element('compile-panel').textContent = 'No compiler output.';
+  element('stdout-panel').textContent = 'No standard output.';
+  element('stderr-panel').textContent = 'No standard error.';
   element('result-indicator').className = 'tab-indicator';
   activateConsoleTab('result');
 }
@@ -582,13 +572,13 @@ function setupInteractions(): void {
     setLanguage((event.target as HTMLSelectElement).value as Language);
   });
   element('reset-code').addEventListener('click', () => {
-    if (!window.confirm(`将 ${languageFiles[state.language]} 恢复为初始模板？`)) return;
+    if (!window.confirm(`Reset ${languageFiles[state.language]} to its starter template?`)) return;
     state.editor?.setValue(templates[state.language]);
     state.editor?.focus();
   });
   element('toggle-focus').addEventListener('click', () => {
     const focused = element('app').classList.toggle('is-focused');
-    element('toggle-focus').textContent = focused ? '退出专注' : '专注模式';
+    element('toggle-focus').textContent = focused ? 'Exit focus' : 'Focus mode';
     window.setTimeout(() => state.editor?.layout(), 10);
   });
   element('consent').addEventListener('change', updateSubmitButton);
@@ -598,7 +588,7 @@ function setupInteractions(): void {
     await api<void>('/api/v1/logout', { method: 'POST' });
     state.me = null;
     renderAccount();
-    showToast('已退出 GitHub 登录。');
+    showToast('Signed out of GitHub.');
   });
   document.querySelectorAll<HTMLElement>('[data-problem-tab]').forEach((tab) => {
     tab.addEventListener('click', () => activateProblemTab(tab.dataset.problemTab ?? 'challenge'));
@@ -611,10 +601,9 @@ function setupInteractions(): void {
 
 function setupArenaEvents(): void {
   const events = new EventSource('/api/v1/arena/events');
-  events.addEventListener('preview_refreshed', () => void loadPreview().catch(() => undefined));
   events.addEventListener('arena_solved', () => {
     void loadArena();
-    showToast('已有选手通过，试炼场已关闭。');
+    showToast('A solver has cleared the challenge. The arena is closed.');
   });
 }
 
@@ -624,8 +613,6 @@ async function initialize(): Promise<void> {
   setupInteractions();
   await Promise.all([loadMe(), loadPreview()]);
   setupArenaEvents();
-  updateCountdown();
-  window.setInterval(updateCountdown, 1000);
   window.setInterval(() => void loadArena().catch(() => undefined), 5000);
   element('app').setAttribute('aria-busy', 'false');
   restorePendingSubmission();
@@ -634,5 +621,5 @@ async function initialize(): Promise<void> {
 void initialize().catch((error: unknown) => {
   console.error(error);
   element('app').setAttribute('aria-busy', 'false');
-  showToast('页面初始化失败，请刷新后重试。', 'error');
+  showToast('Page initialization failed. Refresh and try again.', 'error');
 });

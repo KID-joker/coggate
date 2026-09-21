@@ -1,6 +1,6 @@
 # CogGate Playground
 
-CogGate Playground is an independent workspace that consumes `coggate-core` and `coggate-contracts` through local path dependencies. It provides anonymous rules and rotating previews, GitHub OAuth on submission, a SQLite-backed daily quota and queue, one-shot CogGate verification, atomic first-winner closure, SSE refresh, and a durable GitHub Issue outbox.
+CogGate Playground is an independent workspace that consumes `coggate-core` and `coggate-contracts` through local path dependencies. It provides anonymous rules and a stable preview for each round, GitHub OAuth on submission, a SQLite-backed daily quota and queue, one-shot CogGate verification, atomic first-winner closure, SSE status updates, and a durable GitHub Issue outbox.
 
 The `coggate-playground` process never receives the Docker socket. The separate `arena-runner` broker is the only process allowed to reach Docker and accepts a bounded Unix-socket protocol with fixed language commands. It always asks Docker for `runsc`, `network=none`, a read-only root filesystem, no capabilities, a non-root container user, and fixed CPU, memory, PID and output limits.
 

@@ -106,8 +106,6 @@ pub struct ArenaView {
 pub struct PreviewView {
     pub round_id: String,
     pub epoch: i64,
-    pub revision: i64,
-    pub refresh_at: i64,
     pub challenge: PublicChallenge,
 }
 

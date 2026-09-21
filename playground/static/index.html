@@ -1,19 +1,19 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="description" content="CogGate 单题动态破解试炼场" />
+    <meta name="description" content="A single-challenge code-breaking arena powered by CogGate" />
     <meta name="color-scheme" content="dark" />
     <title>CogGate Playground</title>
-    <script type="module" crossorigin src="/assets/index-UPabmw_p.js"></script>
+    <script type="module" crossorigin src="/assets/index-CEqgF3GA.js"></script>
     <link rel="stylesheet" crossorigin href="/assets/index-D_a5Tplm.css">
   </head>
   <body>
     <div class="desktop-required" role="status">
       <div class="desktop-required__mark">CG</div>
-      <h1>需要桌面浏览器</h1>
-      <p>CogGate Playground 是面向代码编辑的桌面工作台，请使用宽度至少 1100px 的窗口访问。</p>
+      <h1>Desktop browser required</h1>
+      <p>CogGate Playground is a desktop coding workspace. Use a window at least 1100px wide.</p>
     </div>
 
     <div id="app" class="app-shell" aria-busy="true">
@@ -24,140 +24,140 @@
           <span class="brand__product">PLAYGROUND</span>
         </div>
         <div class="round-meta">
-          <span id="arena-status" class="status-pill status-pill--loading"><i></i>载入场次</span>
+          <span id="arena-status" class="status-pill status-pill--loading"><i></i>LOADING ROUND</span>
           <span id="round-label" class="meta-item">ROUND —</span>
           <span id="sdk-label" class="meta-item">SDK —</span>
         </div>
         <div class="account-area">
           <div id="quota" class="quota" hidden>
-            <span class="quota__label">今日额度</span>
+            <span class="quota__label">DAILY QUOTA</span>
             <strong id="quota-value">— / 10</strong>
           </div>
           <span class="topbar-divider" aria-hidden="true"></span>
           <div id="account" class="account">
             <span class="account__avatar" aria-hidden="true">GH</span>
-            <span id="account-name">提交时登录 GitHub</span>
+            <span id="account-name">Sign in with GitHub on submit</span>
           </div>
-          <button id="logout" class="icon-button" type="button" title="退出登录" hidden>退出</button>
+          <button id="logout" class="icon-button" type="button" title="Sign out" hidden>Sign out</button>
         </div>
       </header>
 
       <div id="winner-banner" class="winner-banner" hidden>
         <span class="winner-banner__eyebrow">TRIAL CLEARED</span>
-        <strong>试炼已由 <a id="winner-link" href="#" rel="noreferrer">—</a> 通关</strong>
-        <a id="issue-link" class="winner-banner__issue" href="#" rel="noreferrer" hidden>查看公开 Issue ↗</a>
+        <strong>Trial cleared by <a id="winner-link" href="#" rel="noreferrer">—</a></strong>
+        <a id="issue-link" class="winner-banner__issue" href="#" rel="noreferrer" hidden>View public issue ↗</a>
       </div>
 
       <main id="workspace" class="workspace">
-        <section id="problem-pane" class="problem-pane" aria-label="题目区域">
-          <div class="pane-tabs" role="tablist" aria-label="题目信息">
-            <button class="pane-tab is-active" type="button" role="tab" aria-selected="true" data-problem-tab="challenge">题目预览</button>
-            <button class="pane-tab" type="button" role="tab" aria-selected="false" data-problem-tab="rules">规则与协议</button>
+        <section id="problem-pane" class="problem-pane" aria-label="Challenge area">
+          <div class="pane-tabs" role="tablist" aria-label="Challenge information">
+            <button class="pane-tab is-active" type="button" role="tab" aria-selected="true" data-problem-tab="challenge">Challenge preview</button>
+            <button class="pane-tab" type="button" role="tab" aria-selected="false" data-problem-tab="rules">Rules &amp; protocol</button>
           </div>
 
           <div id="challenge-panel" class="problem-content" role="tabpanel">
             <div class="problem-heading">
               <div>
-                <span class="eyebrow">ROTATING PREVIEW</span>
-                <h1>破解生成题目</h1>
+                <span class="eyebrow">PUBLIC PREVIEW</span>
+                <h1>Break the generated challenge</h1>
               </div>
-              <div class="refresh-clock" title="预览题目自动刷新">
-                <span>刷新</span>
-                <strong id="refresh-countdown">—</strong>
+              <div class="refresh-clock" title="This preview remains fixed for the current round">
+                <span>PREVIEW</span>
+                <strong>FIXED FOR ROUND</strong>
               </div>
             </div>
             <div class="notice-card">
               <span class="notice-card__icon">i</span>
-              <p>这里展示的是公开预览。提交时会生成一份新的实际题目，并在运行结束后连同结果返回。</p>
+              <p>This public preview stays fixed for the round. A fresh challenge is generated for each submission and returned with the execution result.</p>
             </div>
-            <div id="preview-skeleton" class="skeleton-block" aria-label="题目加载中">
+            <div id="preview-skeleton" class="skeleton-block" aria-label="Loading challenge">
               <i></i><i></i><i></i><i></i><i></i>
             </div>
             <pre id="preview" class="challenge-text" hidden></pre>
             <div class="challenge-meta">
-              <span>编码 <strong>base64url</strong></span>
-              <span>网络 <strong>disabled</strong></span>
-              <span>依赖 <strong>allowlist</strong></span>
+              <span>Encoding <strong>base64url</strong></span>
+              <span>Network <strong>disabled</strong></span>
+              <span>Dependencies <strong>allowlist</strong></span>
             </div>
           </div>
 
           <div id="rules-panel" class="problem-content prose" role="tabpanel" hidden>
             <span class="eyebrow">EXECUTION CONTRACT</span>
-            <h1>运行规则</h1>
+            <h1>Execution rules</h1>
             <ol class="rule-list">
-              <li><span>01</span><div><strong>一次提交，一道新题</strong><p>提交后服务端生成实际题目，并通过标准输入传给脚本。</p></div></li>
-              <li><span>02</span><div><strong>只写标准输出</strong><p>答案必须是不带 padding 的 base64url 字符串；日志请写入标准错误。</p></div></li>
-              <li><span>03</span><div><strong>隔离执行</strong><p>容器无网络、只读根文件系统，并限制 CPU、内存、进程数和输出大小。</p></div></li>
-              <li><span>04</span><div><strong>每日十次</strong><p>只有代码被接受进入队列后才消耗额度。同一账号不能同时运行多个提交。</p></div></li>
-              <li><span>05</span><div><strong>首位通关即封场</strong><p>所有用户会立即收到封场状态；获胜代码将在 GitHub Issue 中公开。</p></div></li>
+              <li><span>01</span><div><strong>One submission, one fresh challenge</strong><p>The server generates the actual challenge after submission and sends it to the program through standard input.</p></div></li>
+              <li><span>02</span><div><strong>Answer on standard output</strong><p>Print only an unpadded base64url answer. Send diagnostic logs to standard error.</p></div></li>
+              <li><span>03</span><div><strong>Isolated execution</strong><p>The container has no network, a read-only root filesystem, and strict CPU, memory, process, and output limits.</p></div></li>
+              <li><span>04</span><div><strong>Ten attempts per day</strong><p>Quota is consumed only after code enters the queue. An account may run only one submission at a time.</p></div></li>
+              <li><span>05</span><div><strong>First solve closes the arena</strong><p>Every client is notified immediately. The winning source is published in a GitHub issue.</p></div></li>
             </ol>
             <div class="limits-card">
-              <div><span>源码上限</span><strong id="source-limit">—</strong></div>
-              <div><span>支持语言</span><strong id="language-count">—</strong></div>
-              <div><span>每日提交</span><strong id="daily-limit">10</strong></div>
+              <div><span>Source limit</span><strong id="source-limit">—</strong></div>
+              <div><span>Languages</span><strong id="language-count">—</strong></div>
+              <div><span>Daily attempts</span><strong id="daily-limit">10</strong></div>
             </div>
           </div>
         </section>
 
-        <div id="column-resizer" class="column-resizer" role="separator" aria-label="调整题目与编辑器宽度" aria-orientation="vertical"></div>
+        <div id="column-resizer" class="column-resizer" role="separator" aria-label="Resize challenge and editor panes" aria-orientation="vertical"></div>
 
-        <section class="code-pane" aria-label="代码与判题区域">
+        <section class="code-pane" aria-label="Code and verdict area">
           <div class="editor-toolbar">
             <div class="file-tab"><span class="file-dot"></span><span id="filename">main.rs</span><i id="dirty-mark" hidden></i></div>
             <div class="editor-actions">
               <label class="language-control">
-                <span>语言</span>
-                <select id="language" aria-label="编程语言"></select>
+                <span>Language</span>
+                <select id="language" aria-label="Programming language"></select>
               </label>
-              <button id="reset-code" class="toolbar-button" type="button">恢复模板</button>
-              <button id="toggle-focus" class="toolbar-button" type="button">专注模式</button>
+              <button id="reset-code" class="toolbar-button" type="button">Reset template</button>
+              <button id="toggle-focus" class="toolbar-button" type="button">Focus mode</button>
             </div>
           </div>
-          <div id="editor" class="editor" aria-label="代码编辑器"></div>
+          <div id="editor" class="editor" aria-label="Code editor"></div>
 
-          <div id="console-resizer" class="console-resizer" role="separator" aria-label="调整结果面板高度" aria-orientation="horizontal"><i></i></div>
+          <div id="console-resizer" class="console-resizer" role="separator" aria-label="Resize results panel" aria-orientation="horizontal"><i></i></div>
 
-          <section id="console" class="console" aria-label="判题结果">
+          <section id="console" class="console" aria-label="Verdict results">
             <div class="console-header">
-              <div class="console-tabs" role="tablist" aria-label="结果详情">
-                <button class="console-tab is-active" type="button" role="tab" data-console-tab="result">判题结果<span id="result-indicator" class="tab-indicator"></span></button>
-                <button class="console-tab" type="button" role="tab" data-console-tab="actual">实际题目</button>
-                <button class="console-tab" type="button" role="tab" data-console-tab="compile">编译输出</button>
-                <button class="console-tab" type="button" role="tab" data-console-tab="stdout">标准输出</button>
-                <button class="console-tab" type="button" role="tab" data-console-tab="stderr">标准错误</button>
+              <div class="console-tabs" role="tablist" aria-label="Result details">
+                <button class="console-tab is-active" type="button" role="tab" data-console-tab="result">Verdict<span id="result-indicator" class="tab-indicator"></span></button>
+                <button class="console-tab" type="button" role="tab" data-console-tab="actual">Actual challenge</button>
+                <button class="console-tab" type="button" role="tab" data-console-tab="compile">Compiler</button>
+                <button class="console-tab" type="button" role="tab" data-console-tab="stdout">Standard output</button>
+                <button class="console-tab" type="button" role="tab" data-console-tab="stderr">Standard error</button>
               </div>
-              <button id="clear-result" class="icon-button" type="button">清空</button>
+              <button id="clear-result" class="icon-button" type="button">Clear</button>
             </div>
             <div class="console-body">
               <div id="result-panel" class="result-panel" data-console-panel="result">
                 <div id="empty-result" class="empty-result">
                   <span class="empty-result__prompt">&gt;_</span>
-                  <div><strong>等待提交</strong><p>使用 <kbd>⌘</kbd><kbd>Enter</kbd> 快速提交。登录只会在首次提交时触发。</p></div>
+                  <div><strong>Waiting for a submission</strong><p>Press <kbd>⌘</kbd><kbd>Enter</kbd> to submit. GitHub sign-in is requested only when you first submit.</p></div>
                 </div>
                 <div id="result-content" hidden>
                   <div class="verdict-row">
                     <span id="verdict-icon" class="verdict-icon">…</span>
-                    <div><span class="eyebrow">VERDICT</span><h2 id="verdict-title">正在准备</h2><p id="verdict-description">提交即将进入运行队列。</p></div>
-                    <div class="timing"><span>编译 <strong id="compile-time">—</strong></span><span>运行 <strong id="run-time">—</strong></span></div>
+                    <div><span class="eyebrow">VERDICT</span><h2 id="verdict-title">Preparing</h2><p id="verdict-description">Your submission is about to enter the execution queue.</p></div>
+                    <div class="timing"><span>Compile <strong id="compile-time">—</strong></span><span>Run <strong id="run-time">—</strong></span></div>
                   </div>
                   <ol id="judge-steps" class="judge-steps"></ol>
                 </div>
               </div>
-              <pre id="actual-panel" class="output-panel" data-console-panel="actual" hidden>实际运行题目会在判题结束后显示。</pre>
-              <pre id="compile-panel" class="output-panel" data-console-panel="compile" hidden>暂无编译输出。</pre>
-              <pre id="stdout-panel" class="output-panel" data-console-panel="stdout" hidden>暂无标准输出。</pre>
-              <pre id="stderr-panel" class="output-panel" data-console-panel="stderr" hidden>暂无标准错误。</pre>
+              <pre id="actual-panel" class="output-panel" data-console-panel="actual" hidden>The actual challenge appears after judging completes.</pre>
+              <pre id="compile-panel" class="output-panel" data-console-panel="compile" hidden>No compiler output.</pre>
+              <pre id="stdout-panel" class="output-panel" data-console-panel="stdout" hidden>No standard output.</pre>
+              <pre id="stderr-panel" class="output-panel" data-console-panel="stderr" hidden>No standard error.</pre>
             </div>
           </section>
 
           <footer class="submit-bar">
             <label class="consent">
               <input id="consent" type="checkbox" />
-              <span>我同意通关代码自动公开到 GitHub Issue</span>
+              <span>I agree that winning code will be published automatically in a GitHub issue</span>
             </label>
-            <span id="save-state" class="save-state">草稿已保存</span>
+            <span id="save-state" class="save-state">Draft saved</span>
             <button id="submit" class="submit-button" type="button" disabled>
-              <span id="submit-label">提交并运行</span>
+              <span id="submit-label">Submit &amp; run</span>
               <kbd>⌘ ↵</kbd>
             </button>
           </footer>
