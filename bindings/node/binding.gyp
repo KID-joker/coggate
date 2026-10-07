@@ -24,7 +24,7 @@
           "LD_RUNPATH_SEARCH_PATHS": ["@loader_path"]
         }
       }],
-      ["OS=='linux'", { "ldflags": ["-L<(coggate_library_dir)", "-Wl,-rpath,$$ORIGIN"] }],
+      ["OS=='linux'", { "ldflags": ["-L<(coggate_library_dir)", "-Wl,-rpath='$$ORIGIN'"] }],
       ["OS=='win'", {
         "msvs_settings": { "VCCLCompilerTool": {
           "ExceptionHandling": 1,

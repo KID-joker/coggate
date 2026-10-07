@@ -61,6 +61,7 @@ test('native build and loader use only the CogGate names and environment variabl
   assert.match(gyp, /coggate_ffi/);
   assert.match(gyp, /process\.platform==='linux'&&p\?'-l:'\+path\.basename\(p\)/);
   assert.match(gyp, /-L<\(coggate_library_dir\)/);
+  assert.match(gyp, /-Wl,-rpath='\$\$ORIGIN'/);
   assert.match(loader, /build\/Release\/coggate\.node/);
   assert.match(example, /from 'coggate'/);
   assert.match(source, /#include "coggate\.h"/);

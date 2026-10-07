@@ -2,13 +2,17 @@ use std::{
     collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
-    process::Command,
 };
 
+#[cfg(not(windows))]
+use std::process::Command;
+
+#[cfg(not(windows))]
+use coggate_release::create_phase5d_receipt;
 use coggate_release::{
     Phase5dError, Target,
     canonical::{canonical_compact, canonical_pretty_sorted, sha256_hex},
-    create_phase5d_receipt, verify_phase5d_artifact,
+    verify_phase5d_artifact,
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;

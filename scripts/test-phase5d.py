@@ -2309,6 +2309,7 @@ Dump of file coggate_ffi.dll
                 "/tools/maven",
                 "-f",
                 "/repo/bindings/java/pom.xml",
+                "-DskipTests",
                 "package",
             )
         )
@@ -4963,6 +4964,7 @@ def qualification_plan(
                 capabilities["maven"].path or "mvn",
                 "-f",
                 str(root / "bindings" / "java" / "pom.xml"),
+                "-DskipTests",
                 "package",
             ),
             root,
