@@ -252,10 +252,14 @@ impl ProcessWorkspace<'_> {
         };
 
         let completion = match completion {
-            Ok(Completion::Exited(status)) => {
-                terminate_group(&mut child, &stdout_reader, &stderr_reader)
-                    .map(|()| Completion::Exited(status))
-            }
+            Ok(Completion::Exited(status)) => terminate_group(
+                &mut child,
+                &stdout_reader,
+                &stderr_reader,
+                started,
+                self.runner.timeout,
+            )
+            .map(|()| Completion::Exited(status)),
             Ok(Completion::OutputLimit) => {
                 kill_and_wait(&mut child).map(|_| Completion::OutputLimit)
             }
@@ -383,26 +387,20 @@ fn terminate_group(
     child: &mut GroupChild,
     stdout: &Reader,
     stderr: &Reader,
+    started: Instant,
+    timeout: Duration,
 ) -> Result<(), ProcessError> {
-    match child.kill() {
-        Ok(()) => {
-            child.wait().map_err(|_| ProcessError::Wait)?;
-            Ok(())
-        }
-        Err(_) => {
-            child.wait().map_err(|_| ProcessError::Wait)?;
-            let deadline = Instant::now() + Duration::from_millis(100);
-            while !(stdout.is_finished() && stderr.is_finished()) && Instant::now() < deadline {
-                thread::sleep(Duration::from_millis(1));
-            }
-            if stdout.is_finished() && stderr.is_finished() {
-                // Empty process groups can disappear between `try_wait` and
-                // `kill`. Closed pipes prove no descendant can block capture.
-                Ok(())
-            } else {
-                Err(ProcessError::Kill)
-            }
-        }
+    // `try_wait` already reaped the process-group leader. Calling `wait` again
+    // races with an empty group on Unix, so terminate any remaining descendants
+    // and use closed output pipes as the completion condition.
+    let _ = child.kill();
+    while !(stdout.is_finished() && stderr.is_finished()) && started.elapsed() < timeout {
+        thread::sleep(Duration::from_millis(1));
+    }
+    if stdout.is_finished() && stderr.is_finished() {
+        Ok(())
+    } else {
+        Err(ProcessError::Kill)
     }
 }
 

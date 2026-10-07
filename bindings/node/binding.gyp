@@ -1,7 +1,8 @@
 {
   "variables": {
     "coggate_library_path%": "<!(node -e \"const path=require('node:path');const p=process.env.COGGATE_LIBRARY_PATH||'';const expected={darwin:'libcoggate_ffi.dylib',linux:'libcoggate_ffi.so',win32:'coggate_ffi.dll'}[process.platform];if(!path.isAbsolute(p)||path.basename(p)!==expected)throw new Error('COGGATE_LIBRARY_PATH must name the coggate_ffi shared library');process.stdout.write(p)\")",
-    "coggate_link_library%": "<!(node -e \"const p=process.env.COGGATE_LIBRARY_PATH||'';process.stdout.write(process.platform==='win32'&&p?p+'.lib':p)\")",
+    "coggate_link_library%": "<!(node -e \"const path=require('node:path');const p=process.env.COGGATE_LIBRARY_PATH||'';process.stdout.write(process.platform==='win32'&&p?p+'.lib':process.platform==='linux'&&p?'-l:'+path.basename(p):p)\")",
+    "coggate_library_dir%": "<!(node -p \"require('node:path').dirname(process.env.COGGATE_LIBRARY_PATH || '')\")",
     "coggate_runtime_basename%": "<!(node -p \"require('node:path').basename(process.env.COGGATE_LIBRARY_PATH || '')\")",
     "coggate_install_name%": "<!(node -e \"const {execFileSync}=require('node:child_process');const p=process.env.COGGATE_LIBRARY_PATH||'';if(process.platform==='darwin'&&p)process.stdout.write(execFileSync('otool',['-D',p],{encoding:'utf8'}).trim().split(/\\r?\\n/).at(-1).trim())\")",
     "node_executable%": "<!(node -p \"process.execPath\")"
@@ -23,7 +24,7 @@
           "LD_RUNPATH_SEARCH_PATHS": ["@loader_path"]
         }
       }],
-      ["OS=='linux'", { "ldflags": ["-Wl,-rpath,$$ORIGIN"] }],
+      ["OS=='linux'", { "ldflags": ["-L<(coggate_library_dir)", "-Wl,-rpath,$$ORIGIN"] }],
       ["OS=='win'", {
         "msvs_settings": { "VCCLCompilerTool": {
           "ExceptionHandling": 1,

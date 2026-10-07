@@ -34,6 +34,7 @@ test('npm package exposes only the CogGate API and metadata', async () => {
   assert.equal(packageJson.scripts.test, 'node --expose-gc --test');
   assert.equal(packageJson.scripts.example, 'node examples/complete.js');
   assert.deepEqual(packageJson.files, [
+    'LICENSE',
     'README.md',
     'lib',
     'build/Release/coggate.node',
@@ -58,6 +59,8 @@ test('native build and loader use only the CogGate names and environment variabl
   assert.match(gyp, /"target_name": "coggate"/);
   assert.deepEqual(new Set(gyp.match(/COGGATE_[A-Z_]+/g)), new Set(['COGGATE_LIBRARY_PATH']));
   assert.match(gyp, /coggate_ffi/);
+  assert.match(gyp, /process\.platform==='linux'&&p\?'-l:'\+path\.basename\(p\)/);
+  assert.match(gyp, /-L<\(coggate_library_dir\)/);
   assert.match(loader, /build\/Release\/coggate\.node/);
   assert.match(example, /from 'coggate'/);
   assert.match(source, /#include "coggate\.h"/);

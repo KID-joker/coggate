@@ -2,7 +2,6 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    ffi::CString,
     fs::{self, File, Metadata},
     io::Write,
     path::{Path, PathBuf},
@@ -859,7 +858,7 @@ fn sync_directories(directory: &Path) -> Result<(), BundleError> {
 fn publish_no_replace(staging: &Path, destination: &Path) -> Result<(), BundleError> {
     #[cfg(any(target_os = "macos", target_os = "ios"))]
     {
-        use std::os::unix::ffi::OsStrExt;
+        use std::{ffi::CString, os::unix::ffi::OsStrExt};
         unsafe extern "C" {
             fn renamex_np(from: *const i8, to: *const i8, flags: u32) -> i32;
         }
@@ -886,7 +885,7 @@ fn publish_no_replace(staging: &Path, destination: &Path) -> Result<(), BundleEr
         )
     ))]
     {
-        use std::os::unix::ffi::OsStrExt;
+        use std::{ffi::CString, os::unix::ffi::OsStrExt};
         unsafe extern "C" {
             fn syscall(number: std::ffi::c_long, ...) -> std::ffi::c_long;
         }
