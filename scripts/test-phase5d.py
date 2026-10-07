@@ -3569,7 +3569,8 @@ Dump of file coggate_ffi.dll
         install = workflow_step(qualification, "Install pinned toolchains")
         self.assertEqual(
             workflow_run_script(install),
-            "rustup toolchain install 1.85.0 --profile minimal\n"
+            "rustup toolchain install 1.85.0 --profile minimal "
+            "--component rustfmt,clippy\n"
             "rustup override set 1.85.0\n"
             "npm install --global node-gyp@12.1.0",
         )
@@ -3608,7 +3609,10 @@ Dump of file coggate_ffi.dll
         )
         sanitizer_install = workflow_step(sanitizers, "Install pinned toolchains")
         self.assertEqual(
-            workflow_run_script(sanitizer_install), workflow_run_script(install)
+            workflow_run_script(sanitizer_install),
+            "rustup toolchain install 1.85.0 --profile minimal\n"
+            "rustup override set 1.85.0\n"
+            "npm install --global node-gyp@12.1.0",
         )
 
     def test_workflow_platform_setup_versions_and_sanitizers_are_scoped(self):
@@ -3664,6 +3668,10 @@ Dump of file coggate_ffi.dll
         )
         for package in ("clang", "cmake", "ninja-build", "nlohmann-json3-dev"):
             self.assertIn(package, sanitizer_dependencies)
+        self.assertIn(
+            'echo "NLOHMANN_JSON_INCLUDE_DIR=/usr/include" >> "$GITHUB_ENV"',
+            sanitizer_dependencies,
+        )
         sanitizer_versions = workflow_step(sanitizers, "Confirm tool versions")
         self.assertEqual(
             workflow_run_script(sanitizer_versions), unix_version_script

@@ -34,7 +34,12 @@ fn workflow_is_pinned_bounded_and_has_quick_and_manual_release_gates() {
         assert!(source.contains(pinned), "missing pinned action: {pinned}");
     }
     assert!(!source.contains("rust-toolchain@"));
-    assert!(source.contains("rustup toolchain install 1.85.0 --profile minimal"));
+    assert_eq!(
+        source
+            .matches("rustup toolchain install 1.85.0 --profile minimal --component rustfmt,clippy")
+            .count(),
+        2
+    );
     assert!(source.contains("rustup override set 1.85.0"));
     assert!(source.contains("sudo apt-get install --yes build-essential"));
     assert!(source.contains("go-version:"));
@@ -54,6 +59,12 @@ fn workflow_is_pinned_bounded_and_has_quick_and_manual_release_gates() {
     }
     assert!(source.contains("target/phase6a/quick/*.json"));
     assert!(source.contains("target/phase6a/release/*.md"));
+    assert_eq!(
+        source
+            .matches("if: always() && steps.baselines.outcome != 'skipped'")
+            .count(),
+        5
+    );
     assert!(source.contains("receipt phase6a --commit \"${{ github.sha }}\""));
     assert!(source.contains("mkdir -p target/phase6a/release/receipts"));
     for baseline in ["direct", "fingerprint", "regex", "simple_parser"] {

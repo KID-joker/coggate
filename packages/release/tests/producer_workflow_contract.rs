@@ -89,6 +89,7 @@ fn cross_platform_receipts_follow_verification_and_upload_only_bounded_evidence(
     assert!(source.contains("clang --version"));
     assert!(source.contains("sed -nE"));
     assert!(source.contains("target/phase5d/sanitizers/receipts/receipt.json"));
+    assert!(source.contains("echo \"NLOHMANN_JSON_INCLUDE_DIR=/usr/include\" >> \"$GITHUB_ENV\""));
 }
 
 #[test]
@@ -98,7 +99,7 @@ fn adversarial_benchmark_manual_release_binds_each_safe_report_pair_without_llm_
     assert!(source.contains("name: coggate-adversarial-benchmark-quick-reports"));
     assert!(source.contains("name: coggate-adversarial-benchmark-release-reports"));
     let release = source.split("  release:\n").nth(1).expect("release job");
-    assert!(release.contains("if: always()"));
+    assert!(release.contains("if: always() && steps.baselines.outcome != 'skipped'"));
     assert!(
         release.find("Verify release reports").unwrap()
             < release.find("Create release receipts").unwrap()

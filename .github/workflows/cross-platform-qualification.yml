@@ -70,7 +70,7 @@ jobs:
 
       - name: Install pinned toolchains
         run: |
-          rustup toolchain install 1.85.0 --profile minimal
+          rustup toolchain install 1.85.0 --profile minimal --component rustfmt,clippy
           rustup override set 1.85.0
           npm install --global node-gyp@12.1.0
 
@@ -223,6 +223,7 @@ jobs:
           sudo apt-get install --yes clang cmake ninja-build nlohmann-json3-dev
           echo "CC=$(command -v clang)" >> "$GITHUB_ENV"
           echo "CXX=$(command -v clang++)" >> "$GITHUB_ENV"
+          echo "NLOHMANN_JSON_INCLUDE_DIR=/usr/include" >> "$GITHUB_ENV"
 
       - name: Confirm tool versions
         run: |

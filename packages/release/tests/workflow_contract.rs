@@ -20,7 +20,11 @@ fn release_workflow_is_a_pinned_offline_release_gate() {
     assert!(source.contains("timeout-minutes:"));
     assert!(source.contains("actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"));
     assert!(source.contains("persist-credentials: false"));
-    assert!(source.contains("rustup toolchain install 1.85.0 --profile minimal"));
+    assert!(
+        source.contains(
+            "rustup toolchain install 1.85.0 --profile minimal --component rustfmt,clippy"
+        )
+    );
     assert!(source.contains("rustup override set 1.85.0"));
     for command in [
         "cargo fmt --all --check",
