@@ -278,6 +278,7 @@ fn artifact_paths(target: Target) -> Vec<String> {
         "node/examples/complete.js".into(),
         "node/build/Release/coggate.node".into(),
         format!("node/build/Release/{shared}"),
+        "fixtures/bindings/v1.json".into(),
         "smoke/abi_probe.c".into(),
         "smoke/abi_probe.cpp".into(),
     ];

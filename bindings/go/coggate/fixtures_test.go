@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"slices"
 	"sync"
 	"testing"
@@ -57,7 +56,7 @@ type goFixtureManifest struct {
 
 func loadGoFixture(t *testing.T) goFixtureManifest {
 	t.Helper()
-	payload, err := os.ReadFile(filepath.Join("..", "..", "..", "fixtures", "bindings", "v1.json"))
+	payload, err := os.ReadFile(bindingFixturePath(t))
 	if err != nil {
 		t.Fatal(err)
 	}

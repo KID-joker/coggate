@@ -69,6 +69,7 @@ fn phase5d_paths() -> Vec<&'static str> {
         "node/examples/complete.js",
         "node/build/Release/coggate.node",
         "node/build/Release/libcoggate_ffi.so",
+        "fixtures/bindings/v1.json",
         "smoke/abi_probe.c",
         "smoke/abi_probe.cpp",
     ]

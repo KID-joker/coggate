@@ -1009,6 +1009,7 @@ fn validate_layout(files: &[ManifestFile], target: Target) -> Result<(), Phase5d
         "node/examples/complete.js".to_owned(),
         "node/build/Release/coggate.node".to_owned(),
         format!("node/build/Release/{}", target.shared_name()),
+        "fixtures/bindings/v1.json".to_owned(),
         "smoke/abi_probe.c".to_owned(),
         "smoke/abi_probe.cpp".to_owned(),
     ]);
@@ -1194,6 +1195,7 @@ mod tests {
             "node/examples/complete.js",
             "node/build/Release/coggate.node",
             "node/build/Release/libcoggate_ffi.so",
+            "fixtures/bindings/v1.json",
             "smoke/abi_probe.c",
             "smoke/abi_probe.cpp",
         ];

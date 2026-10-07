@@ -340,6 +340,7 @@ class RunnerSelfTests(unittest.TestCase):
             f"target/release/{target.shared_name}",
             f"target/release/{target.static_name}",
             "bindings/go/go.mod",
+            "fixtures/bindings/v1.json",
             "bindings/go/coggate/service.go",
             "bindings/go/examples/complete/main.go",
             "bindings/java/target/coggate-java-0.1.0-SNAPSHOT.jar",
@@ -522,6 +523,7 @@ class RunnerSelfTests(unittest.TestCase):
             f"native/{target.shared_name}",
             f"native/{target.static_name}",
             "go/go.mod",
+            "fixtures/bindings/v1.json",
             "java/coggate-java-0.1.0-SNAPSHOT.jar",
             "java/libcoggate_jni.so",
             f"java/{target.shared_name}",
@@ -847,6 +849,7 @@ class RunnerSelfTests(unittest.TestCase):
                         f"native/{target.shared_name}",
                         f"native/{target.static_name}",
                         "go/go.mod",
+                        "fixtures/bindings/v1.json",
                         "go/coggate/service.go",
                         "go/examples/complete/main.go",
                         "java/coggate-java-0.1.0-SNAPSHOT.jar",
@@ -1835,7 +1838,7 @@ Dump of file coggate_ffi.dll
             " ".join(f"{key}={value}" for key, value in command.env)
             for command in plan
         )
-        for forbidden in ("/repo", "/source", "/target", "/bindings"):
+        for forbidden in ("/repo", "/source", "/target"):
             self.assertNotIn(forbidden, rendered)
         self.assertTrue(all(
             command.cwd == build or _is_within(command.cwd, artifact)
@@ -1845,7 +1848,13 @@ Dump of file coggate_ffi.dll
         self.assertIn(str(artifact / "include"), plan[0].argv)
         self.assertIn(str(artifact / "native/libcoggate_ffi.a"), plan[4].argv)
         self.assertIn("-DCOGGATE_STATIC", plan[4].argv)
-        self.assertEqual(plan[9].argv[-2:], ("--coggate-library", str(artifact / "native/libcoggate_ffi.so")))
+        self.assertEqual(
+            plan[9].argv[-4:],
+            (
+                "--coggate-library", str(artifact / "native/libcoggate_ffi.so"),
+                "--coggate-fixture", str(artifact / "fixtures/bindings/v1.json"),
+            ),
+        )
         self.assertEqual(plan[10].argv[-2:], ("--library", str(artifact / "native/libcoggate_ffi.so")))
         self.assertIn("io.github.kidjoker.coggate.examples.Complete", plan[12].argv)
         self.assertEqual(plan[12].argv[-1], str(artifact / "java/libcoggate_jni.so"))
@@ -4651,7 +4660,11 @@ def smoke_plan(
     commands.extend(
         (
             PlannedCommand(
-                (go, "test", "./...", "-args", "--coggate-library", str(shared_library)),
+                (
+                    go, "test", "./...", "-args",
+                    "--coggate-library", str(shared_library),
+                    "--coggate-fixture", str(artifact / "fixtures/bindings/v1.json"),
+                ),
                 artifact / "go", go_environment, purpose="smoke-go-test",
             ),
             PlannedCommand(
@@ -5303,6 +5316,7 @@ def _required_artifact_singletons(target: Target) -> set[str]:
         f"native/{target.shared_name}",
         f"native/{target.static_name}",
         "go/go.mod",
+        "fixtures/bindings/v1.json",
         "java/coggate-java-0.1.0-SNAPSHOT.jar",
         f"java/{JNI_SHIM_NAMES[target.system]}",
         f"java/{target.shared_name}",
@@ -5727,6 +5741,9 @@ def collect_artifact_sources(root: Path, target: Target) -> dict[str, Path]:
             root, f"target/release/{target.static_name}", "native library"
         ),
         "go/go.mod": _source_file(root, "bindings/go/go.mod"),
+        "fixtures/bindings/v1.json": _source_file(
+            root, "fixtures/bindings/v1.json"
+        ),
         "java/coggate-java-0.1.0-SNAPSHOT.jar": select_maven_main_jar(
             root / "bindings/java/target"
         ),

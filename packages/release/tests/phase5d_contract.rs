@@ -102,6 +102,7 @@ fn paths_for(target: Target) -> Vec<String> {
         "node/examples/complete.js".to_owned(),
         "node/build/Release/coggate.node".to_owned(),
         format!("node/build/Release/{shared}"),
+        "fixtures/bindings/v1.json".to_owned(),
         "smoke/abi_probe.c".to_owned(),
         "smoke/abi_probe.cpp".to_owned(),
     ];
@@ -276,6 +277,7 @@ fn python_producer_artifact_is_accepted_by_rust_verifier_and_receipt() {
         "bindings/node/examples/complete.js",
         "bindings/node/build/Release/coggate.node",
         "bindings/node/build/Release/libcoggate_ffi.so",
+        "fixtures/bindings/v1.json",
         "tests/qualification/abi_probe.c",
         "tests/qualification/abi_probe.cpp",
     ] {

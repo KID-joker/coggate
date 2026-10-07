@@ -198,6 +198,8 @@ fn build_artifact(root: &Path, target: Target, payload: Option<&[u8]>) {
             );
         } else if path == "node/package.json" {
             write(root, &path, br#"{"name":"coggate"}"#);
+        } else if path == "fixtures/bindings/v1.json" {
+            write(root, &path, b"{}\n");
         } else {
             write(root, &path, format!("payload:{path}\n").as_bytes());
         }
@@ -266,6 +268,7 @@ fn artifact_paths(target: Target) -> Vec<String> {
         "node/examples/complete.js".into(),
         "node/build/Release/coggate.node".into(),
         format!("node/build/Release/{shared}"),
+        "fixtures/bindings/v1.json".into(),
         "smoke/abi_probe.c".into(),
         "smoke/abi_probe.cpp".into(),
     ];

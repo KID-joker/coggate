@@ -416,7 +416,7 @@ mod windows_tests {
         let reparse = temp.path().join("reparse");
         match symlink_file(&file_path, &reparse) {
             Ok(()) => {
-                let metadata = fs::symlink_metadata(reparse).unwrap();
+                let metadata = fs::symlink_metadata(&reparse).unwrap();
                 assert!(is_link_or_reparse(&metadata));
                 assert!(matches!(
                     read_stable_regular(&reparse, 64),

@@ -19,6 +19,9 @@ import (
 var testCogGateLibrary = flag.String(
 	"coggate-library", "", "absolute path to the CogGate shared library",
 )
+var testCogGateFixture = flag.String(
+	"coggate-fixture", "", "absolute path to the shared binding fixture",
+)
 
 func TestMain(m *testing.M) {
 	flag.Parse()
@@ -33,6 +36,24 @@ func TestCogGateLibraryFlagIsRegistered(t *testing.T) {
 	if flag.Lookup("coggate-library") == nil {
 		t.Fatal("--coggate-library is not registered for the Go test binary")
 	}
+	if flag.Lookup("coggate-fixture") == nil {
+		t.Fatal("--coggate-fixture is not registered for the Go test binary")
+	}
+}
+
+func bindingFixturePath(t *testing.T) string {
+	t.Helper()
+	if *testCogGateFixture != "" {
+		if !filepath.IsAbs(*testCogGateFixture) {
+			t.Fatal("--coggate-fixture must be absolute")
+		}
+		return *testCogGateFixture
+	}
+	_, current, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	return filepath.Join(filepath.Dir(current), "../../../fixtures/bindings/v1.json")
 }
 
 func TestNativeABIConstantsAndLayoutsMatchFrozenHeader(t *testing.T) {
@@ -706,11 +727,7 @@ type nativeBindingFixture struct {
 
 func loadNativeBindingFixture(t *testing.T) nativeBindingFixture {
 	t.Helper()
-	_, current, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("runtime.Caller failed")
-	}
-	payload, err := os.ReadFile(filepath.Join(filepath.Dir(current), "../../../fixtures/bindings/v1.json"))
+	payload, err := os.ReadFile(bindingFixturePath(t))
 	if err != nil {
 		t.Fatalf("read binding fixture: %v", err)
 	}
