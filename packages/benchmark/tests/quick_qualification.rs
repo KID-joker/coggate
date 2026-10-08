@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, path::PathBuf, process::Command, time::Duration};
+use std::{collections::BTreeMap, process::Command, time::Duration};
 
 use coggate_benchmark::{
     baseline::direct::DirectBaseline,
@@ -10,9 +10,10 @@ use coggate_benchmark::{
 };
 
 fn rejecting_direct() -> DirectBaseline {
+    let executable = std::env::current_exe().unwrap();
     let programs = ["c", "cpp", "go", "java", "rust"]
         .into_iter()
-        .map(|name| (ToolId::new(name).unwrap(), PathBuf::from("/usr/bin/false")))
+        .map(|name| (ToolId::new(name).unwrap(), executable.clone()))
         .collect::<BTreeMap<_, _>>();
     DirectBaseline::new(
         ProcessRunner::new(
