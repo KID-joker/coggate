@@ -29,7 +29,7 @@
         "msvs_settings": { "VCCLCompilerTool": {
           "ExceptionHandling": 1,
           "WarningLevel": 4,
-          "TreatWarningAsError": True,
+          "TreatWarningAsError": "true",
           "AdditionalOptions": ["/std:c++17"]
         }},
         "copies": [{

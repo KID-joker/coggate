@@ -304,7 +304,7 @@ test('binding config guards Darwin tooling and declares synchronized native stat
     gyp,
     /"inputs": \["<\(PRODUCT_DIR\)\/coggate\.node", "<\(coggate_library_path\)"\]/,
   );
-  assert.match(gyp, /\["OS=='win'",\s*\{[\s\S]*?"ExceptionHandling":\s*1[\s\S]*?"WarningLevel":\s*4[\s\S]*?"TreatWarningAsError":\s*True[\s\S]*?"AdditionalOptions":\s*\["\/std:c\+\+17"\]/);
+  assert.match(gyp, /\["OS=='win'",\s*\{[\s\S]*?"ExceptionHandling":\s*1[\s\S]*?"WarningLevel":\s*4[\s\S]*?"TreatWarningAsError":\s*"true"[\s\S]*?"AdditionalOptions":\s*\["\/std:c\+\+17"\]/);
   assert.match(gyp, /\["OS=='win'",/);
   assert.doesNotMatch(gyp, /STATIC/);
   assert.match(addonSource, /std::mutex/);
