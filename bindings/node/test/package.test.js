@@ -7,6 +7,10 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const npmCli = process.env.npm_execpath
+  ?? resolve(dirname(process.execPath), process.platform === 'win32'
+    ? 'node_modules/npm/bin/npm-cli.js'
+    : '../lib/node_modules/npm/bin/npm-cli.js');
 const runtime = {
   darwin: 'libcoggate_ffi.dylib',
   linux: 'libcoggate_ffi.so',
@@ -30,6 +34,10 @@ function run(command, args, options = {}) {
   });
 }
 
+function runNpm(args, options = {}) {
+  return run(process.execPath, [npmCli, ...args], options);
+}
+
 test('npm pack fails closed when native package artifacts are absent', async (context) => {
   if (runtime === undefined) return context.skip(`unsupported platform ${process.platform}`);
   for (const missing of ['addon', 'runtime']) {
@@ -43,7 +51,7 @@ test('npm pack fails closed when native package artifacts are absent', async (co
         await mkdir(join(temporary, 'build/Release'), { recursive: true });
         await writeFile(join(temporary, 'build/Release/coggate.node'), 'addon');
       }
-      const packed = run('npm', ['pack', '--json'], {
+      const packed = runNpm(['pack', '--json'], {
         cwd: temporary,
         env: { ...cleanEnvironment(), npm_config_cache: join(temporary, '.npm-cache') },
       });
@@ -65,7 +73,7 @@ test('packed SDK installs and runs by package name without external loader paths
       ...cleanEnvironment(),
       npm_config_cache: join(temporary, '.npm-cache'),
     };
-    const packed = run('npm', ['pack', '--json', '--pack-destination', temporary], {
+    const packed = runNpm(['pack', '--json', '--pack-destination', temporary], {
       cwd: root,
       env: npmEnvironment,
     });
@@ -81,7 +89,7 @@ test('packed SDK installs and runs by package name without external loader paths
     await mkdir(consumer);
     await writeFile(join(consumer, 'package.json'),
       JSON.stringify({ name: 'consumer', private: true, type: 'module' }));
-    const installed = run('npm', [
+    const installed = runNpm([
       'install', '--ignore-scripts=false', '--no-audit', '--no-fund', tarball,
     ], { cwd: consumer, env: npmEnvironment });
     assert.equal(installed.status, 0, installed.stderr + installed.stdout);
