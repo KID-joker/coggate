@@ -27,6 +27,11 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 PHASE5D_WORKFLOW = ROOT / ".github" / "workflows" / "cross-platform-qualification.yml"
+WINDOWS_STATIC_SYSTEM_LIBRARIES = (
+    "ws2_32.lib",
+    "userenv.lib",
+    "ntdll.lib",
+)
 
 
 def read_phase5d_workflow() -> str:
@@ -1798,6 +1803,14 @@ Dump of file coggate_ffi.dll
         self.assertNotIn("/DCOGGATE_STATIC", c_shared.argv)
         self.assertIn(str(artifacts / "coggate_ffi.lib"), c_static.argv)
         self.assertIn("/DCOGGATE_STATIC", c_static.argv)
+        for command in (c_static, cpp_static):
+            self.assertEqual(
+                command.argv[-len(WINDOWS_STATIC_SYSTEM_LIBRARIES):],
+                WINDOWS_STATIC_SYSTEM_LIBRARIES,
+            )
+        for command in (c_shared, cpp_shared):
+            for library in WINDOWS_STATIC_SYSTEM_LIBRARIES:
+                self.assertNotIn(library, command.argv)
         for command in (c_shared, cpp_shared, c_static, cpp_static):
             self.assertTrue(any(arg.startswith("/Fo") for arg in command.argv))
             self.assertTrue(any(arg.startswith("/Fe") for arg in command.argv))
@@ -4498,6 +4511,8 @@ def _probe_compile_command(
         arguments.extend(
             [str(source), f"/Fo{object_path}", f"/Fe{output}", str(link_library)]
         )
+        if linkage == "static":
+            arguments.extend(WINDOWS_STATIC_SYSTEM_LIBRARIES)
     else:
         arguments = [
             compiler,

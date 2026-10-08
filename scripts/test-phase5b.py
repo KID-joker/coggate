@@ -691,6 +691,14 @@ class RunnerSelfTests(unittest.TestCase):
         self.assertNotIn("NLOHMANN_JSON_INCLUDE_DIR", root_cmake)
         self.assertIn("nlohmann_json::nlohmann_json", cpp_cmake)
 
+    def test_windows_static_cmake_target_propagates_native_system_libraries(self):
+        root_cmake = (BINDINGS_DIR / "CMakeLists.txt").read_text(encoding="utf-8")
+
+        self.assertIn(
+            "target_link_libraries(coggate_ffi INTERFACE ws2_32 userenv ntdll)",
+            root_cmake,
+        )
+
     def test_platform_release_library_names_are_exact(self):
         self.assertEqual(platform_library_name("Linux"), "libcoggate_ffi.so")
         self.assertEqual(platform_library_name("Darwin"), "libcoggate_ffi.dylib")
