@@ -829,7 +829,10 @@ fn remove_owned_tree(path: &Path) -> Result<(), BundleError> {
 }
 fn sync_tree(root: &Path) -> Result<(), BundleError> {
     for path in walk_regular(root)?.keys() {
-        File::open(root.join(path))
+        fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(root.join(path))
             .and_then(|file| file.sync_all())
             .map_err(|_| BundleError::Infrastructure)?;
     }
@@ -965,7 +968,7 @@ fn publish_no_replace(staging: &Path, destination: &Path) -> Result<(), BundleEr
 mod tests {
     use super::{
         BundleError, BundleFile, MANIFEST, SUMS, cleanup_owned, create_staging, hash_path,
-        recheck_snapshot, walk_regular,
+        recheck_snapshot, sync_tree, walk_regular,
     };
     use std::fs;
 
@@ -990,6 +993,15 @@ mod tests {
             create_staging(&not_a_directory),
             Err(BundleError::Infrastructure)
         ));
+    }
+
+    #[test]
+    fn sync_tree_flushes_staged_regular_files() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("nested")).unwrap();
+        fs::write(root.path().join("nested/payload"), b"payload").unwrap();
+
+        sync_tree(root.path()).unwrap();
     }
 
     #[test]
