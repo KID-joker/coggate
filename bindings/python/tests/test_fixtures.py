@@ -8,6 +8,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[3]
+ATTRIBUTES = ROOT / ".gitattributes"
 FIXTURE = ROOT / "fixtures" / "bindings" / "v1.json"
 HEADER = ROOT / "bindings" / "c" / "tests" / "generated_fixtures.h"
 GENERATOR = ROOT / "bindings" / "c" / "tools" / "generate_fixtures.py"
@@ -78,6 +79,14 @@ class SharedBindingFixtureContractTests(unittest.TestCase):
         self.assertNotIn(
             b'{\\"reason\\":\\"already_consumed\\",\\"status\\":\\"rejected\\"}',
             generated,
+        )
+
+    def test_generated_header_is_checked_out_with_canonical_line_endings(self):
+        attributes = ATTRIBUTES.read_text(encoding="utf-8").splitlines()
+
+        self.assertIn(
+            "bindings/c/tests/generated_fixtures.h text eol=lf",
+            attributes,
         )
 
     def test_manifest_has_exact_schema_and_required_scenarios(self):
