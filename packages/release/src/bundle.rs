@@ -2,7 +2,7 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs::{self, File, Metadata},
+    fs::{self, Metadata},
     io::Write,
     path::{Path, PathBuf},
 };
@@ -852,7 +852,7 @@ fn sync_directories(directory: &Path) -> Result<(), BundleError> {
         }
     }
     #[cfg(unix)]
-    File::open(directory)
+    fs::File::open(directory)
         .and_then(|file| file.sync_all())
         .map_err(|_| BundleError::Infrastructure)?;
     Ok(())
