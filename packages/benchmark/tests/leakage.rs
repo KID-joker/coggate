@@ -1,4 +1,4 @@
-use std::{path::PathBuf, time::Duration};
+use std::time::Duration;
 
 use coggate_benchmark::{
     baseline::direct::DirectBaseline,
@@ -29,9 +29,10 @@ fn answers(suite: &SuiteManifest) -> Vec<String> {
 }
 
 fn rejecting_direct() -> DirectBaseline {
+    let executable = std::env::current_exe().unwrap();
     let programs = ["c", "cpp", "go", "java", "rust"]
         .into_iter()
-        .map(|name| (ToolId::new(name).unwrap(), PathBuf::from("/usr/bin/false")))
+        .map(|name| (ToolId::new(name).unwrap(), executable.clone()))
         .collect();
     DirectBaseline::new(
         ProcessRunner::new(
