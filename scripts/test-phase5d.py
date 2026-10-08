@@ -2895,7 +2895,7 @@ Dump of file coggate_ffi.dll
         )
         self.assertEqual(phase5c.argv[-1], str(artifacts / "coggate_ffi.dll"))
         self.assertEqual(dict(phase5b_dynamic.env)["CC"], "/tools/cc")
-        self.assertEqual(dict(phase5c.env)["CXX"], "/tools/cxx")
+        self.assertEqual(phase5c.env, ())
 
     def test_run_command_preserves_environment_and_never_uses_a_shell(self):
         command = PlannedCommand(
@@ -4925,6 +4925,9 @@ def qualification_plan(
         ("CC", capabilities["cc"].path or ""),
         ("CXX", capabilities["cxx"].path or ""),
     )
+    phase5c_environment = (
+        () if target.system == "Windows" else compiler_environment
+    )
     cargo_environment = (("CARGO_TARGET_DIR", str(artifact_directory.parent)),)
     cargo_commands = [
         PlannedCommand(("cargo", "fmt", "--check"), root, cargo_environment),
@@ -4985,7 +4988,7 @@ def qualification_plan(
                 str(shared_library),
             ),
             root,
-            compiler_environment,
+            phase5c_environment,
         ),
         PlannedCommand(
             (
