@@ -149,7 +149,10 @@ def windows_library_artifacts(library, static):
 
 
 def _cmake_build(library, runtime_library, static, dry_run, system):
-    with tempfile.TemporaryDirectory(prefix="coggate-phase5b-cmake-") as directory:
+    temporary_options = {"prefix": "coggate-phase5b-cmake-"}
+    if system == "Windows" and sys.version_info >= (3, 10):
+        temporary_options["ignore_cleanup_errors"] = True
+    with tempfile.TemporaryDirectory(**temporary_options) as directory:
         build = Path(directory)
         configure = [
             "cmake",
@@ -346,11 +349,17 @@ def parse_args(argv):
 class RunnerSelfTests(unittest.TestCase):
     def test_windows_cmake_uses_release_configuration_for_build_and_ctest(self):
         commands = []
+        temporary_context = mock.MagicMock()
+        temporary_context.__enter__.return_value = "/temporary/cmake-build"
         with mock.patch.object(
+            tempfile,
+            "TemporaryDirectory",
+            return_value=temporary_context,
+        ) as temporary_directory, mock.patch.object(
             sys.modules[__name__],
             "_run",
             side_effect=lambda command, *args, **kwargs: commands.append(command),
-        ):
+        ), mock.patch.object(sys, "version_info", (3, 11)):
             _cmake_build(
                 Path("coggate_ffi.lib"),
                 None,
@@ -363,6 +372,26 @@ class RunnerSelfTests(unittest.TestCase):
         ctest = next(command for command in commands if command[0] == "ctest")
         self.assertEqual(build[-2:], ["--config", "Release"])
         self.assertEqual(ctest[-2:], ["-C", "Release"])
+        temporary_directory.assert_called_once_with(
+            prefix="coggate-phase5b-cmake-",
+            ignore_cleanup_errors=True,
+        )
+
+    def test_non_windows_cmake_cleanup_errors_remain_visible(self):
+        temporary_context = mock.MagicMock()
+        temporary_context.__enter__.return_value = "/temporary/cmake-build"
+        with mock.patch.object(
+            tempfile,
+            "TemporaryDirectory",
+            return_value=temporary_context,
+        ) as temporary_directory, mock.patch.object(
+            sys.modules[__name__], "_run"
+        ):
+            _cmake_build(Path("libcoggate_ffi.so"), None, False, True, "Linux")
+
+        temporary_directory.assert_called_once_with(
+            prefix="coggate-phase5b-cmake-",
+        )
 
     def test_c_complete_example_is_registered_with_ctest(self):
         c_cmake = (BINDINGS_DIR / "c" / "CMakeLists.txt").read_text(
