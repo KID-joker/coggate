@@ -78,14 +78,12 @@ fn rejects_unknown_fields_and_invalid_thresholds() {
 #[test]
 fn rejects_incomplete_keys_and_overlapping_namespaces() {
     let source = include_str!("../../../benchmarks/suites/v1.json");
-    let missing = source.replace(
-        concat!(
-            "    \"regex\": { \"comparison\": \"at_most\", \"percent\": 1 },\n",
-            "    \"simple_parser\": { \"comparison\": \"at_most\", \"percent\": 1 }\n",
-        ),
-        "    \"regex\": { \"comparison\": \"at_most\", \"percent\": 1 }\n",
-    );
-    assert_ne!(missing, source);
+    let mut missing: serde_json::Value = serde_json::from_str(source).unwrap();
+    missing["thresholds"]
+        .as_object_mut()
+        .unwrap()
+        .remove("simple_parser");
+    let missing = serde_json::to_string(&missing).unwrap();
     assert!(SuiteManifest::parse(&missing).is_err());
 
     let overlapping = source.replace("phase6a-calibration-v1", "phase6a-scored-v1");
