@@ -703,7 +703,7 @@ fn repository_metadata_and_readme_use_canonical_coggate_urls() {
     let root = repository_root(Path::new(env!("CARGO_MANIFEST_DIR")));
     let repository = "https://github.com/KID-joker/coggate";
     let readme = fs::read_to_string(root.join("README.md")).unwrap();
-    assert!(readme.starts_with("# CogGate\n"));
+    assert_eq!(readme.lines().next(), Some("# CogGate"));
     assert!(readme.contains(&format!("[repository]: {repository}")));
     assert!(readme.contains(&format!("git clone {repository}.git")));
 
@@ -732,8 +732,9 @@ fn repository_metadata_and_readme_use_canonical_coggate_urls() {
 fn publishing_metadata_uses_the_root_mit_license() {
     let root = repository_root(Path::new(env!("CARGO_MANIFEST_DIR")));
     let license = fs::read_to_string(root.join("LICENSE")).expect("LICENSE must be readable");
-    assert!(
-        license.starts_with("MIT License\n"),
+    assert_eq!(
+        license.lines().next(),
+        Some("MIT License"),
         "LICENSE must start with the MIT License heading"
     );
     for required_notice_text in [

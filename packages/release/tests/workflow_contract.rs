@@ -2,7 +2,9 @@ use std::{fs, path::PathBuf};
 
 fn workflow() -> String {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    fs::read_to_string(root.join(".github/workflows/release-gate.yml")).unwrap()
+    fs::read_to_string(root.join(".github/workflows/release-gate.yml"))
+        .unwrap()
+        .replace("\r\n", "\n")
 }
 
 #[test]

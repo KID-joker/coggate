@@ -4,7 +4,9 @@ fn workflow(name: &str) -> String {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../.github/workflows")
         .join(name);
-    fs::read_to_string(path).expect("producer workflow must exist")
+    fs::read_to_string(path)
+        .expect("producer workflow must exist")
+        .replace("\r\n", "\n")
 }
 
 fn top_level_mapping(source: &str, key: &str) -> String {

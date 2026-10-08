@@ -3,7 +3,9 @@ use std::path::PathBuf;
 fn workflow() -> String {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../.github/workflows/adversarial-benchmark.yml");
-    std::fs::read_to_string(path).expect("adversarial benchmark workflow must exist")
+    std::fs::read_to_string(path)
+        .expect("adversarial benchmark workflow must exist")
+        .replace("\r\n", "\n")
 }
 
 #[test]
