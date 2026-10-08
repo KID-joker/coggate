@@ -26,6 +26,10 @@ using ServiceVerify = ag_status (COGGATE_CALL *)(
     ag_service *, ag_byte_slice, ag_byte_slice, ag_owned_buffer *
 );
 
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4232)
+#endif
 static AbiVersion const ABI_VERSION = &ag_abi_version;
 static CoreVersion const CORE_VERSION = &ag_core_version;
 static BufferFree const BUFFER_FREE = &ag_buffer_free;
@@ -33,6 +37,9 @@ static ServiceCreate const SERVICE_CREATE = &ag_service_create;
 static ServiceDestroy const SERVICE_DESTROY = &ag_service_destroy;
 static ServiceIssue const SERVICE_ISSUE = &ag_service_issue;
 static ServiceVerify const SERVICE_VERIFY = &ag_service_verify;
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 static volatile bool link_all_exports = false;
 
 int main() {
