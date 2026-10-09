@@ -34,6 +34,17 @@ WINDOWS_STATIC_SYSTEM_LIBRARIES = (
 )
 
 
+def _configure_text_output(stream) -> None:
+    """Keep CLI diagnostics writable on legacy Windows console encodings."""
+    reconfigure = getattr(stream, "reconfigure", None)
+    if reconfigure is None:
+        return
+    try:
+        reconfigure(errors="backslashreplace")
+    except (OSError, ValueError):
+        pass
+
+
 def read_phase5d_workflow() -> str:
     try:
         return PHASE5D_WORKFLOW.read_text(encoding="utf-8")
@@ -2913,6 +2924,16 @@ Dump of file coggate_ffi.dll
         self.assertEqual(kwargs["env"]["PRESERVED"], "yes")
         self.assertEqual(kwargs["env"]["EXTRA"], "value")
         self.assertEqual(stdout.getvalue(), "+ tool 'an argument'\n")
+
+    def test_cli_output_escapes_unicode_unsupported_by_console_encoding(self):
+        output = io.BytesIO()
+        stream = io.TextIOWrapper(output, encoding="cp1252")
+        _configure_text_output(stream)
+        stream.write("路径 Ω")
+        stream.flush()
+        self.assertEqual(
+            output.getvalue(), b"\\u8def\\u5f84 \\u03a9"
+        )
 
     def test_nonzero_command_error_names_command_and_exit_code(self):
         with contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(
@@ -7135,6 +7156,8 @@ def _run_self_tests() -> int:
 
 
 if __name__ == "__main__":
+    _configure_text_output(sys.stdout)
+    _configure_text_output(sys.stderr)
     try:
         raise SystemExit(main())
     except RunnerError as error:
