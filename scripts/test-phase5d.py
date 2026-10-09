@@ -2332,6 +2332,7 @@ Dump of file coggate_ffi.dll
                 "-f",
                 "/repo/bindings/java/pom.xml",
                 "-DskipTests",
+                "clean",
                 "package",
             )
         )
@@ -4996,6 +4997,7 @@ def qualification_plan(
                 "-f",
                 str(root / "bindings" / "java" / "pom.xml"),
                 "-DskipTests",
+                "clean",
                 "package",
             ),
             root,
