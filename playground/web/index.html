@@ -59,9 +59,12 @@
                 <span class="eyebrow">PUBLIC PREVIEW</span>
                 <h1>Break the generated challenge</h1>
               </div>
-              <div class="refresh-clock" title="This preview remains fixed for the current round">
-                <span>PREVIEW</span>
-                <strong>FIXED FOR ROUND</strong>
+              <div class="problem-heading__actions">
+                <button id="copy-question" class="copy-question" type="button" disabled>Copy question</button>
+                <div class="refresh-clock" title="This preview remains fixed for the current round">
+                  <span>PREVIEW</span>
+                  <strong>FIXED FOR ROUND</strong>
+                </div>
               </div>
             </div>
             <div class="notice-card">
@@ -72,6 +75,17 @@
               <i></i><i></i><i></i><i></i><i></i>
             </div>
             <pre id="preview" class="challenge-text" hidden></pre>
+            <form id="answer-checker" class="answer-checker" aria-label="Check preview answer">
+              <label for="preview-answer">
+                <span class="eyebrow">QUICK CHECK</span>
+                <strong>Validate an answer against this preview</strong>
+              </label>
+              <div class="answer-checker__controls">
+                <input id="preview-answer" type="text" maxlength="256" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="e.g. U29mNFo4NWVk" aria-describedby="answer-feedback" />
+                <button id="verify-answer" type="submit" disabled>Verify answer</button>
+              </div>
+              <p id="answer-feedback" class="answer-feedback" role="status" aria-live="polite">Enter an unpadded base64url answer to check it without using your submission quota.</p>
+            </form>
             <div class="challenge-meta">
               <span>Encoding <strong>base64url</strong></span>
               <span>Network <strong>disabled</strong></span>
@@ -108,7 +122,6 @@
                 <select id="language" aria-label="Programming language"></select>
               </label>
               <button id="reset-code" class="toolbar-button" type="button">Reset template</button>
-              <button id="toggle-focus" class="toolbar-button" type="button">Focus mode</button>
             </div>
           </div>
           <div id="editor" class="editor" aria-label="Code editor"></div>

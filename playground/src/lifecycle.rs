@@ -1,10 +1,13 @@
 use coggate_core::{
     ActiveMacKey, AttemptLimit, AttemptOutcome, BeginAttemptError, KeyProviderError,
     LifecycleAdapter, LifecycleAdapterError, LifecycleRejection, MacKey, MacKeyProvider,
-    PendingAttempt, PrivateChallengeMaterial, SubmissionIdentity,
+    PendingAttempt, PrivateChallengeMaterial, Submission, SubmissionIdentity,
 };
 use rusqlite::{OptionalExtension, TransactionBehavior, params};
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 use subtle::ConstantTimeEq;
 
 use crate::{
@@ -34,6 +37,77 @@ impl StaticKeyring {
             MacKey::new(key.clone())?;
         }
         Ok(Self { active_id, keys })
+    }
+
+    pub fn verify_answer(
+        &self,
+        material: &PrivateChallengeMaterial,
+        submission: &Submission,
+    ) -> Result<(), coggate_core::CoreError> {
+        let key = self
+            .keys
+            .get(&material.mac_key_id)
+            .ok_or(coggate_core::CoreError::InvalidChallengeMaterial)?;
+        coggate_core::verify_answer(key, material, submission)
+    }
+}
+
+#[derive(Clone)]
+pub struct PreviewLifecycle {
+    inner: SqliteLifecycle,
+    material: Arc<Mutex<Option<PrivateChallengeMaterial>>>,
+}
+
+impl PreviewLifecycle {
+    pub fn new(database: Database) -> Self {
+        Self {
+            inner: SqliteLifecycle::new(database),
+            material: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    pub fn material(&self) -> Option<PrivateChallengeMaterial> {
+        self.material.lock().ok()?.clone()
+    }
+}
+
+impl LifecycleAdapter for PreviewLifecycle {
+    type AttemptToken = SqliteAttemptToken;
+
+    fn store_issued(
+        &mut self,
+        material: PrivateChallengeMaterial,
+        binding: &[u8],
+        attempt_limit: AttemptLimit,
+    ) -> Result<(), LifecycleAdapterError> {
+        self.inner
+            .store_issued(material.clone(), binding, attempt_limit)?;
+        let mut stored = self
+            .material
+            .lock()
+            .map_err(|_| LifecycleAdapterError::Unavailable)?;
+        if stored.is_some() {
+            return Err(LifecycleAdapterError::Conflict);
+        }
+        *stored = Some(material);
+        Ok(())
+    }
+
+    fn begin_attempt(
+        &mut self,
+        identity: SubmissionIdentity<'_>,
+        binding: &[u8],
+        server_time: i64,
+    ) -> Result<PendingAttempt<Self::AttemptToken>, BeginAttemptError> {
+        self.inner.begin_attempt(identity, binding, server_time)
+    }
+
+    fn finish_attempt(
+        &mut self,
+        token: Self::AttemptToken,
+        outcome: AttemptOutcome,
+    ) -> Result<(), LifecycleAdapterError> {
+        self.inner.finish_attempt(token, outcome)
     }
 }
 
@@ -276,7 +350,8 @@ mod tests {
     use std::collections::HashMap;
 
     use coggate_core::{
-        ChallengeService, IssueRequest, Submission, VerificationOutcome, VerifyRequest,
+        ChallengeService, CoreError, IssueRequest, MacContext, Submission, VerificationOutcome,
+        VerifyRequest, compute_answer_mac, contracts::AnswerEncoding,
     };
 
     use super::*;
@@ -319,6 +394,78 @@ mod tests {
         assert_eq!(
             keyring.key_by_id("missing").unwrap_err(),
             KeyProviderError::NotFound
+        );
+    }
+
+    #[test]
+    fn preview_lifecycle_captures_private_material_without_consuming_it() {
+        let lifecycle = PreviewLifecycle::new(Database::open_in_memory().unwrap());
+        let capture = lifecycle.clone();
+        let mut service = ChallengeService::new(
+            lifecycle,
+            StaticKeyring::new("key-v1".into(), vec![7; 32]).unwrap(),
+        );
+        let challenge = service
+            .issue_challenge(IssueRequest::v1(b"preview:round:1").unwrap())
+            .unwrap();
+        let material = capture.material().expect("private material is captured");
+
+        assert_eq!(material.challenge_id, challenge.challenge_id);
+        assert_eq!(material.nonce, challenge.nonce);
+        let serialized = serde_json::to_string(&crate::model::PreviewView {
+            round_id: "round-1".into(),
+            epoch: 1,
+            challenge,
+            private_material: material,
+        })
+        .unwrap();
+        assert!(!serialized.contains("answer_mac"));
+        assert!(!serialized.contains("mac_key_id"));
+    }
+
+    #[test]
+    fn keyring_checks_preview_answers_repeatedly() {
+        let key = vec![9; 32];
+        let answer = "U29mNFo4NWVk";
+        let context = MacContext {
+            challenge_id: "preview-challenge".into(),
+            generator_version: "1.0".into(),
+            nonce: "preview-nonce".into(),
+            issued_at: 10,
+            expires_at: 20,
+            mac_key_id: "key-v1".into(),
+            answer_encoding: AnswerEncoding::Base64Url,
+        };
+        let material = PrivateChallengeMaterial {
+            challenge_id: context.challenge_id.clone(),
+            generator_version: context.generator_version.clone(),
+            nonce: context.nonce.clone(),
+            issued_at: context.issued_at,
+            expires_at: context.expires_at,
+            mac_key_id: context.mac_key_id.clone(),
+            answer_mac: hex::encode(compute_answer_mac(&key, &context, answer).unwrap()),
+            answer_encoding: context.answer_encoding,
+        };
+        let keyring = StaticKeyring::new("key-v1".into(), key).unwrap();
+        let submission = Submission {
+            challenge_id: material.challenge_id.clone(),
+            nonce: material.nonce.clone(),
+            answer: answer.into(),
+        };
+
+        assert!(keyring.verify_answer(&material, &submission).is_ok());
+        assert!(keyring.verify_answer(&material, &submission).is_ok());
+        assert_eq!(
+            keyring
+                .verify_answer(
+                    &material,
+                    &Submission {
+                        answer: "AA".into(),
+                        ..submission
+                    },
+                )
+                .unwrap_err(),
+            CoreError::AnswerMismatch
         );
     }
 }

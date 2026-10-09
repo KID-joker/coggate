@@ -17,6 +17,7 @@ import type {
   Language,
   Me,
   Preview,
+  PreviewVerification,
   Quota,
   Submission,
 } from './types';
@@ -322,14 +323,72 @@ async function loadPreview(): Promise<void> {
     element('preview').textContent = state.preview.challenge.question;
     element('preview').hidden = false;
     element('preview-skeleton').hidden = true;
+    element<HTMLButtonElement>('verify-answer').disabled = false;
+    element<HTMLButtonElement>('copy-question').disabled = false;
   } catch (error) {
     if (error instanceof ApiError && error.status === 404) {
+      state.preview = null;
       element('preview').textContent = 'No preview is available for the current round.';
       element('preview').hidden = false;
       element('preview-skeleton').hidden = true;
+      element<HTMLButtonElement>('verify-answer').disabled = true;
+      element<HTMLButtonElement>('copy-question').disabled = true;
       return;
     }
     throw error;
+  }
+}
+
+async function copyPreviewQuestion(): Promise<void> {
+  const question = state.preview?.challenge.question;
+  if (!question) return;
+  const button = element<HTMLButtonElement>('copy-question');
+  try {
+    await navigator.clipboard.writeText(question);
+    button.textContent = 'Copied';
+    showToast('Preview question copied to clipboard.');
+    window.setTimeout(() => {
+      button.textContent = 'Copy question';
+    }, 1600);
+  } catch {
+    showToast('Could not copy the preview question.', 'error');
+  }
+}
+
+async function verifyPreviewAnswer(): Promise<void> {
+  const input = element<HTMLInputElement>('preview-answer');
+  const button = element<HTMLButtonElement>('verify-answer');
+  const feedback = element('answer-feedback');
+  const answer = input.value.trim();
+  feedback.className = 'answer-feedback';
+  if (!answer) {
+    feedback.textContent = 'Enter an answer before checking it.';
+    feedback.classList.add('is-error');
+    input.focus();
+    return;
+  }
+
+  button.disabled = true;
+  button.textContent = 'Checking…';
+  try {
+    const result = await api<PreviewVerification>('/api/v1/arena/preview/verify', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ answer }),
+    });
+    feedback.textContent = result.correct
+      ? 'Correct — this answer matches the preview challenge.'
+      : 'Incorrect — this answer does not match the preview challenge.';
+    feedback.classList.add(result.correct ? 'is-success' : 'is-error');
+  } catch (error) {
+    const code = error instanceof ApiError ? error.body.error : '';
+    feedback.textContent = code === 'invalid_answer_encoding'
+      ? 'Use canonical base64url without padding.'
+      : 'Could not check the answer. Try again.';
+    feedback.classList.add('is-error');
+  } finally {
+    button.disabled = state.preview === null;
+    button.textContent = 'Verify answer';
   }
 }
 
@@ -530,7 +589,6 @@ function setupResizers(): void {
   const column = element('column-resizer');
   const consoleResizer = element('console-resizer');
   column.addEventListener('pointerdown', (event) => {
-    if (shell.classList.contains('is-focused')) return;
     column.setPointerCapture(event.pointerId);
     document.body.classList.add('is-resizing-columns');
   });
@@ -576,14 +634,19 @@ function setupInteractions(): void {
     state.editor?.setValue(templates[state.language]);
     state.editor?.focus();
   });
-  element('toggle-focus').addEventListener('click', () => {
-    const focused = element('app').classList.toggle('is-focused');
-    element('toggle-focus').textContent = focused ? 'Exit focus' : 'Focus mode';
-    window.setTimeout(() => state.editor?.layout(), 10);
-  });
   element('consent').addEventListener('change', updateSubmitButton);
   element('submit').addEventListener('click', () => void submit());
   element('clear-result').addEventListener('click', clearResult);
+  element('copy-question').addEventListener('click', () => void copyPreviewQuestion());
+  element('answer-checker').addEventListener('submit', (event) => {
+    event.preventDefault();
+    void verifyPreviewAnswer();
+  });
+  element('preview-answer').addEventListener('input', () => {
+    const feedback = element('answer-feedback');
+    feedback.className = 'answer-feedback';
+    feedback.textContent = 'Enter an unpadded base64url answer to check it without using your submission quota.';
+  });
   element('logout').addEventListener('click', async () => {
     await api<void>('/api/v1/logout', { method: 'POST' });
     state.me = null;

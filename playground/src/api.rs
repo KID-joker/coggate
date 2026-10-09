@@ -11,7 +11,7 @@ use axum::{
     },
     routing::{get, post},
 };
-use coggate_core::{ChallengeService, IssueRequest};
+use coggate_core::{ChallengeService, CoreError, IssueRequest, Submission};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{RwLock, broadcast};
 use tokio_stream::{StreamExt, wrappers::BroadcastStream};
@@ -22,7 +22,7 @@ use crate::{
     db::Database,
     error::{ArenaError, ArenaResult},
     github::{GitHubClient, GitHubClientConfig},
-    lifecycle::{SqliteLifecycle, StaticKeyring},
+    lifecycle::{PreviewLifecycle, StaticKeyring},
     model::{Language, PreviewView},
     runner::RunnerClient,
     util::now_unix,
@@ -100,8 +100,9 @@ impl AppState {
                         if !already_generated {
                             *preview_state.preview.write().await = None;
                             let binding = format!("preview:{}", round.id);
+                            let lifecycle = PreviewLifecycle::new(preview_state.database.clone());
                             let mut service = ChallengeService::new(
-                                SqliteLifecycle::new(preview_state.database.clone()),
+                                lifecycle.clone(),
                                 preview_state.keys.clone(),
                             );
                             match IssueRequest::v1(binding.as_bytes())
@@ -110,11 +111,16 @@ impl AppState {
                                     service.issue_challenge(request).map_err(|_| ())
                                 }) {
                                 Ok(challenge) => {
-                                    *preview_state.preview.write().await = Some(PreviewView {
-                                        round_id: round.id,
-                                        epoch: round.epoch,
-                                        challenge,
-                                    });
+                                    if let Some(private_material) = lifecycle.material() {
+                                        *preview_state.preview.write().await = Some(PreviewView {
+                                            round_id: round.id,
+                                            epoch: round.epoch,
+                                            challenge,
+                                            private_material,
+                                        });
+                                    } else {
+                                        tracing::warn!("preview material capture failed");
+                                    }
                                 }
                                 Err(()) => tracing::warn!("preview generation failed"),
                             }
@@ -147,6 +153,7 @@ pub fn router(state: AppState) -> Router {
         .route("/healthz", get(healthz))
         .route("/api/v1/arena", get(arena))
         .route("/api/v1/arena/preview", get(preview))
+        .route("/api/v1/arena/preview/verify", post(verify_preview))
         .route("/api/v1/arena/events", get(arena_events))
         .route("/auth/github/start", get(github_start))
         .route("/auth/github/callback", get(github_callback))
@@ -243,6 +250,46 @@ async fn preview(State(state): State<AppState>) -> ArenaResult<Response> {
         HeaderValue::from_str(&etag).map_err(|_| ArenaError::Internal)?,
     );
     Ok(response)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VerifyPreviewRequest {
+    answer: String,
+}
+
+#[derive(Serialize)]
+struct VerifyPreviewResponse {
+    correct: bool,
+}
+
+async fn verify_preview(
+    State(state): State<AppState>,
+    Json(request): Json<VerifyPreviewRequest>,
+) -> ArenaResult<Json<VerifyPreviewResponse>> {
+    let preview = state
+        .preview
+        .read()
+        .await
+        .clone()
+        .ok_or(ArenaError::NotFound)?;
+    let submission = Submission {
+        challenge_id: preview.challenge.challenge_id.clone(),
+        nonce: preview.challenge.nonce.clone(),
+        answer: request.answer,
+    };
+    let correct = match state
+        .keys
+        .verify_answer(&preview.private_material, &submission)
+    {
+        Ok(()) => true,
+        Err(CoreError::AnswerMismatch) => false,
+        Err(CoreError::InvalidAnswerEncoding) => {
+            return Err(ArenaError::InvalidRequest("invalid_answer_encoding"));
+        }
+        Err(CoreError::InvalidChallengeMaterial) => return Err(ArenaError::Internal),
+    };
+    Ok(Json(VerifyPreviewResponse { correct }))
 }
 
 async fn arena_events(
@@ -472,6 +519,9 @@ mod tests {
         assert_eq!(content_type, "text/html; charset=utf-8");
         assert!(index.contains("CogGate Playground"));
         assert!(index.contains("id=\"editor\""));
+        assert!(index.contains("id=\"preview-answer\""));
+        assert!(index.contains("id=\"verify-answer\""));
+        assert!(index.contains("id=\"copy-question\""));
         assert!(index.contains("FIXED FOR ROUND"));
         assert!(!index.contains("refresh-countdown"));
         assert!(embedded_asset("../Cargo.toml").is_none());

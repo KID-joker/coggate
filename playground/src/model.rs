@@ -1,4 +1,4 @@
-use coggate_contracts::PublicChallenge;
+use coggate_contracts::{PrivateChallengeMaterial, PublicChallenge};
 use serde::{Deserialize, Serialize};
 
 pub const DAILY_LIMIT: i64 = 10;
@@ -107,6 +107,8 @@ pub struct PreviewView {
     pub round_id: String,
     pub epoch: i64,
     pub challenge: PublicChallenge,
+    #[serde(skip)]
+    pub private_material: PrivateChallengeMaterial,
 }
 
 #[derive(Clone, Debug)]

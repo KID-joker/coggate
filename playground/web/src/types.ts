@@ -41,6 +41,10 @@ export interface Preview {
   challenge: Challenge;
 }
 
+export interface PreviewVerification {
+  correct: boolean;
+}
+
 export interface Me {
   github_id: number;
   github_login: string;
