@@ -1960,6 +1960,15 @@ Dump of file coggate_ffi.dll
         self.assertIn("io.github.kidjoker.coggate.examples.Complete", java.argv)
         self.assertEqual(java.argv[-1], str(artifact / "java/coggate_jni.dll"))
 
+    def test_smoke_relocation_name_is_unicode_and_windows_codepage_safe(self):
+        windows = Target.for_host("Windows", "AMD64")
+        windows_name = _smoke_relocation_name(windows)
+        self.assertIn("é", windows_name)
+        self.assertEqual(windows_name.encode("cp1252").decode("cp1252"), windows_name)
+        self.assertEqual(
+            _smoke_relocation_name(target_fixture()), "路径 with spaces Ω"
+        )
+
     def test_artifact_smoke_copies_to_unicode_child_and_verifies_before_and_after(self):
         temporary_roots = []
         copied_roots = []
@@ -6807,6 +6816,13 @@ def _copy_verified_artifact(
     return destination
 
 
+def _smoke_relocation_name(target: Target) -> str:
+    """Use the strongest Unicode path supported by each platform toolchain."""
+    if target.system == "Windows":
+        return "café with spaces"
+    return "路径 with spaces Ω"
+
+
 def run_smoke_command(
     command: PlannedCommand,
     command_runner=subprocess.run,
@@ -6878,7 +6894,10 @@ def run_artifact_smoke(
     with temporary_directory(prefix="coggate-phase5d-smoke-") as temporary_root:
         temporary_root = Path(temporary_root)
         extracted = _copy_verified_artifact(
-            artifact, temporary_root / "路径 with spaces Ω", target, copy_file=copy_file,
+            artifact,
+            temporary_root / _smoke_relocation_name(target),
+            target,
+            copy_file=copy_file,
         )
         build_directory = temporary_root / "build"
         build_directory.mkdir()
