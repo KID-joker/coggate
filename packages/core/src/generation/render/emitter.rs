@@ -258,9 +258,6 @@ fn helper_semantic_definition(semantic: HelperSemantic) -> &'static str {
         HelperSemantic::Operation(OperationKind::ConditionalOrder) => {
             "(control, a, b): a followed by b when unsigned control[0] is even; otherwise b followed by a."
         }
-        HelperSemantic::Operation(OperationKind::ControlIndexedMerge) => {
-            "(control, a, b): let z be a followed by b when unsigned control[0] is even, otherwise b followed by a; output byte i is z[(i + unsigned control[i modulo len(control)]) modulo len(z)]. Both control and z must be nonempty."
-        }
     }
 }
 
@@ -626,8 +623,7 @@ fn operation_expression(
         | Operation::Base64UrlEncode
         | Operation::Base64UrlDecode
         | Operation::RotateLeftDerived
-        | Operation::ConditionalOrder
-        | Operation::ControlIndexedMerge => push_call(&mut output, helper, inputs)?,
+        | Operation::ConditionalOrder => push_call(&mut output, helper, inputs)?,
         Operation::Sha256Prefix(prefix_length) => {
             push_call(&mut output, helper, inputs)?;
             push_bounded(&mut output, ", ")?;
@@ -808,7 +804,6 @@ mod tests {
             Operation::Sha256Prefix(_) => "sha256_prefix",
             Operation::RotateLeftDerived => "rotate_left_derived",
             Operation::ConditionalOrder => "conditional_order",
-            Operation::ControlIndexedMerge => "control_indexed_merge",
         }
     }
 
@@ -1099,10 +1094,6 @@ mod tests {
                 HelperSemantic::Operation(OperationKind::ConditionalOrder),
                 "(control, a, b):",
             ),
-            (
-                HelperSemantic::Operation(OperationKind::ControlIndexedMerge),
-                "(control, a, b):",
-            ),
         ];
         assert_eq!(cases.len(), OperationKind::ALL.len() + 1);
         for (semantic, parameters) in cases {
@@ -1141,7 +1132,6 @@ mod tests {
             Operation::Sha256Prefix(8),
             Operation::RotateLeftDerived,
             Operation::ConditionalOrder,
-            Operation::ControlIndexedMerge,
         ]
     }
 
@@ -1192,11 +1182,6 @@ mod tests {
             ("sha_32", Operation::Sha256Prefix(32), unary()),
             ("rotate_derived", Operation::RotateLeftDerived, binary()),
             ("conditional", Operation::ConditionalOrder, ternary()),
-            (
-                "control_indexed_merge",
-                Operation::ControlIndexedMerge,
-                ternary(),
-            ),
         ]
     }
 
@@ -1236,7 +1221,7 @@ mod tests {
 
     #[test]
     fn every_language_emits_every_v1_operation() {
-        assert_eq!(operations().len(), 19);
+        assert_eq!(operations().len(), 18);
 
         for language in RenderLanguage::ALL {
             for operation in operations() {
@@ -1972,7 +1957,7 @@ mod tests {
     #[test]
     fn declarations_strictly_cover_every_worst_case_operation_template() {
         let operations = worst_case_operations();
-        assert_eq!(operations.len(), 19);
+        assert_eq!(operations.len(), 18);
         let mut measured = Vec::new();
 
         for language in RenderLanguage::ALL {

@@ -209,25 +209,6 @@ mod tests {
     }
 
     #[test]
-    fn v1_plans_use_data_dependent_output_indexing_across_secret_lengths() {
-        for length in 8..=16 {
-            let secret = ascii_secret(length);
-            for seed in 0_u8..=63 {
-                let mut random = DeterministicRandom::new([seed; 32]);
-                let plan = plan_with(&secret, &mut random).unwrap();
-                assert_plan_contracts(&plan, &secret);
-                assert!(matches!(
-                    plan.graph.node(plan.graph.output()).unwrap().kind(),
-                    NodeKind::Operation {
-                        operation: Operation::ControlIndexedMerge,
-                        ..
-                    }
-                ));
-            }
-        }
-    }
-
-    #[test]
     fn planning_is_deterministic_for_the_same_secret_and_random_stream() {
         let secret = Secret::from_test_bytes(b"AbCdEf12Gh".to_vec());
         let mut first_random = DeterministicRandom::new([7; 32]);

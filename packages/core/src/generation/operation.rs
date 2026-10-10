@@ -27,7 +27,6 @@ pub enum Operation {
     Sha256Prefix(usize),
     RotateLeftDerived,
     ConditionalOrder,
-    ControlIndexedMerge,
 }
 
 impl Operation {
@@ -35,7 +34,7 @@ impl Operation {
         match self {
             Self::Concat => None,
             Self::AddModulo | Self::SubModulo | Self::RotateLeftDerived => Some(2),
-            Self::ConditionalOrder | Self::ControlIndexedMerge => Some(3),
+            Self::ConditionalOrder => Some(3),
             Self::Reverse
             | Self::RotateLeft(_)
             | Self::RotateRight(_)
@@ -114,13 +113,6 @@ impl Operation {
                     .checked_add(input_lengths[2])
                     .ok_or(GenerationError::InvalidLength)
             }
-            Self::ControlIndexedMerge => {
-                non_empty_length(input_lengths[0])?;
-                let output_length = input_lengths[1]
-                    .checked_add(input_lengths[2])
-                    .ok_or(GenerationError::InvalidLength)?;
-                non_empty_length(output_length)
-            }
         }
     }
 
@@ -158,20 +150,6 @@ impl Operation {
                 } else {
                     concatenate(&[inputs[2], inputs[1]], output_length)
                 }
-            }
-            Self::ControlIndexedMerge => {
-                let control = inputs[0];
-                let ordered = if control[0] % 2 == 0 {
-                    concatenate(&[inputs[1], inputs[2]], output_length)?
-                } else {
-                    concatenate(&[inputs[2], inputs[1]], output_length)?
-                };
-                Ok((0..ordered.len())
-                    .map(|index| {
-                        let offset = usize::from(control[index % control.len()]);
-                        ordered[(index + offset) % ordered.len()]
-                    })
-                    .collect())
             }
         }
     }
@@ -434,14 +412,6 @@ mod tests {
             Operation::ConditionalOrder.evaluate(&[&[3], &b"ab"[..], &b"cd"[..]]),
             Ok(b"cdab".to_vec())
         );
-        assert_eq!(
-            Operation::ControlIndexedMerge.evaluate(&[&[2, 1], b"ab", b"cd"]),
-            Ok(b"ccaa".to_vec())
-        );
-        assert_eq!(
-            Operation::ControlIndexedMerge.evaluate(&[&[1, 2], b"ab", b"cd"]),
-            Ok(b"dbbd".to_vec())
-        );
     }
 
     #[test]
@@ -529,10 +499,6 @@ mod tests {
             Err(GenerationError::InvalidLength)
         );
         assert_eq!(
-            Operation::ControlIndexedMerge.evaluate(&[b"", b"ab", b"cd"]),
-            Err(GenerationError::InvalidLength)
-        );
-        assert_eq!(
             Operation::Sha256Prefix(0).evaluate(&[b"abc"]),
             Err(GenerationError::InvalidOperation)
         );
@@ -609,7 +575,6 @@ mod tests {
         assert_eq!(Operation::Reverse.arity(), Some(1));
         assert_eq!(Operation::Concat.arity(), None);
         assert_eq!(Operation::ConditionalOrder.arity(), Some(3));
-        assert_eq!(Operation::ControlIndexedMerge.arity(), Some(3));
         assert_eq!(Operation::Concat.validate_arity(2), Ok(()));
         assert_eq!(
             Operation::Xor(vec![]).validate_arity(1),
@@ -640,14 +605,6 @@ mod tests {
             Err(GenerationError::InvalidOperation)
         );
         assert_eq!(Operation::Concat.output_length(&[2, 3]), Ok(5));
-        assert_eq!(
-            Operation::ControlIndexedMerge.output_length(&[2, 3, 4]),
-            Ok(7)
-        );
-        assert_eq!(
-            Operation::ControlIndexedMerge.output_length(&[0, 3, 4]),
-            Err(GenerationError::InvalidLength)
-        );
         assert_eq!(Operation::AddModulo.output_length(&[4, 4]), Ok(4));
         assert_eq!(
             Operation::AddModulo.output_length(&[4, 3]),
@@ -696,10 +653,6 @@ mod tests {
         assert_output_length_matches_evaluation(
             &Operation::ConditionalOrder,
             &[&[2], &b"ab"[..], &b"cd"[..]],
-        );
-        assert_output_length_matches_evaluation(
-            &Operation::ControlIndexedMerge,
-            &[&[2, 1], &b"ab"[..], &b"cd"[..]],
         );
     }
 

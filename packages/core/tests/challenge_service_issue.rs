@@ -154,9 +154,6 @@ fn issues_and_persists_a_versioned_v1_challenge() {
     assert_ne!(public.challenge_id, public.nonce);
     assert!(!public.question.is_empty());
     assert!(public.question.len() <= MAX_QUESTION_BYTES);
-    assert!(public.question.contains(
-        "output byte i is z[(i + unsigned control[i modulo len(control)]) modulo len(z)]"
-    ));
 
     let records = records.borrow();
     assert_eq!(records.issued.len(), 1);
@@ -181,8 +178,8 @@ fn issues_and_persists_a_versioned_v1_challenge() {
 }
 
 #[test]
-fn rejects_unsupported_generator_versions_before_key_or_storage_access() {
-    for version in [" 1.0", "1.0 ", "1.0\n", "1.00", "V1", "1.1"] {
+fn rejects_noncanonical_generator_versions_before_key_or_storage_access() {
+    for version in [" 1.0", "1.0 ", "1.0\n", "1.00", "V1"] {
         let records = Rc::new(RefCell::new(LifecycleRecords::default()));
         let key_calls = Rc::new(RefCell::new(0));
         let mut service = recording_service(

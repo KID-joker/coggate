@@ -83,15 +83,7 @@ mod tests {
 
         assert_eq!(
             observed_kinds,
-            OperationKind::ALL
-                .into_iter()
-                .filter(|kind| {
-                    !matches!(
-                        kind,
-                        OperationKind::RotateLeftDerived | OperationKind::ConditionalOrder
-                    )
-                })
-                .collect::<BTreeSet<_>>()
+            OperationKind::ALL.into_iter().collect::<BTreeSet<_>>()
         );
     }
 

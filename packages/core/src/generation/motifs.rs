@@ -182,15 +182,28 @@ fn finalize(
     random: &mut impl RandomSource,
 ) -> Result<NodeId, GenerationError> {
     let control = values[sample_below(random, values.len())?];
-    let rest = if values.len() > 2 {
-        builder.operation(Operation::Concat, values[1..].to_vec())
-    } else {
-        values[1]
-    };
-    Ok(builder.operation(
-        Operation::ControlIndexedMerge,
-        vec![control, values[0], rest],
-    ))
+
+    match sample_below(random, 2)? {
+        0 => {
+            let joined = builder.operation(Operation::Concat, values.to_vec());
+            Ok(builder.operation(Operation::RotateLeftDerived, vec![joined, control]))
+        }
+        1 if values.len() >= 3 => {
+            let joined_rest = builder.operation(Operation::Concat, values[1..].to_vec());
+            Ok(builder.operation(
+                Operation::ConditionalOrder,
+                vec![control, values[0], joined_rest],
+            ))
+        }
+        1 => {
+            let ordered = builder.operation(
+                Operation::ConditionalOrder,
+                vec![control, values[0], values[1]],
+            );
+            Ok(builder.operation(Operation::RotateLeftDerived, vec![ordered, control]))
+        }
+        _ => Err(GenerationError::ExecutionFailed),
+    }
 }
 
 fn nonlegacy_structural_operation(
@@ -673,8 +686,7 @@ mod tests {
             | Operation::Base64UrlEncode
             | Operation::Base64UrlDecode
             | Operation::RotateLeftDerived
-            | Operation::ConditionalOrder
-            | Operation::ControlIndexedMerge => {}
+            | Operation::ConditionalOrder => {}
         }
     }
 
@@ -825,7 +837,6 @@ mod tests {
                         .collect::<BTreeSet<_>>();
                     let expected_operations = match motif {
                         PlanMotif::General => count + 2,
-                        PlanMotif::AddModulo | PlanMotif::SubModulo if count == 3 => count + 2,
                         PlanMotif::AddModulo
                         | PlanMotif::SubModulo
                         | PlanMotif::HexRoundTrip
@@ -840,10 +851,7 @@ mod tests {
                             .iter()
                             .filter(|kind| kind.family() == OperationFamily::Composition)
                             .count(),
-                        usize::from(
-                            count != 3
-                                || !matches!(motif, PlanMotif::AddModulo | PlanMotif::SubModulo)
-                        ) + 1
+                        2
                     );
                     assert!(cross_fragment_operation_count(&graph) >= 2);
                     assert!(kinds.iter().any(|kind| !kind.is_legacy()));
@@ -988,18 +996,7 @@ mod tests {
             }
         }
 
-        assert_eq!(
-            reached,
-            OperationKind::ALL
-                .into_iter()
-                .filter(|kind| {
-                    !matches!(
-                        kind,
-                        OperationKind::RotateLeftDerived | OperationKind::ConditionalOrder
-                    )
-                })
-                .collect()
-        );
+        assert_eq!(reached, OperationKind::ALL.into_iter().collect());
     }
 
     #[test]
