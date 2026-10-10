@@ -19,7 +19,7 @@ macro_rules! define_operation_kind_catalog {
 
         impl OperationKind {
             #[cfg(test)]
-            pub(crate) const ALL: [Self; 18] = [
+            pub(crate) const ALL: [Self; 19] = [
                 $(
                     Self::$kind,
                 )+
@@ -68,6 +68,7 @@ define_operation_kind_catalog! {
     Concat => Composition,
     RotateLeftDerived => Composition,
     ConditionalOrder => Composition,
+    ControlIndexedMerge => Composition,
 }
 
 impl From<&Operation> for OperationKind {
@@ -91,6 +92,7 @@ impl From<&Operation> for OperationKind {
             Operation::Concat => Self::Concat,
             Operation::RotateLeftDerived => Self::RotateLeftDerived,
             Operation::ConditionalOrder => Self::ConditionalOrder,
+            Operation::ControlIndexedMerge => Self::ControlIndexedMerge,
         }
     }
 }
@@ -192,6 +194,11 @@ mod tests {
                 OperationKind::ConditionalOrder,
                 OperationFamily::Composition,
             ),
+            (
+                Operation::ControlIndexedMerge,
+                OperationKind::ControlIndexedMerge,
+                OperationFamily::Composition,
+            ),
         ];
 
         assert_eq!(cases.len(), OperationKind::ALL.len());
@@ -214,7 +221,7 @@ mod tests {
 
     #[test]
     fn all_contains_each_operation_kind_exactly_once() {
-        assert_eq!(OperationKind::ALL.len(), 18);
+        assert_eq!(OperationKind::ALL.len(), 19);
 
         for kind in OperationKind::ALL {
             assert_eq!(
@@ -250,6 +257,7 @@ mod tests {
             OperationKind::Base64UrlEncode,
             OperationKind::Base64UrlDecode,
             OperationKind::ConditionalOrder,
+            OperationKind::ControlIndexedMerge,
         ];
 
         assert_eq!(

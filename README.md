@@ -47,6 +47,10 @@ The public challenge is safe to present to the solver. Private material is the
 server-only state needed to verify it and must not be logged, exported, or
 returned through an SDK response.
 
+Generator version `1.0` uses a control-dependent merge: one computed byte
+array chooses the order of two inputs and the source index for each output
+byte.
+
 ## Quick start
 
 The complete workspace gate requires Rust 1.85 or newer, Python 3, a C11

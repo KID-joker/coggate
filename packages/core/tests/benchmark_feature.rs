@@ -14,6 +14,19 @@ fn equal_version_namespace_and_index_are_reproducible() {
 }
 
 #[test]
+fn v1_preview_is_deterministic_and_uses_control_indexing() {
+    for index in 0..128 {
+        let case = generate_benchmark_case("1.0", b"control-indexing-v1", index).unwrap();
+        let replay = generate_benchmark_case("1.0", b"control-indexing-v1", index).unwrap();
+        assert_eq!(case.question(), replay.question());
+        assert!(case.question().contains(
+            "output byte i is z[(i + unsigned control[i modulo len(control)]) modulo len(z)]"
+        ));
+        assert!(case.oracle().matches(replay.calibration_answer().as_str()));
+    }
+}
+
+#[test]
 fn namespace_and_index_are_domain_separated() {
     let scored = generate_benchmark_case("1.0", b"phase6a-scored-v1", 7).unwrap();
     let calibration = generate_benchmark_case("1.0", b"phase6a-calibration-v1", 7).unwrap();
@@ -27,6 +40,10 @@ fn namespace_and_index_are_domain_separated() {
 fn rejects_unsupported_versions_and_invalid_namespaces() {
     assert_eq!(
         generate_benchmark_case("1.1", b"phase6a-scored-v1", 0).unwrap_err(),
+        BenchmarkError::UnsupportedGeneratorVersion,
+    );
+    assert_eq!(
+        generate_benchmark_case("1.1", b"", 0).unwrap_err(),
         BenchmarkError::UnsupportedGeneratorVersion,
     );
 

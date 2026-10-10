@@ -961,8 +961,8 @@ fn maximum_dynamic_common_question_text_fits_the_validator_reservation() {
         maximum = maximum.max(common_question_bytes(&profile));
     }
 
-    assert_eq!(maximum, 1_805);
-    assert_eq!(COMMON_QUESTION_BUDGET - maximum, 243);
+    assert_eq!(maximum, 1_967);
+    assert_eq!(COMMON_QUESTION_BUDGET - maximum, 81);
     assert!(maximum <= COMMON_QUESTION_BUDGET);
 }
 
