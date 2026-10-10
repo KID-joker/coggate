@@ -2,6 +2,10 @@ use std::{collections::BTreeMap, fmt, ops::Range};
 
 use crate::generation::{NodeId, Operation, OperationKind};
 
+use crate::generation::random::{RandomSource, sample_below, shuffle};
+
+use super::error::RenderError;
+
 /// Maximum conservative pre-emission budget for one effective display fragment.
 pub(super) const MAX_FRAGMENT_BYTES: usize = 2_048;
 
@@ -67,15 +71,113 @@ pub(super) enum FragmentLiteralPlan {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct ObfuscationProfile {
     aliases: BTreeMap<HelperSemantic, String>,
+    definition_order: Vec<HelperSemantic>,
+    definition_styles: BTreeMap<HelperSemantic, AliasDefinitionStyle>,
+    heading_style: u8,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) struct AliasDefinitionStyle {
+    pub(super) wording: u8,
+    pub(super) layout: u8,
+    pub(super) swapped_arguments: bool,
 }
 
 impl ObfuscationProfile {
     pub(super) fn new(aliases: BTreeMap<HelperSemantic, String>) -> Self {
-        Self { aliases }
+        let definition_order = aliases.keys().copied().collect::<Vec<_>>();
+        let definition_styles = aliases
+            .keys()
+            .copied()
+            .map(|semantic| (semantic, AliasDefinitionStyle::default()))
+            .collect();
+        Self {
+            aliases,
+            definition_order,
+            definition_styles,
+            heading_style: 0,
+        }
+    }
+
+    pub(super) fn randomized_definitions(
+        mut self,
+        random: &mut impl RandomSource,
+    ) -> Result<Self, RenderError> {
+        self.heading_style =
+            sample_below(random, 3).map_err(RenderError::from_generation_error)? as u8;
+        for (semantic, style) in &mut self.definition_styles {
+            style.wording =
+                sample_below(random, 3).map_err(RenderError::from_generation_error)? as u8;
+            style.layout =
+                sample_below(random, 3).map_err(RenderError::from_generation_error)? as u8;
+            if matches!(
+                semantic,
+                HelperSemantic::Operation(
+                    OperationKind::SubModulo
+                        | OperationKind::RotateLeftDerived
+                        | OperationKind::ConditionalOrder
+                )
+            ) {
+                style.swapped_arguments =
+                    sample_below(random, 2).map_err(RenderError::from_generation_error)? == 1;
+            }
+        }
+        shuffle(random, &mut self.definition_order).map_err(RenderError::from_generation_error)?;
+        Ok(self)
     }
 
     pub(super) fn aliases(&self) -> &BTreeMap<HelperSemantic, String> {
         &self.aliases
+    }
+
+    pub(super) fn definition_order(&self) -> &[HelperSemantic] {
+        &self.definition_order
+    }
+
+    pub(super) fn definition_style(
+        &self,
+        semantic: HelperSemantic,
+    ) -> Option<AliasDefinitionStyle> {
+        self.definition_styles.get(&semantic).copied()
+    }
+
+    pub(super) fn heading_style(&self) -> u8 {
+        self.heading_style
+    }
+
+    pub(super) fn definitions_are_valid(&self) -> bool {
+        let expected = self
+            .aliases
+            .keys()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>();
+        self.heading_style < 3
+            && self.definition_order.len() == expected.len()
+            && self
+                .definition_order
+                .iter()
+                .copied()
+                .collect::<std::collections::BTreeSet<_>>()
+                == expected
+            && self
+                .definition_styles
+                .keys()
+                .copied()
+                .collect::<std::collections::BTreeSet<_>>()
+                == expected
+            && self.definition_styles.iter().all(|(semantic, style)| {
+                style.wording < 3
+                    && style.layout < 3
+                    && (!style.swapped_arguments
+                        || matches!(
+                            semantic,
+                            HelperSemantic::Operation(
+                                OperationKind::SubModulo
+                                    | OperationKind::RotateLeftDerived
+                                    | OperationKind::ConditionalOrder
+                            )
+                        ))
+            })
     }
 
     #[allow(

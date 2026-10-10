@@ -5,9 +5,9 @@ use crate::generation::{NodeId, Operation, OperationKind};
 use super::error::RenderError;
 use super::languages;
 use super::model::{
-    DisplayDistractor, DisplayDistractorStep, DisplayStep, DisplayStepKind, FragmentLiteralPlan,
-    HelperSemantic, MAX_FRAGMENT_BYTES, MAX_QUESTION_BYTES, NumericStyle, ObfuscationProfile,
-    RenderLanguage, RenderPlan, TemplateFamily,
+    AliasDefinitionStyle, DisplayDistractor, DisplayDistractorStep, DisplayStep, DisplayStepKind,
+    FragmentLiteralPlan, HelperSemantic, MAX_FRAGMENT_BYTES, MAX_QUESTION_BYTES, NumericStyle,
+    ObfuscationProfile, RenderLanguage, RenderPlan, TemplateFamily,
 };
 
 pub(super) const MAX_STEP_BYTES: usize = 512;
@@ -186,17 +186,82 @@ fn push_question_preamble(
     profile: &ObfuscationProfile,
 ) -> Result<(), RenderError> {
     push_with_limit(question, BYTE_SEMANTICS_PREAMBLE, MAX_QUESTION_BYTES)?;
-    push_with_limit(question, "Alias semantics:\n", MAX_QUESTION_BYTES)?;
-    for (semantic, alias) in profile.aliases() {
+    let heading = match profile.heading_style() {
+        0 => "Alias semantics:\n",
+        1 => "Local operator rules:\n",
+        2 => "Per-question helper definitions:\n",
+        _ => return Err(RenderError::InvalidPlan),
+    };
+    push_with_limit(question, heading, MAX_QUESTION_BYTES)?;
+    for semantic in profile.definition_order() {
+        let alias = profile
+            .aliases()
+            .get(semantic)
+            .ok_or(RenderError::InvalidPlan)?;
+        let style = profile
+            .definition_style(*semantic)
+            .ok_or(RenderError::InvalidPlan)?;
+        let definition = helper_semantic_definition_variant(*semantic, style)?;
+        let (parameters, description) = definition
+            .split_once(": ")
+            .ok_or(RenderError::InvalidPlan)?;
         push_with_limit(question, alias, MAX_QUESTION_BYTES)?;
-        push_with_limit(
-            question,
-            helper_semantic_definition(*semantic),
-            MAX_QUESTION_BYTES,
-        )?;
+        push_with_limit(question, parameters, MAX_QUESTION_BYTES)?;
+        let separator = match style.layout {
+            0 => ": ",
+            1 => " -> ",
+            2 => " = ",
+            _ => return Err(RenderError::InvalidPlan),
+        };
+        push_with_limit(question, separator, MAX_QUESTION_BYTES)?;
+        push_with_limit(question, description, MAX_QUESTION_BYTES)?;
         push_with_limit(question, "\n", MAX_QUESTION_BYTES)?;
     }
     push_with_limit(question, "\n", MAX_QUESTION_BYTES)
+}
+
+fn helper_semantic_definition_variant(
+    semantic: HelperSemantic,
+    style: AliasDefinitionStyle,
+) -> Result<&'static str, RenderError> {
+    if style.swapped_arguments {
+        return match (semantic, style.wording) {
+            (HelperSemantic::Operation(OperationKind::SubModulo), 0) => {
+                Ok("(y, x): output byte i is x[i] minus y[i] modulo 256.")
+            }
+            (HelperSemantic::Operation(OperationKind::SubModulo), 1) => {
+                Ok("(y, x): subtract y[i] from x[i] for each byte, wrapping modulo 256.")
+            }
+            (HelperSemantic::Operation(OperationKind::SubModulo), 2) => {
+                Ok("(y, x): byte i is (x[i] + 256 - y[i]) modulo 256.")
+            }
+            (HelperSemantic::Operation(OperationKind::RotateLeftDerived), 0) => Ok(
+                "(key, x): cyclically rotate x left by unsigned key[0] modulo len(x); both inputs must be nonempty.",
+            ),
+            (HelperSemantic::Operation(OperationKind::RotateLeftDerived), 1) => Ok(
+                "(key, x): shift x cyclically toward lower indices by key[0] modulo len(x); neither input is empty.",
+            ),
+            (HelperSemantic::Operation(OperationKind::RotateLeftDerived), 2) => Ok(
+                "(key, x): output byte i is x[(i + unsigned key[0]) modulo len(x)]; both inputs are nonempty.",
+            ),
+            (HelperSemantic::Operation(OperationKind::ConditionalOrder), 0) => Ok(
+                "(control, b, a): a followed by b when unsigned control[0] is even; otherwise b followed by a.",
+            ),
+            (HelperSemantic::Operation(OperationKind::ConditionalOrder), 1) => Ok(
+                "(control, b, a): if control[0] is even concatenate a then b; if odd concatenate b then a.",
+            ),
+            (HelperSemantic::Operation(OperationKind::ConditionalOrder), 2) => Ok(
+                "(control, b, a): prepend a to b for an even control[0], or append a to b for an odd control[0].",
+            ),
+            _ => Err(RenderError::InvalidPlan),
+        };
+    }
+    match style.wording {
+        0 => Ok(helper_semantic_definition(semantic)),
+        1 => Ok(helper_semantic_definition_alt(semantic)),
+        2 => Ok(helper_semantic_definition_contrast(semantic)),
+        _ => Err(RenderError::InvalidPlan),
+    }
 }
 
 fn helper_semantic_definition(semantic: HelperSemantic) -> &'static str {
@@ -257,6 +322,130 @@ fn helper_semantic_definition(semantic: HelperSemantic) -> &'static str {
         }
         HelperSemantic::Operation(OperationKind::ConditionalOrder) => {
             "(control, a, b): a followed by b when unsigned control[0] is even; otherwise b followed by a."
+        }
+    }
+}
+
+fn helper_semantic_definition_alt(semantic: HelperSemantic) -> &'static str {
+    match semantic {
+        HelperSemantic::BytesAscii => {
+            "(text): decode the escaped ASCII text into its byte sequence."
+        }
+        HelperSemantic::Operation(OperationKind::Reverse) => {
+            "(x): read the bytes of x from last position to first."
+        }
+        HelperSemantic::Operation(OperationKind::RotateLeft) => {
+            "(x, n): output byte i is x[(i + n) modulo len(x)]; x is nonempty."
+        }
+        HelperSemantic::Operation(OperationKind::RotateRight) => {
+            "(x, n): move each byte n positions right cyclically; reduce n modulo nonzero len(x)."
+        }
+        HelperSemantic::Operation(OperationKind::EvenBytes) => {
+            "(x): retain bytes at zero-based positions divisible by two, in order."
+        }
+        HelperSemantic::Operation(OperationKind::OddBytes) => {
+            "(x): retain bytes at zero-based positions 1, 3, 5, and so forth."
+        }
+        HelperSemantic::Operation(OperationKind::Permute) => {
+            "(x, p): for each j in p order, take byte x[p[j]]."
+        }
+        HelperSemantic::Operation(OperationKind::Slice) => {
+            "(x, start, end): take x from start inclusive to end exclusive, preserving order."
+        }
+        HelperSemantic::Operation(OperationKind::Xor) => {
+            "(x, key): XOR x[i] with key[i modulo len(key)] for every byte i."
+        }
+        HelperSemantic::Operation(OperationKind::AddModulo) => {
+            "(x, y): pairwise add x and y, reducing every byte modulo 256."
+        }
+        HelperSemantic::Operation(OperationKind::SubModulo) => {
+            "(x, y): subtract y[i] from x[i] for each byte, wrapping modulo 256."
+        }
+        HelperSemantic::Operation(OperationKind::HexEncode) => {
+            "(x): turn x into lowercase hexadecimal ASCII bytes."
+        }
+        HelperSemantic::Operation(OperationKind::HexDecode) => {
+            "(x): recover bytes from canonical lowercase hexadecimal ASCII x."
+        }
+        HelperSemantic::Operation(OperationKind::Base64UrlEncode) => {
+            "(x): turn x into canonical base64url ASCII bytes without padding."
+        }
+        HelperSemantic::Operation(OperationKind::Base64UrlDecode) => {
+            "(x): recover bytes from canonical unpadded base64url ASCII x."
+        }
+        HelperSemantic::Operation(OperationKind::Sha256Prefix) => {
+            "(x, n): take the first n raw bytes from SHA-256(x)."
+        }
+        HelperSemantic::Operation(OperationKind::Concat) => {
+            "(x1, x2, ...): join all arguments in the order shown."
+        }
+        HelperSemantic::Operation(OperationKind::RotateLeftDerived) => {
+            "(x, key): shift x cyclically toward lower indices by key[0] modulo len(x); neither input is empty."
+        }
+        HelperSemantic::Operation(OperationKind::ConditionalOrder) => {
+            "(control, a, b): if control[0] is even concatenate a then b; if odd concatenate b then a."
+        }
+    }
+}
+
+fn helper_semantic_definition_contrast(semantic: HelperSemantic) -> &'static str {
+    match semantic {
+        HelperSemantic::BytesAscii => {
+            "(text): use the bytes denoted by escaped ASCII text, not its escape characters."
+        }
+        HelperSemantic::Operation(OperationKind::Reverse) => {
+            "(x): last byte first and first byte last; byte values do not change."
+        }
+        HelperSemantic::Operation(OperationKind::RotateLeft) => {
+            "(x, n): move x left with wraparound, not truncation; use n modulo nonzero len(x)."
+        }
+        HelperSemantic::Operation(OperationKind::RotateRight) => {
+            "(x, n): move x right with wraparound, not truncation; use n modulo nonzero len(x)."
+        }
+        HelperSemantic::Operation(OperationKind::EvenBytes) => {
+            "(x): keep indices 0, 2, 4, ... and discard the odd-indexed bytes."
+        }
+        HelperSemantic::Operation(OperationKind::OddBytes) => {
+            "(x): keep indices 1, 3, 5, ... and discard the even-indexed bytes."
+        }
+        HelperSemantic::Operation(OperationKind::Permute) => {
+            "(x, p): use p as source indices: result[j] = x[p[j]], not x[j] = result[p[j]]."
+        }
+        HelperSemantic::Operation(OperationKind::Slice) => {
+            "(x, start, end): include x[start] but exclude x[end]; keep increasing indices."
+        }
+        HelperSemantic::Operation(OperationKind::Xor) => {
+            "(x, key): use XOR, not addition: result[i] = x[i] XOR key[i modulo len(key)]."
+        }
+        HelperSemantic::Operation(OperationKind::AddModulo) => {
+            "(x, y): byte i is (x[i] + y[i]) modulo 256, without carrying to byte i+1."
+        }
+        HelperSemantic::Operation(OperationKind::SubModulo) => {
+            "(x, y): byte i is (x[i] + 256 - y[i]) modulo 256."
+        }
+        HelperSemantic::Operation(OperationKind::HexEncode) => {
+            "(x): produce lowercase hex ASCII text bytes; do not interpret x as hex."
+        }
+        HelperSemantic::Operation(OperationKind::HexDecode) => {
+            "(x): interpret canonical lowercase hex ASCII x; do not hex-encode it."
+        }
+        HelperSemantic::Operation(OperationKind::Base64UrlEncode) => {
+            "(x): produce canonical unpadded base64url ASCII bytes, not decoded bytes."
+        }
+        HelperSemantic::Operation(OperationKind::Base64UrlDecode) => {
+            "(x): interpret canonical unpadded base64url ASCII x, not encode it."
+        }
+        HelperSemantic::Operation(OperationKind::Sha256Prefix) => {
+            "(x, n): return n raw leading digest bytes of SHA-256(x), not hex text."
+        }
+        HelperSemantic::Operation(OperationKind::Concat) => {
+            "(x1, x2, ...): append inputs left to right; do not invert their order."
+        }
+        HelperSemantic::Operation(OperationKind::RotateLeftDerived) => {
+            "(x, key): output byte i is x[(i + unsigned key[0]) modulo len(x)]; both inputs are nonempty."
+        }
+        HelperSemantic::Operation(OperationKind::ConditionalOrder) => {
+            "(control, a, b): prepend a to b for even control[0], or append a to b for odd control[0]."
         }
     }
 }
@@ -577,9 +766,12 @@ fn operation_expression(
     numeric_style: NumericStyle,
     profile: &ObfuscationProfile,
 ) -> Result<String, RenderError> {
-    let helper = profile
-        .alias(HelperSemantic::Operation(OperationKind::from(operation)))
-        .ok_or(RenderError::InvalidPlan)?;
+    let semantic = HelperSemantic::Operation(OperationKind::from(operation));
+    let helper = profile.alias(semantic).ok_or(RenderError::InvalidPlan)?;
+    let swapped_arguments = profile
+        .definition_style(semantic)
+        .ok_or(RenderError::InvalidPlan)?
+        .swapped_arguments;
     let mut output = String::new();
     match operation {
         Operation::Reverse => push_call(&mut output, helper, inputs)?,
@@ -614,6 +806,22 @@ fn operation_expression(
             push_number(&mut output, *start, numeric_style)?;
             push_bounded(&mut output, ", ")?;
             push_number(&mut output, *end, numeric_style)?;
+        }
+        Operation::SubModulo | Operation::RotateLeftDerived if swapped_arguments => {
+            let [first, second] = inputs else {
+                return Err(RenderError::InvalidPlan);
+            };
+            push_call(&mut output, helper, &[second.clone(), first.clone()])?;
+        }
+        Operation::ConditionalOrder if swapped_arguments => {
+            let [control, first, second] = inputs else {
+                return Err(RenderError::InvalidPlan);
+            };
+            push_call(
+                &mut output,
+                helper,
+                &[control.clone(), second.clone(), first.clone()],
+            )?;
         }
         Operation::Concat
         | Operation::AddModulo
@@ -768,20 +976,23 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
 
     use super::{
-        MAX_STEP_BYTES, bounded_parts, declared_template_max_bytes,
-        emit_fragment as emit_fragment_step, emit_operation as emit_operation_step, emit_question,
-        fragment_expression, helper_semantic_definition,
-        operation_expression as operation_expression_step, render_number,
+        BYTE_SEMANTICS_PREAMBLE, MAX_STEP_BYTES, bounded_parts, common_question_bytes,
+        declared_template_max_bytes, emit_fragment as emit_fragment_step,
+        emit_operation as emit_operation_step, emit_question, fragment_expression,
+        helper_semantic_definition, helper_semantic_definition_variant,
+        operation_expression as operation_expression_step, push_question_preamble, render_number,
     };
     use crate::generation::render::error::RenderError;
     use crate::generation::render::model::{
-        DisplayDistractor, DisplayDistractorStep, DisplayFragment, DisplayStep, DisplayStepKind,
-        DistractorOperation, FragmentLiteralPlan, HelperSemantic, NumericStyle, ObfuscationProfile,
-        RenderLanguage, RenderPlan, TemplateFamily,
+        AliasDefinitionStyle, DisplayDistractor, DisplayDistractorStep, DisplayFragment,
+        DisplayStep, DisplayStepKind, DistractorOperation, FragmentLiteralPlan, HelperSemantic,
+        NumericStyle, ObfuscationProfile, RenderLanguage, RenderPlan, TemplateFamily,
     };
     use crate::generation::render::names::LEGACY_HELPER_IDENTIFIERS;
+    use crate::generation::render::validate::COMMON_QUESTION_BUDGET;
     use crate::generation::{
         MAX_CONCAT_INPUTS, MAX_PERMUTATION_LENGTH, NodeId, Operation, OperationKind,
+        test_random::DeterministicRandom,
     };
 
     fn operation_alias(operation: &Operation) -> &'static str {
@@ -1110,6 +1321,159 @@ mod tests {
         let slice = helper_semantic_definition(HelperSemantic::Operation(OperationKind::Slice));
         assert!(slice.contains("start <= i < end"));
         assert!(!slice.contains("through end"));
+    }
+
+    #[test]
+    fn randomized_alias_definitions_cover_multiple_wordings_layouts_and_orders() {
+        let semantics = OperationKind::ALL
+            .into_iter()
+            .map(HelperSemantic::Operation)
+            .chain([HelperSemantic::BytesAscii])
+            .collect::<BTreeSet<_>>();
+        let aliases = semantics
+            .iter()
+            .enumerate()
+            .map(|(index, semantic)| (*semantic, format!("helper_{index}")))
+            .collect::<BTreeMap<_, _>>();
+        let mut headings = BTreeSet::new();
+        let mut layouts = BTreeSet::new();
+        let mut wordings = BTreeSet::new();
+        let mut orders = BTreeSet::new();
+
+        for seed in 0_u8..=255 {
+            let mut random = DeterministicRandom::new([seed; 32]);
+            let profile = ObfuscationProfile::new(aliases.clone())
+                .randomized_definitions(&mut random)
+                .unwrap();
+            assert!(profile.definitions_are_valid());
+            headings.insert(profile.heading_style());
+            orders.insert(profile.definition_order().to_vec());
+            let mut emitted = String::new();
+            push_question_preamble(&mut emitted, &profile).unwrap();
+            for semantic in &semantics {
+                let style = profile.definition_style(*semantic).unwrap();
+                layouts.insert(style.layout);
+                wordings.insert(style.wording);
+                let definition = helper_semantic_definition_variant(*semantic, style).unwrap();
+                let tokens = definition
+                    .split(|character: char| {
+                        !(character.is_ascii_alphanumeric() || character == '_')
+                    })
+                    .collect::<BTreeSet<_>>();
+                for legacy in LEGACY_HELPER_IDENTIFIERS {
+                    assert!(!tokens.contains(legacy), "{semantic:?} leaked {legacy}");
+                }
+                assert!(emitted.contains(profile.alias(*semantic).unwrap()));
+            }
+        }
+
+        assert_eq!(headings, BTreeSet::from([0, 1, 2]));
+        assert_eq!(layouts, BTreeSet::from([0, 1, 2]));
+        assert_eq!(wordings, BTreeSet::from([0, 1, 2]));
+        assert!(orders.len() > 1);
+    }
+
+    #[test]
+    fn reordered_arguments_preserve_the_declared_operation() {
+        let cases = [
+            (
+                Operation::SubModulo,
+                vec!["left".to_owned(), "right".to_owned()],
+                "helper(right, left)",
+                "(y, x)",
+            ),
+            (
+                Operation::RotateLeftDerived,
+                vec!["value".to_owned(), "key".to_owned()],
+                "helper(key, value)",
+                "(key, x)",
+            ),
+            (
+                Operation::ConditionalOrder,
+                vec!["control".to_owned(), "a".to_owned(), "b".to_owned()],
+                "helper(control, b, a)",
+                "(control, b, a)",
+            ),
+        ];
+
+        for (operation, inputs, expected_call, expected_parameters) in cases {
+            let semantic = HelperSemantic::Operation(OperationKind::from(&operation));
+            let aliases = BTreeMap::from([(semantic, "helper".to_owned())]);
+            let mut saw_standard = false;
+            let mut saw_swapped = false;
+            for seed in 0_u8..=255 {
+                let mut random = DeterministicRandom::new([seed; 32]);
+                let profile = ObfuscationProfile::new(aliases.clone())
+                    .randomized_definitions(&mut random)
+                    .unwrap();
+                let style = profile.definition_style(semantic).unwrap();
+                let call =
+                    operation_expression_step(&operation, &inputs, NumericStyle::Decimal, &profile)
+                        .unwrap();
+                if style.swapped_arguments {
+                    saw_swapped = true;
+                    assert_eq!(call, expected_call);
+                    assert!(
+                        helper_semantic_definition_variant(semantic, style)
+                            .unwrap()
+                            .starts_with(expected_parameters)
+                    );
+                } else {
+                    saw_standard = true;
+                }
+            }
+            assert!(saw_standard && saw_swapped, "{semantic:?}");
+        }
+    }
+
+    #[test]
+    fn every_alias_presentation_fits_the_v1_common_text_budget() {
+        let empty_profile = ObfuscationProfile::new(BTreeMap::new());
+        let heading_margin =
+            "Per-question helper definitions:\n".len() - "Alias semantics:\n".len();
+        let max_line = |semantic| {
+            let swapped_choices = if matches!(
+                semantic,
+                HelperSemantic::Operation(
+                    OperationKind::SubModulo
+                        | OperationKind::RotateLeftDerived
+                        | OperationKind::ConditionalOrder
+                )
+            ) {
+                &[false, true][..]
+            } else {
+                &[false][..]
+            };
+            let definition_length = (0..3)
+                .flat_map(|wording| {
+                    swapped_choices.iter().map(move |swapped_arguments| {
+                        helper_semantic_definition_variant(
+                            semantic,
+                            AliasDefinitionStyle {
+                                wording,
+                                layout: 1,
+                                swapped_arguments: *swapped_arguments,
+                            },
+                        )
+                        .unwrap()
+                        .len()
+                    })
+                })
+                .max()
+                .unwrap();
+            16 + definition_length + 2 + 1 // longest alias, arrow separator, newline
+        };
+        let mut operation_lines = OperationKind::ALL
+            .into_iter()
+            .map(|kind| max_line(HelperSemantic::Operation(kind)))
+            .collect::<Vec<_>>();
+        operation_lines.sort_unstable_by(|left, right| right.cmp(left));
+        let maximum = common_question_bytes(&empty_profile)
+            + heading_margin
+            + max_line(HelperSemantic::BytesAscii)
+            + operation_lines.into_iter().take(11).sum::<usize>();
+        assert!(maximum <= COMMON_QUESTION_BUDGET, "{maximum}");
+        assert!(BYTE_SEMANTICS_PREAMBLE.len() < maximum);
     }
 
     fn operations() -> Vec<Operation> {

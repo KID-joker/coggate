@@ -103,7 +103,7 @@ pub(super) fn plan_rendering(
                 .map(|alias| (semantic, alias))
         })
         .collect::<Result<BTreeMap<_, _>, _>>()?;
-    let profile = ObfuscationProfile::new(aliases);
+    let profile = ObfuscationProfile::new(aliases).randomized_definitions(random)?;
     let mut names = allocated_names.into_iter();
     let mut distractor_names = allocated_distractor_names.into_iter();
 

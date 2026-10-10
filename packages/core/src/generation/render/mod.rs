@@ -291,13 +291,20 @@ mod tests {
             .profile
             .alias(HelperSemantic::Operation(OperationKind::RotateLeftDerived))
             .unwrap();
+        let swapped = plan
+            .profile
+            .definition_style(HelperSemantic::Operation(OperationKind::RotateLeftDerived))
+            .unwrap()
+            .swapped_arguments;
 
         assert_eq!(answer, b"bcdaZ");
+        let parameters = if swapped { "(key, x)" } else { "(x, key)" };
         assert!(
             rendered
                 .question()
-                .contains(&format!("{alias}(x, key): cyclically rotate x left"))
+                .contains(&format!("{alias}{parameters}"))
         );
+        assert!(rendered.question().contains("key[0]"));
     }
 
     #[test]
@@ -323,11 +330,24 @@ mod tests {
             .profile
             .alias(HelperSemantic::Operation(OperationKind::ConditionalOrder))
             .unwrap();
+        let swapped = plan
+            .profile
+            .definition_style(HelperSemantic::Operation(OperationKind::ConditionalOrder))
+            .unwrap()
+            .swapped_arguments;
 
         assert_eq!(answer, b"abcd");
-        assert!(rendered.question().contains(&format!(
-            "{alias}(control, a, b): a followed by b when unsigned control[0] is even"
-        )));
+        let parameters = if swapped {
+            "(control, b, a)"
+        } else {
+            "(control, a, b)"
+        };
+        assert!(
+            rendered
+                .question()
+                .contains(&format!("{alias}{parameters}"))
+        );
+        assert!(rendered.question().contains("control[0]"));
     }
 
     #[test]

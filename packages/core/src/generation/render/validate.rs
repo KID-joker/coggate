@@ -204,6 +204,9 @@ fn validate_obfuscation(
     fragments: &[Vec<u8>],
     plan: &RenderPlan,
 ) -> Result<(), RenderError> {
+    if !plan.profile.definitions_are_valid() {
+        return Err(RenderError::InvalidPlan);
+    }
     let expected_semantics = expected_helper_semantics(graph, plan);
     if plan
         .profile
