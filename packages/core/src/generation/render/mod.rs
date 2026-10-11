@@ -84,7 +84,7 @@ mod tests {
                 .unwrap();
         assert_eq!(before, after);
         assert_eq!(before, semantics.answer());
-        assert!(rendered.question().contains("unpadded base64url"));
+        assert!(rendered.question().contains("base64url"));
         assert!(rendered.question().contains("abstract Box"));
         assert_eq!(rendered.question().matches("extends Box").count(), 2);
         assert!(rendered.question().contains("((Box)new Path"));
@@ -94,11 +94,7 @@ mod tests {
                 .question()
                 .contains("shadows the global Text overload")
         );
-        assert!(
-            rendered
-                .question()
-                .contains("Display order is not evaluation order.")
-        );
+        assert!(rendered.question().contains("order"));
         assert_eq!(rendered.question().len(), rendered.metadata().byte_length());
         assert!(rendered.question().len() <= MAX_QUESTION_BYTES);
     }
@@ -132,6 +128,70 @@ mod tests {
             .collect::<BTreeSet<_>>();
 
         assert!(questions.len() > 1);
+    }
+
+    #[test]
+    fn v1_generation_varies_all_surface_dimensions() {
+        let semantics = planned_fixture();
+        let mut preambles = BTreeSet::new();
+        let mut sections = BTreeSet::new();
+        let mut clues = BTreeSet::new();
+        let mut requests = BTreeSet::new();
+        let mut formula_wording = false;
+        let mut wrapped = BTreeSet::new();
+
+        for seed in 0_u8..=127 {
+            let mut random = DeterministicRandom::new([seed; 32]);
+            let plan =
+                plan_rendering(semantics.graph(), semantics.fragments(), &mut random).unwrap();
+            let surface = plan.profile.surface().unwrap();
+            preambles.insert(surface.preamble);
+            sections.insert(surface.section);
+            clues.insert(surface.clue);
+            requests.insert(surface.request);
+            wrapped.insert(!surface.wrapped_nodes.is_empty());
+            formula_wording |= plan.profile.aliases().keys().any(|semantic| {
+                plan.profile
+                    .definition_style(*semantic)
+                    .is_some_and(|style| style.wording >= 3)
+            });
+        }
+
+        let expected = BTreeSet::from([0, 1, 2]);
+        assert_eq!(preambles, expected);
+        assert_eq!(sections, expected);
+        assert_eq!(clues, expected);
+        assert_eq!(requests, expected);
+        assert_eq!(wrapped, BTreeSet::from([false, true]));
+        assert!(formula_wording);
+    }
+
+    #[test]
+    fn local_text_rule_names_its_section_and_shows_the_reversal() {
+        let semantics = planned_fixture();
+        let mut observed_sections = BTreeSet::new();
+
+        for seed in 0_u8..=63 {
+            let mut random = DeterministicRandom::new([seed; 32]);
+            let plan =
+                plan_rendering(semantics.graph(), semantics.fragments(), &mut random).unwrap();
+            let section = plan.profile.surface().unwrap().section;
+            let noun = match section {
+                0 => "Section",
+                1 => "Part",
+                2 => "Code block",
+                _ => unreachable!(),
+            };
+            let index = plan.profile.scoped_fragment().unwrap() + 1;
+            let alias = plan.profile.alias(HelperSemantic::BytesAscii).unwrap();
+            let question = emitter::emit_question(&plan, semantics.fragments()).unwrap();
+
+            assert!(question.contains(&format!("Within {noun} {index} only")));
+            assert!(question.contains(&format!("{alias}(\"AB\") yields [66, 65]")));
+            observed_sections.insert(section);
+        }
+
+        assert_eq!(observed_sections, BTreeSet::from([0, 1, 2]));
     }
 
     #[test]

@@ -17,14 +17,19 @@ const DEPENDENCY_CLUES_HEADER: &str = "Dependency clues:\n";
 const DISPLAY_ORDER_WARNING: &str = "Display order is not evaluation order.\n";
 const OUTPUT_REQUEST_PREFIX: &str = "The requested result is output label ";
 const OUTPUT_REQUEST_SUFFIX: &str = ". Submit its byte array as unpadded base64url.\n";
+const RANDOM_PREAMBLES: [&str; 3] = [
+    "Every label denotes bytes. Number bytes from zero; a range [start,end) includes start and excludes end. Add and subtract each byte modulo 256. Reduce a rotation count modulo the current nonempty length. Hex text is lowercase and base64url has no padding. Helper names are local to this question; use their definitions below. Evaluate parenthesized integer arithmetic before applying a helper. Guards use widened mathematical arithmetic; follow the branch whose condition is true.\n\n",
+    "Work with byte arrays throughout. Indices begin at 0, slices stop before end, and per-byte sums and differences wrap modulo 256. Rotate within the nonempty array after reducing the count by its length. Write lowercase hex and unpadded base64url. The following aliases have exactly the stated meanings in this question. First evaluate integer expressions in parentheses. For each guard, use mathematical arithmetic in a widened integer type and take its true branch.\n\n",
+    "Interpret all intermediate values as bytes. For [start,end), take positions start through end-1; indexing starts at zero. Arithmetic on each byte wraps at 256, and rotation counts are modulo nonzero array length. Hex uses lowercase ASCII; base64url omits padding. Read the per-question helper definitions before tracing labels. Parenthesized integer calculations are mathematical and nonnegative. Evaluate guard predicates with widened arithmetic; the effective branch is the one with a true condition.\n\n",
+];
 
 pub(super) fn common_question_bytes_checked(
     profile: &ObfuscationProfile,
 ) -> Result<usize, RenderError> {
     let mut emitted = String::new();
     push_question_preamble(&mut emitted, profile)?;
-    push_dependency_clues(&mut emitted, &[String::new()])?;
-    push_final_request(&mut emitted, "")?;
+    push_dependency_clues(&mut emitted, &[String::new()], profile)?;
+    push_final_request(&mut emitted, "", profile)?;
     Ok(emitted.len())
 }
 
@@ -46,19 +51,24 @@ pub(super) fn emit_question(
 
     for (display_index, display_fragment) in plan.fragments.iter().enumerate() {
         let mut rendered_fragment = String::new();
-        push_with_limit(
-            &mut rendered_fragment,
-            &format!(
-                "[Fragment {} — {}]\n",
-                display_index + 1,
-                language_name(display_fragment.language)
-            ),
-            MAX_FRAGMENT_BYTES,
-        )?;
+        let language = language_name(display_fragment.language);
+        let heading = match plan.profile.surface().map(|style| style.section) {
+            Some(0) => format!("[Section {} | {language}]\n", display_index + 1),
+            Some(1) => format!("=== Part {} ({language}) ===\n", display_index + 1),
+            Some(2) => format!("[Code block {}: {language}]\n", display_index + 1),
+            _ => format!("[Fragment {} — {language}]\n", display_index + 1),
+        };
+        push_with_limit(&mut rendered_fragment, &heading, MAX_FRAGMENT_BYTES)?;
 
+        let marker = match plan.profile.surface().map(|style| style.section) {
+            Some(0) => "Block marker",
+            Some(1) => "Part tag",
+            Some(2) => "Section identifier",
+            _ => "Section identifier",
+        };
         push_with_limit(
             &mut rendered_fragment,
-            &format!("Section identifier: {}\n", display_fragment.heading),
+            &format!("{marker}: {}\n", display_fragment.heading),
             MAX_FRAGMENT_BYTES,
         )?;
 
@@ -109,8 +119,12 @@ pub(super) fn emit_question(
                     }
                 }
                 if !producers.is_empty() {
-                    let clue =
-                        format_dependency_clue(&producers, &step.output_label, display_index)?;
+                    let clue = format_dependency_clue_for_profile(
+                        &producers,
+                        &step.output_label,
+                        display_index,
+                        &plan.profile,
+                    )?;
                     let clue_bytes = dependency_bytes_by_fragment[display_index]
                         .checked_add(clue.len())
                         .ok_or(RenderError::LengthLimit)?;
@@ -144,13 +158,13 @@ pub(super) fn emit_question(
         push_with_limit(&mut question, &rendered, MAX_QUESTION_BYTES)?;
     }
 
-    push_dependency_clues(&mut question, &dependency_clues)?;
+    push_dependency_clues(&mut question, &dependency_clues, &plan.profile)?;
 
     let output_label = locations
         .get(&plan.output)
         .map(|location| location.output_label.as_str())
         .ok_or(RenderError::MissingReference(plan.output))?;
-    push_final_request(&mut question, output_label)?;
+    push_final_request(&mut question, output_label, &plan.profile)?;
 
     Ok(question)
 }
@@ -187,11 +201,54 @@ pub(super) fn format_dependency_clue(
     Ok(clue)
 }
 
+pub(super) fn format_dependency_clue_for_profile(
+    producers: &[(&str, usize)],
+    output_label: &str,
+    output_display_index: usize,
+    profile: &ObfuscationProfile,
+) -> Result<String, RenderError> {
+    let Some(surface) = profile.surface() else {
+        return format_dependency_clue(producers, output_label, output_display_index);
+    };
+    if producers.is_empty() {
+        return Err(RenderError::InvalidPlan);
+    }
+    let inputs = producers
+        .iter()
+        .map(|(label, section)| format!("{label} from part {}", section + 1))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let clue = match surface.clue {
+        0 => format!(
+            "For {output_label} in part {}, use {inputs}.\n",
+            output_display_index + 1
+        ),
+        1 => format!(
+            "Inputs crossing into part {} for {output_label}: {inputs}.\n",
+            output_display_index + 1
+        ),
+        2 => format!(
+            "{output_label} (part {}) depends on {inputs}.\n",
+            output_display_index + 1
+        ),
+        _ => return Err(RenderError::InvalidPlan),
+    };
+    if clue.len() > MAX_FRAGMENT_BYTES {
+        return Err(RenderError::LengthLimit);
+    }
+    Ok(clue)
+}
+
 fn push_question_preamble(
     question: &mut String,
     profile: &ObfuscationProfile,
 ) -> Result<(), RenderError> {
-    push_with_limit(question, BYTE_SEMANTICS_PREAMBLE, MAX_QUESTION_BYTES)?;
+    let preamble = profile
+        .surface()
+        .map_or(BYTE_SEMANTICS_PREAMBLE, |surface| {
+            RANDOM_PREAMBLES[usize::from(surface.preamble)]
+        });
+    push_with_limit(question, preamble, MAX_QUESTION_BYTES)?;
     let heading = match profile.heading_style() {
         0 => "Alias semantics:\n",
         1 => "Local operator rules:\n",
@@ -218,7 +275,11 @@ fn push_question_preamble(
         let style = profile
             .definition_style(*semantic)
             .ok_or(RenderError::InvalidPlan)?;
-        let definition = helper_semantic_definition_variant(*semantic, style)?;
+        let definition = if profile.surface().is_some() && style.wording >= 3 {
+            helper_semantic_definition_formula(*semantic, style)?
+        } else {
+            helper_semantic_definition_variant(*semantic, style)?
+        };
         let (parameters, description) = definition
             .split_once(": ")
             .ok_or(RenderError::InvalidPlan)?;
@@ -231,6 +292,9 @@ fn push_question_preamble(
             _ => return Err(RenderError::InvalidPlan),
         };
         push_with_limit(question, separator, MAX_QUESTION_BYTES)?;
+        if profile.surface().is_some() && style.wording == 4 {
+            push_with_limit(question, "Compute as follows: ", MAX_QUESTION_BYTES)?;
+        }
         push_with_limit(question, description, MAX_QUESTION_BYTES)?;
         push_with_limit(question, "\n", MAX_QUESTION_BYTES)?;
     }
@@ -238,14 +302,24 @@ fn push_question_preamble(
         let alias = profile
             .alias(HelperSemantic::BytesAscii)
             .ok_or(RenderError::InvalidPlan)?;
-        push_with_limit(
-            question,
-            &format!(
-                "Within Fragment {}, a local {alias}(text: Text) shadows the global Text overload: return bytes denoted by escaped ASCII text in opposite positional order. The Bytes overload keeps its global meaning.\n",
+        let scope = match profile.surface().map(|surface| surface.section) {
+            Some(0) => "Section",
+            Some(1) => "Part",
+            Some(2) => "Code block",
+            _ => "Fragment",
+        };
+        let rule = if profile.surface().is_some() {
+            format!(
+                "Within {scope} {} only, a local {alias}(text: Text) shadows the global Text overload: decode the ASCII text, then read its bytes from last to first. For example, {alias}(\"AB\") yields [66, 65] in this {scope}. The Bytes overload keeps its global meaning; outside this {scope}, the global Text rule applies.\n",
                 fragment + 1
-            ),
-            MAX_QUESTION_BYTES,
-        )?;
+            )
+        } else {
+            format!(
+                "Within {scope} {}, a local {alias}(text: Text) shadows the global Text overload: return bytes denoted by escaped ASCII text in opposite positional order. The Bytes overload keeps its global meaning.\n",
+                fragment + 1
+            )
+        };
+        push_with_limit(question, &rule, MAX_QUESTION_BYTES)?;
     }
     push_with_limit(question, "\n", MAX_QUESTION_BYTES)
 }
@@ -339,6 +413,85 @@ fn helper_semantic_definition_variant(
         2 => Ok(helper_semantic_definition_contrast(semantic)),
         _ => Err(RenderError::InvalidPlan),
     }
+}
+
+fn helper_semantic_definition_formula(
+    semantic: HelperSemantic,
+    style: AliasDefinitionStyle,
+) -> Result<&'static str, RenderError> {
+    if !(3..=4).contains(&style.wording) {
+        return Err(RenderError::InvalidPlan);
+    }
+    let definition = match (semantic, style.swapped_arguments) {
+        (HelperSemantic::BytesAscii, false) => {
+            "(text): parse the quoted ASCII escapes to obtain the represented bytes."
+        }
+        (HelperSemantic::Operation(OperationKind::Reverse), false) => {
+            "(x): result[i] equals x[len(x)-1-i] at every valid index i."
+        }
+        (HelperSemantic::Operation(OperationKind::RotateLeft), false) => {
+            "(x, n): result[i] equals x[(i+n) modulo len(x)] for nonempty x."
+        }
+        (HelperSemantic::Operation(OperationKind::RotateRight), false) => {
+            "(x, n): result[i] equals x[(i+len(x)-(n modulo len(x))) modulo len(x)] for nonempty x."
+        }
+        (HelperSemantic::Operation(OperationKind::EvenBytes), false) => {
+            "(x): result[j] equals x[2*j] for every valid even source position."
+        }
+        (HelperSemantic::Operation(OperationKind::OddBytes), false) => {
+            "(x): result[j] equals x[2*j+1] for every valid odd source position."
+        }
+        (HelperSemantic::Operation(OperationKind::Permute), false) => {
+            "(x, p): for j from zero upward, set result[j] to x[p[j]]."
+        }
+        (HelperSemantic::Operation(OperationKind::Slice), false) => {
+            "(x, start, end): result[j] equals x[start+j] while start+j is less than end."
+        }
+        (HelperSemantic::Operation(OperationKind::Xor), false) => {
+            "(x, key): result[i] equals x[i] XOR key[i modulo len(key)]."
+        }
+        (HelperSemantic::Operation(OperationKind::AddModulo), false) => {
+            "(x, y): result[i] equals (x[i]+y[i]) modulo 256."
+        }
+        (HelperSemantic::Operation(OperationKind::SubModulo), false) => {
+            "(x, y): result[i] equals (x[i]-y[i]) modulo 256."
+        }
+        (HelperSemantic::Operation(OperationKind::SubModulo), true) => {
+            "(y, x): result[i] equals (x[i]-y[i]) modulo 256; argument order follows this signature."
+        }
+        (HelperSemantic::Operation(OperationKind::HexEncode), false) => {
+            "(x): write each byte of x as two lowercase hexadecimal ASCII characters."
+        }
+        (HelperSemantic::Operation(OperationKind::HexDecode), false) => {
+            "(x): parse pairs of canonical lowercase hexadecimal ASCII characters into bytes."
+        }
+        (HelperSemantic::Operation(OperationKind::Base64UrlEncode), false) => {
+            "(x): write the bytes of x as unpadded base64url ASCII characters."
+        }
+        (HelperSemantic::Operation(OperationKind::Base64UrlDecode), false) => {
+            "(x): parse canonical unpadded base64url ASCII characters into bytes."
+        }
+        (HelperSemantic::Operation(OperationKind::Sha256Prefix), false) => {
+            "(x, n): compute SHA-256 over x and keep its first n digest bytes, not ASCII hex."
+        }
+        (HelperSemantic::Operation(OperationKind::Concat), false) => {
+            "(x1, x2, ...): output all bytes of x1, then x2, continuing in argument order."
+        }
+        (HelperSemantic::Operation(OperationKind::RotateLeftDerived), false) => {
+            "(x, key): result[i] equals x[(i+unsigned key[0]) modulo len(x)]; both inputs are nonempty."
+        }
+        (HelperSemantic::Operation(OperationKind::RotateLeftDerived), true) => {
+            "(key, x): result[i] equals x[(i+unsigned key[0]) modulo len(x)]; both inputs are nonempty."
+        }
+        (HelperSemantic::Operation(OperationKind::ConditionalOrder), false) => {
+            "(control, a, b): if unsigned control[0] is even output a then b; otherwise output b then a."
+        }
+        (HelperSemantic::Operation(OperationKind::ConditionalOrder), true) => {
+            "(control, b, a): if unsigned control[0] is even output a then b; otherwise output b then a."
+        }
+        _ => return Err(RenderError::InvalidPlan),
+    };
+    Ok(definition)
 }
 
 fn helper_semantic_definition(semantic: HelperSemantic) -> &'static str {
@@ -527,24 +680,54 @@ fn helper_semantic_definition_contrast(semantic: HelperSemantic) -> &'static str
     }
 }
 
-fn push_dependency_clues(question: &mut String, clues: &[String]) -> Result<(), RenderError> {
+fn push_dependency_clues(
+    question: &mut String,
+    clues: &[String],
+    profile: &ObfuscationProfile,
+) -> Result<(), RenderError> {
     if clues.is_empty() {
         return Ok(());
     }
-    push_with_limit(question, DEPENDENCY_CLUES_HEADER, MAX_QUESTION_BYTES)?;
+    let heading = match profile.surface().map(|surface| surface.clue) {
+        Some(0) => "Cross-part references:\n",
+        Some(1) => "Inputs from other parts:\n",
+        Some(2) => "Dependency map:\n",
+        _ => DEPENDENCY_CLUES_HEADER,
+    };
+    push_with_limit(question, heading, MAX_QUESTION_BYTES)?;
     for clue in clues {
         push_with_limit(question, clue, MAX_QUESTION_BYTES)?;
     }
     push_with_limit(question, "\n", MAX_QUESTION_BYTES)
 }
 
-fn push_final_request(question: &mut String, output_label: &str) -> Result<(), RenderError> {
-    push_with_limit(question, DISPLAY_ORDER_WARNING, MAX_QUESTION_BYTES)?;
-    push_with_limit(
-        question,
-        &format!("{OUTPUT_REQUEST_PREFIX}{output_label}{OUTPUT_REQUEST_SUFFIX}"),
-        MAX_QUESTION_BYTES,
-    )
+fn push_final_request(
+    question: &mut String,
+    output_label: &str,
+    profile: &ObfuscationProfile,
+) -> Result<(), RenderError> {
+    if let Some(surface) = profile.surface() {
+        let request = match surface.request {
+            0 => format!(
+                "Trace references rather than display order. Compute label {output_label}; return its bytes in base64url without padding.\n"
+            ),
+            1 => format!(
+                "Displayed parts need not be evaluated in order. Target output: {output_label}. Encode the resulting byte array as unpadded base64url.\n"
+            ),
+            2 => format!(
+                "Resolve dependencies first. The answer is the byte value named {output_label}, encoded using base64url with no padding.\n"
+            ),
+            _ => return Err(RenderError::InvalidPlan),
+        };
+        push_with_limit(question, &request, MAX_QUESTION_BYTES)
+    } else {
+        push_with_limit(question, DISPLAY_ORDER_WARNING, MAX_QUESTION_BYTES)?;
+        push_with_limit(
+            question,
+            &format!("{OUTPUT_REQUEST_PREFIX}{output_label}{OUTPUT_REQUEST_SUFFIX}"),
+            MAX_QUESTION_BYTES,
+        )
+    }
 }
 
 struct OutputLocation {
@@ -617,7 +800,17 @@ pub(super) fn emit_operation(
             .ok_or(RenderError::InvalidPlan)?;
         expression = bounded_parts(&[alias, "(", alias, "(", &expression, "))"])?;
     }
+    if profile.wraps(step.node) {
+        expression = wrap_identity(&expression, profile)?;
+    }
     emit_step_assignment(language, step, profile, &expression)
+}
+
+fn wrap_identity(expression: &str, profile: &ObfuscationProfile) -> Result<String, RenderError> {
+    let alias = profile
+        .alias(HelperSemantic::BytesAscii)
+        .ok_or(RenderError::InvalidPlan)?;
+    bounded_parts(&[alias, "(", alias, "(", expression, "))"])
 }
 
 pub(super) fn emit_fragment(
@@ -633,7 +826,7 @@ pub(super) fn emit_fragment(
         return Err(RenderError::InvalidPlan);
     }
     let literal_plan = step.literal_plan.as_ref().ok_or(RenderError::InvalidPlan)?;
-    let expression = fragment_expression(
+    let mut expression = fragment_expression(
         language,
         value,
         literal_plan,
@@ -641,6 +834,9 @@ pub(super) fn emit_fragment(
         profile,
         profile.is_scoped_source(step.node),
     )?;
+    if profile.wraps(step.node) {
+        expression = wrap_identity(&expression, profile)?;
+    }
     emit_step_assignment(language, step, profile, &expression)
 }
 
@@ -698,15 +894,26 @@ pub(super) fn emit_distractor(
     profile: &ObfuscationProfile,
 ) -> Result<String, RenderError> {
     let mut rendered = String::new();
-    push_with_limit(
-        &mut rendered,
-        &format!(
-            "[Unrelated scratch calculation — {}]\nSection identifier: {}\nThis is an unrelated scratch calculation; ignore it. It is not part of the requested result.\n",
-            language_name(distractor.language),
+    let language = language_name(distractor.language);
+    let opening = match profile.surface().map(|surface| surface.section) {
+        Some(0) => format!(
+            "[Scratch block | {language}]\nBlock marker: {}\nThis scratch work is unrelated to the target; ignore it.\n",
             distractor.heading
         ),
-        MAX_FRAGMENT_BYTES,
-    )?;
+        Some(1) => format!(
+            "=== Unrelated calculation ({language}) ===\nPart tag: {}\nThis calculation is separate from the requested result.\n",
+            distractor.heading
+        ),
+        Some(2) => format!(
+            "[Unrelated notes: {language}]\nSection identifier: {}\nThe notes below do not contribute to the answer.\n",
+            distractor.heading
+        ),
+        _ => format!(
+            "[Unrelated scratch calculation — {language}]\nSection identifier: {}\nThis is an unrelated scratch calculation; ignore it. It is not part of the requested result.\n",
+            distractor.heading
+        ),
+    };
+    push_with_limit(&mut rendered, &opening, MAX_FRAGMENT_BYTES)?;
     let mut previous = fragment_expression(
         distractor.language,
         &distractor.seed_value,

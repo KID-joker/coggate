@@ -115,7 +115,11 @@ pub(super) fn plan_rendering(
     let mut profile = ObfuscationProfile::new(aliases)
         .randomized_definitions(random)?
         .with_object_dispatch(random)?
-        .with_overloaded_node(overloaded_node);
+        .with_overloaded_node(overloaded_node)
+        .randomized_surface(
+            graph.topological_nodes().iter().map(|node| node.id()),
+            random,
+        )?;
     let mut names = allocated_names.into_iter();
     let mut distractor_names = allocated_distractor_names.into_iter();
 
@@ -319,10 +323,14 @@ fn distractor_fixed_identifier_tokens(
     for profile in [
         profile.clone(),
         profile.clone().with_object_dispatch_choice(false),
-        profile.with_object_dispatch_choice(true),
+        profile.clone().with_object_dispatch_choice(true),
     ] {
         let rendered = emit_distractor(&probe, &profile)?;
         forbidden.extend(ascii_identifier_tokens(&rendered).map(str::to_owned));
+        for section in 0..3 {
+            let rendered = emit_distractor(&probe, &profile.clone().with_probe_section(section))?;
+            forbidden.extend(ascii_identifier_tokens(&rendered).map(str::to_owned));
+        }
     }
     Ok(forbidden)
 }

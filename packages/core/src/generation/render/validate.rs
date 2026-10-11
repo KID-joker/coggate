@@ -5,7 +5,7 @@ use crate::generation::{NodeId, NodeKind, OperationKind, ValidatedSemanticGraph}
 use super::{
     emitter::{
         MAX_STEP_BYTES, common_question_bytes_checked, declared_template_max_bytes,
-        emit_distractor, emit_fragment, emit_operation, format_dependency_clue,
+        emit_distractor, emit_fragment, emit_operation, format_dependency_clue_for_profile,
     },
     error::RenderError,
     model::{
@@ -222,6 +222,18 @@ fn validate_obfuscation(
         if !graph.topological_nodes().iter().any(|node| {
             node.id() == overloaded_node && matches!(node.kind(), NodeKind::Operation { .. })
         }) {
+            return Err(RenderError::InvalidPlan);
+        }
+    }
+    if let Some(surface) = plan.profile.surface() {
+        if plan.profile.object_dispatch().is_none()
+            || surface.wrapped_nodes.iter().any(|node| {
+                !graph
+                    .topological_nodes()
+                    .iter()
+                    .any(|candidate| candidate.id() == *node)
+            })
+        {
             return Err(RenderError::InvalidPlan);
         }
     }
@@ -574,7 +586,12 @@ fn validate_length_bounds(
                 }
             }
             if !producers.is_empty() {
-                let clue = format_dependency_clue(&producers, &step.output_label, *fragment_index)?;
+                let clue = format_dependency_clue_for_profile(
+                    &producers,
+                    &step.output_label,
+                    *fragment_index,
+                    &plan.profile,
+                )?;
                 fragment_budgets[*fragment_index] =
                     checked_add(fragment_budgets[*fragment_index], clue.len())?;
             }
@@ -646,7 +663,11 @@ fn emitted_step_bytes(
             emit_operation(language, step, profile, &input_labels)?
         }
     };
-    let declared = declared_template_max_bytes(language, step.template);
+    let declared = if profile.surface().is_some() {
+        MAX_STEP_BYTES
+    } else {
+        declared_template_max_bytes(language, step.template)
+    };
     if emitted.len() > declared || emitted.len() > MAX_STEP_BYTES {
         return Err(RenderError::LengthLimit);
     }
@@ -672,7 +693,9 @@ mod tests {
                 MAX_QUESTION_BYTES, NumericStyle, ObfuscationProfile, RenderLanguage, RenderPlan,
                 TemplateFamily,
             },
-            names::{MAX_ALLOCATED_NAMES, NameAllocator, ascii_identifier_tokens},
+            names::{
+                MAX_ALLOCATED_NAMES, NameAllocator, ascii_identifier_tokens, is_valid_identifier,
+            },
             planner::plan_rendering,
         },
         test_random::DeterministicRandom,
@@ -1651,8 +1674,30 @@ mod tests {
 
     #[test]
     fn rejects_effective_identifier_tokens_that_appear_in_distractor_text() {
-        for (name, category) in [("result", 0), ("ignore", 1), ("bytes", 2)] {
+        for category in 0..3 {
             let (graph, fragments, mut plan) = fixture_plan_with_distractor();
+            if category == 2 {
+                let distractor = plan.distractor.as_mut().unwrap();
+                distractor.language = RenderLanguage::C;
+                distractor.steps[0].template = TemplateFamily::Direct;
+                distractor.steps[0].guard_value = None;
+            }
+            let rendered =
+                super::emit_distractor(plan.distractor.as_ref().unwrap(), &plan.profile).unwrap();
+            let name = ascii_identifier_tokens(&rendered)
+                .find(|token| {
+                    is_valid_identifier(token)
+                        && [
+                            "Scratch",
+                            "Unrelated",
+                            "calculation",
+                            "notes",
+                            "ignore",
+                            "target",
+                        ]
+                        .contains(token)
+                })
+                .expect("distractor prose supplies a valid identifier token");
             match category {
                 0 => {
                     plan.fragments
@@ -1663,13 +1708,7 @@ mod tests {
                         .output_label = name.to_owned()
                 }
                 1 => plan.fragments[0].steps[0].local_name = name.to_owned(),
-                2 => {
-                    plan.fragments[0].heading = name.to_owned();
-                    let distractor = plan.distractor.as_mut().unwrap();
-                    distractor.language = RenderLanguage::C;
-                    distractor.steps[0].template = TemplateFamily::Direct;
-                    distractor.steps[0].guard_value = None;
-                }
+                2 => plan.fragments[0].heading = name.to_owned(),
                 _ => unreachable!(),
             }
 

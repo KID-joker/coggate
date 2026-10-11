@@ -84,6 +84,16 @@ pub(super) struct ObfuscationProfile {
     overloaded_node: Option<NodeId>,
     scoped_fragment: Option<usize>,
     scoped_sources: BTreeSet<NodeId>,
+    surface: Option<SurfaceStyle>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct SurfaceStyle {
+    pub(super) preamble: u8,
+    pub(super) section: u8,
+    pub(super) clue: u8,
+    pub(super) request: u8,
+    pub(super) wrapped_nodes: BTreeSet<NodeId>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -110,6 +120,7 @@ impl ObfuscationProfile {
             overloaded_node: None,
             scoped_fragment: None,
             scoped_sources: BTreeSet::new(),
+            surface: None,
         }
     }
 
@@ -142,6 +153,52 @@ impl ObfuscationProfile {
 
     pub(super) fn aliases(&self) -> &BTreeMap<HelperSemantic, String> {
         &self.aliases
+    }
+
+    pub(super) fn randomized_surface(
+        mut self,
+        nodes: impl IntoIterator<Item = NodeId>,
+        random: &mut impl RandomSource,
+    ) -> Result<Self, RenderError> {
+        for style in self.definition_styles.values_mut() {
+            style.wording =
+                sample_below(random, 5).map_err(RenderError::from_generation_error)? as u8;
+        }
+        let mut wrapped_nodes = BTreeSet::new();
+        for node in nodes {
+            if sample_below(random, 4).map_err(RenderError::from_generation_error)? == 0 {
+                wrapped_nodes.insert(node);
+            }
+        }
+        self.surface = Some(SurfaceStyle {
+            preamble: sample_below(random, 3).map_err(RenderError::from_generation_error)? as u8,
+            section: sample_below(random, 3).map_err(RenderError::from_generation_error)? as u8,
+            clue: sample_below(random, 3).map_err(RenderError::from_generation_error)? as u8,
+            request: sample_below(random, 3).map_err(RenderError::from_generation_error)? as u8,
+            wrapped_nodes,
+        });
+        Ok(self)
+    }
+
+    pub(super) fn surface(&self) -> Option<&SurfaceStyle> {
+        self.surface.as_ref()
+    }
+
+    pub(super) fn with_probe_section(mut self, section: u8) -> Self {
+        self.surface = Some(SurfaceStyle {
+            preamble: 0,
+            section,
+            clue: 0,
+            request: 0,
+            wrapped_nodes: BTreeSet::new(),
+        });
+        self
+    }
+
+    pub(super) fn wraps(&self, node: NodeId) -> bool {
+        self.surface
+            .as_ref()
+            .is_some_and(|surface| surface.wrapped_nodes.contains(&node))
     }
 
     pub(super) fn with_object_dispatch(
@@ -232,8 +289,14 @@ impl ObfuscationProfile {
                 .copied()
                 .collect::<std::collections::BTreeSet<_>>()
                 == expected
+            && self.surface.as_ref().is_none_or(|surface| {
+                surface.preamble < 3
+                    && surface.section < 3
+                    && surface.clue < 3
+                    && surface.request < 3
+            })
             && self.definition_styles.iter().all(|(semantic, style)| {
-                style.wording < 3
+                style.wording < if self.surface.is_some() { 5 } else { 3 }
                     && style.layout < 3
                     && (!style.swapped_arguments
                         || matches!(
