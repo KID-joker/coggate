@@ -10,8 +10,8 @@ use super::{
     error::RenderError,
     model::{
         DisplayDistractor, DisplayDistractorStep, DisplayFragment, DisplayStep, DisplayStepKind,
-        DistractorOperation, HelperSemantic, MAX_DISTRACTOR_SEED_BYTES, MIN_DISTRACTOR_SEED_BYTES,
-        ObfuscationProfile, RenderLanguage, RenderPlan, TemplateFamily,
+        DistractorOperation, FragmentLiteralPlan, HelperSemantic, MAX_DISTRACTOR_SEED_BYTES,
+        MIN_DISTRACTOR_SEED_BYTES, ObfuscationProfile, RenderLanguage, RenderPlan, TemplateFamily,
     },
     names::{NameAllocator, ascii_identifier_tokens},
     obfuscation::{
@@ -103,9 +103,19 @@ pub(super) fn plan_rendering(
                 .map(|alias| (semantic, alias))
         })
         .collect::<Result<BTreeMap<_, _>, _>>()?;
-    let profile = ObfuscationProfile::new(aliases)
+    let overload_candidates = graph
+        .topological_nodes()
+        .iter()
+        .filter(|node| matches!(node.kind(), NodeKind::Operation { .. }))
+        .map(|node| node.id())
+        .collect::<Vec<_>>();
+    let overloaded_node = *overload_candidates
+        .get(sample(random, overload_candidates.len())?)
+        .ok_or(RenderError::InvalidPlan)?;
+    let mut profile = ObfuscationProfile::new(aliases)
         .randomized_definitions(random)?
-        .with_object_dispatch(random)?;
+        .with_object_dispatch(random)?
+        .with_overloaded_node(overloaded_node);
     let mut names = allocated_names.into_iter();
     let mut distractor_names = allocated_distractor_names.into_iter();
 
@@ -195,12 +205,67 @@ pub(super) fn plan_rendering(
     }
 
     shuffle(random, &mut display_fragments).map_err(RenderError::from_generation_error)?;
+    let scope_candidates = display_fragments
+        .iter()
+        .enumerate()
+        .filter_map(|(index, fragment)| {
+            fragment
+                .steps
+                .iter()
+                .any(|step| matches!(step.kind, DisplayStepKind::Fragment { .. }))
+                .then_some(index)
+        })
+        .collect::<Vec<_>>();
+    let preferred_scopes = scope_candidates
+        .iter()
+        .copied()
+        .filter(|index| {
+            display_fragments[*index]
+                .steps
+                .iter()
+                .flat_map(|step| literal_lengths(step, fragments))
+                .any(|length| length > 1)
+        })
+        .collect::<Vec<_>>();
+    let scope_pool = if preferred_scopes.is_empty() {
+        &scope_candidates
+    } else {
+        &preferred_scopes
+    };
+    let scoped_fragment = *scope_pool
+        .get(sample(random, scope_pool.len())?)
+        .ok_or(RenderError::InvalidPlan)?;
+    let scoped_sources = display_fragments[scoped_fragment]
+        .steps
+        .iter()
+        .filter_map(|step| {
+            matches!(step.kind, DisplayStepKind::Fragment { .. }).then_some(step.node)
+        })
+        .collect();
+    profile = profile.with_scoped_fragment(scoped_fragment, scoped_sources);
     Ok(RenderPlan {
         fragments: display_fragments,
         output: graph.output(),
         profile,
         distractor,
     })
+}
+
+fn literal_lengths(step: &DisplayStep, fragments: &[Vec<u8>]) -> Vec<usize> {
+    let DisplayStepKind::Fragment { index } = step.kind else {
+        return Vec::new();
+    };
+    match step.literal_plan.as_ref() {
+        Some(FragmentLiteralPlan::Whole) => fragments
+            .get(index)
+            .map(|value| vec![value.len()])
+            .unwrap_or_default(),
+        Some(FragmentLiteralPlan::OrderedChunks(chunks))
+        | Some(FragmentLiteralPlan::ShuffledChunks { chunks, .. }) => {
+            chunks.iter().map(|chunk| chunk.len()).collect()
+        }
+        None => Vec::new(),
+    }
 }
 
 struct DistractorDraft {
@@ -250,10 +315,16 @@ fn distractor_fixed_identifier_tokens(
         steps,
     };
     let profile = ObfuscationProfile::new(aliases);
-    let rendered = emit_distractor(&probe, &profile)?;
-    Ok(ascii_identifier_tokens(&rendered)
-        .map(str::to_owned)
-        .collect())
+    let mut forbidden = BTreeSet::new();
+    for profile in [
+        profile.clone(),
+        profile.clone().with_object_dispatch_choice(false),
+        profile.with_object_dispatch_choice(true),
+    ] {
+        let rendered = emit_distractor(&probe, &profile)?;
+        forbidden.extend(ascii_identifier_tokens(&rendered).map(str::to_owned));
+    }
+    Ok(forbidden)
 }
 
 fn plan_distractor(random: &mut impl RandomSource) -> Result<DistractorDraft, RenderError> {
@@ -334,7 +405,7 @@ fn sample(random: &mut impl RandomSource, upper: usize) -> Result<usize, RenderE
 mod tests {
     use std::collections::BTreeSet;
 
-    use super::plan_rendering;
+    use super::{literal_lengths, plan_rendering};
     use crate::generation::{
         GenerationError, NodeKind, Operation, OperationKind, SemanticGraphBuilder,
         ValidatedSemanticGraph,
@@ -587,6 +658,38 @@ mod tests {
                 .any(|style| matches!(style, NumericStyle::IdentityOffset { delta: 1..=15 }))
         );
         assert_eq!(literal_kinds, BTreeSet::from([0, 1, 2]));
+    }
+
+    #[test]
+    fn plans_scope_multibyte_literals_while_global_text_keeps_byte_order() {
+        let fragments = vec![b"ABCDEF".to_vec(), b"GHIJKL".to_vec(), b"MNOPQR".to_vec()];
+        let graph = graph_for_fragment_lengths(vec![6; fragments.len()]);
+        let mut saw_scoped_multibyte = false;
+
+        for seed in 0_u8..=127 {
+            let mut random = DeterministicRandom::new([seed; 32]);
+            let plan = plan_rendering(&graph, &fragments, &mut random).unwrap();
+            let scoped_fragment = plan.profile.scoped_fragment().unwrap();
+            let lengths = |index: usize| {
+                plan.fragments[index]
+                    .steps
+                    .iter()
+                    .flat_map(|step| literal_lengths(step, &fragments))
+                    .filter(|length| *length > 1)
+                    .collect::<Vec<_>>()
+            };
+            let any_multibyte = (0..plan.fragments.len()).any(|index| !lengths(index).is_empty());
+            let scoped_multibyte = !lengths(scoped_fragment).is_empty();
+            if any_multibyte {
+                assert!(scoped_multibyte, "seed {seed}");
+            }
+            saw_scoped_multibyte |= scoped_multibyte;
+
+            assert!(!plan.profile.text_call_reverses(false));
+            assert!(plan.profile.text_call_reverses(true));
+        }
+
+        assert!(saw_scoped_multibyte);
     }
 
     #[test]

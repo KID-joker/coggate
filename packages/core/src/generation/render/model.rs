@@ -1,4 +1,8 @@
-use std::{collections::BTreeMap, fmt, ops::Range};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+    ops::Range,
+};
 
 use crate::generation::{NodeId, Operation, OperationKind};
 
@@ -74,7 +78,12 @@ pub(super) struct ObfuscationProfile {
     definition_order: Vec<HelperSemantic>,
     definition_styles: BTreeMap<HelperSemantic, AliasDefinitionStyle>,
     heading_style: u8,
+    // Whether PathA, rather than PathB, reverses text. The Text overload selects
+    // the subclass that applies the reversal twice and preserves byte order.
     object_dispatch: Option<bool>,
+    overloaded_node: Option<NodeId>,
+    scoped_fragment: Option<usize>,
+    scoped_sources: BTreeSet<NodeId>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -98,6 +107,9 @@ impl ObfuscationProfile {
             definition_styles,
             heading_style: 0,
             object_dispatch: None,
+            overloaded_node: None,
+            scoped_fragment: None,
+            scoped_sources: BTreeSet::new(),
         }
     }
 
@@ -141,8 +153,44 @@ impl ObfuscationProfile {
         Ok(self)
     }
 
+    pub(super) fn with_object_dispatch_choice(mut self, path_a_reverses: bool) -> Self {
+        self.object_dispatch = Some(path_a_reverses);
+        self
+    }
+
     pub(super) fn object_dispatch(&self) -> Option<bool> {
         self.object_dispatch
+    }
+
+    pub(super) fn text_call_reverses(&self, scoped: bool) -> bool {
+        scoped
+    }
+
+    pub(super) fn with_overloaded_node(mut self, node: NodeId) -> Self {
+        self.overloaded_node = Some(node);
+        self
+    }
+
+    pub(super) fn overloaded_node(&self) -> Option<NodeId> {
+        self.overloaded_node
+    }
+
+    pub(super) fn with_scoped_fragment(mut self, index: usize, sources: BTreeSet<NodeId>) -> Self {
+        self.scoped_fragment = Some(index);
+        self.scoped_sources = sources;
+        self
+    }
+
+    pub(super) fn scoped_fragment(&self) -> Option<usize> {
+        self.scoped_fragment
+    }
+
+    pub(super) fn is_scoped_source(&self, node: NodeId) -> bool {
+        self.scoped_sources.contains(&node)
+    }
+
+    pub(super) fn scoped_sources(&self) -> &BTreeSet<NodeId> {
+        &self.scoped_sources
     }
 
     pub(super) fn definition_order(&self) -> &[HelperSemantic] {
@@ -168,6 +216,9 @@ impl ObfuscationProfile {
             .collect::<std::collections::BTreeSet<_>>();
         self.heading_style < 3
             && (self.object_dispatch.is_none() || expected.contains(&HelperSemantic::BytesAscii))
+            && (self.overloaded_node.is_none() || self.object_dispatch.is_some())
+            && (self.scoped_fragment.is_none() == self.scoped_sources.is_empty())
+            && (self.scoped_fragment.is_none() || self.object_dispatch.is_some())
             && self.definition_order.len() == expected.len()
             && self
                 .definition_order

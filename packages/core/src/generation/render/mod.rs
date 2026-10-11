@@ -87,6 +87,13 @@ mod tests {
         assert!(rendered.question().contains("unpadded base64url"));
         assert!(rendered.question().contains("abstract Box"));
         assert_eq!(rendered.question().matches("extends Box").count(), 2);
+        assert!(rendered.question().contains("((Box)new Path"));
+        assert!(rendered.question().contains("value: Bytes"));
+        assert!(
+            rendered
+                .question()
+                .contains("shadows the global Text overload")
+        );
         assert!(
             rendered
                 .question()
@@ -256,14 +263,19 @@ mod tests {
 
         for alias in plan.profile.aliases().values() {
             let definition = format!("{alias}(");
+            let expected = if plan.profile.alias(HelperSemantic::BytesAscii) == Some(alias) {
+                2
+            } else {
+                1
+            };
             assert_eq!(
                 rendered
                     .question()
                     .lines()
                     .filter(|line| line.starts_with(&definition))
                     .count(),
-                1,
-                "exactly one definition expected for {alias}"
+                expected,
+                "unexpected definition count for {alias}"
             );
             assert!(rendered.question().matches(&definition).count() >= 2);
         }

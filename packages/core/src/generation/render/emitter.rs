@@ -12,7 +12,7 @@ use super::model::{
 
 pub(super) const MAX_STEP_BYTES: usize = 512;
 
-const BYTE_SEMANTICS_PREAMBLE: &str = "Treat every value as a byte array. Indices are zero-based and slices use half-open [start,end) ranges. Addition and subtraction use wrapping u8 arithmetic modulo 256. Rotate amounts are reduced modulo the nonempty current array length. Hex is lowercase. Base64url is unpadded base64url. The names below are per-question aliases with the stated mathematical semantics. Parenthesized additions and subtractions are nonnegative integer expressions evaluated mathematically before use. Guard predicates use mathematical arithmetic rendered in a widened integer type; the effective answer follows the true branch.\n\n";
+const BYTE_SEMANTICS_PREAMBLE: &str = "Intermediate and output values are byte arrays. Indices are zero-based and slices use half-open [start,end) ranges. Addition and subtraction use wrapping u8 arithmetic modulo 256. Rotate amounts are reduced modulo the nonempty current array length. Hex is lowercase. Base64url is unpadded base64url. The names below are per-question aliases with the stated mathematical semantics. Parenthesized additions and subtractions are nonnegative integer expressions evaluated mathematically before use. Guard predicates use mathematical arithmetic rendered in a widened integer type; the effective answer follows the true branch.\n\n";
 const DEPENDENCY_CLUES_HEADER: &str = "Dependency clues:\n";
 const DISPLAY_ORDER_WARNING: &str = "Display order is not evaluation order.\n";
 const OUTPUT_REQUEST_PREFIX: &str = "The requested result is output label ";
@@ -205,8 +205,13 @@ fn push_question_preamble(
             .get(semantic)
             .ok_or(RenderError::InvalidPlan)?;
         if *semantic == HelperSemantic::BytesAscii {
-            if let Some(path_a_is_effective) = profile.object_dispatch() {
-                push_object_dispatch_definition(question, alias, path_a_is_effective)?;
+            if let Some(path_a_reverses) = profile.object_dispatch() {
+                push_object_dispatch_definition(
+                    question,
+                    alias,
+                    path_a_reverses,
+                    profile.overloaded_node().is_some(),
+                )?;
                 continue;
             }
         }
@@ -229,19 +234,31 @@ fn push_question_preamble(
         push_with_limit(question, description, MAX_QUESTION_BYTES)?;
         push_with_limit(question, "\n", MAX_QUESTION_BYTES)?;
     }
+    if let Some(fragment) = profile.scoped_fragment() {
+        let alias = profile
+            .alias(HelperSemantic::BytesAscii)
+            .ok_or(RenderError::InvalidPlan)?;
+        push_with_limit(
+            question,
+            &format!(
+                "Within Fragment {}, a local {alias}(text: Text) shadows the global Text overload: return bytes denoted by escaped ASCII text in opposite positional order. The Bytes overload keeps its global meaning.\n",
+                fragment + 1
+            ),
+            MAX_QUESTION_BYTES,
+        )?;
+    }
     push_with_limit(question, "\n", MAX_QUESTION_BYTES)
 }
 
 fn push_object_dispatch_definition(
     question: &mut String,
     alias: &str,
-    path_a_is_effective: bool,
+    path_a_reverses: bool,
+    has_bytes_overload: bool,
 ) -> Result<(), RenderError> {
-    // This is a language-neutral object model for the per-question aliases. The base owns
-    // the private input, and the base-typed reference dispatches to the constructed subclass.
     push_with_limit(
         question,
-        "Box.run() dispatches to the class constructed after new.\n",
+        "Text is a quoted escaped ASCII literal; Bytes is a byte array. Overloads use the argument type. Box.run() dispatches to the constructed subclass.\n",
         MAX_QUESTION_BYTES,
     )?;
     push_with_limit(
@@ -249,31 +266,35 @@ fn push_object_dispatch_definition(
         "abstract Box { private text; Box(text) stores text; subclasses inherit Box(text); protected get() returns text; virtual run(); }\n",
         MAX_QUESTION_BYTES,
     )?;
-    for (path, effective) in [
-        ("PathA", path_a_is_effective),
-        ("PathB", !path_a_is_effective),
-    ] {
-        let action = if effective {
-            "bytes denoted by escaped ASCII get()"
-        } else {
-            "bytes denoted by escaped ASCII get(), in opposite positional order"
-        };
+    for (path, reverses) in [("PathA", path_a_reverses), ("PathB", !path_a_reverses)] {
+        let count = if reverses { "once" } else { "twice" };
         push_with_limit(
             question,
-            &format!("class {path} extends Box {{ override run() = {action}; }}\n"),
+            &format!(
+                "class {path} extends Box {{ override run() = bytes denoted by escaped ASCII get(), placed in opposite positional order {count}; }}\n"
+            ),
             MAX_QUESTION_BYTES,
         )?;
     }
-    let active = if path_a_is_effective {
-        "PathA"
-    } else {
-        "PathB"
-    };
+    let selected = if path_a_reverses { "PathB" } else { "PathA" };
     push_with_limit(
         question,
-        &format!("{alias}(text) = ((Box)new {active}(text)).run()\n"),
+        &format!("{alias}(text: Text) = ((Box)new {selected}(text)).run()\n"),
         MAX_QUESTION_BYTES,
-    )
+    )?;
+    push_with_limit(
+        question,
+        "The selected Text path reverses twice and returns the decoded bytes in their original order.\n",
+        MAX_QUESTION_BYTES,
+    )?;
+    if has_bytes_overload {
+        push_with_limit(
+            question,
+            &format!("{alias}(value: Bytes) = value in opposite positional order.\n"),
+            MAX_QUESTION_BYTES,
+        )?;
+    }
+    Ok(())
 }
 
 fn helper_semantic_definition_variant(
@@ -589,7 +610,13 @@ pub(super) fn emit_operation(
     operation
         .validate_arity(inputs.len())
         .map_err(|_| RenderError::InvalidPlan)?;
-    let expression = operation_expression(operation, inputs, step.numeric_style, profile)?;
+    let mut expression = operation_expression(operation, inputs, step.numeric_style, profile)?;
+    if profile.overloaded_node() == Some(step.node) {
+        let alias = profile
+            .alias(HelperSemantic::BytesAscii)
+            .ok_or(RenderError::InvalidPlan)?;
+        expression = bounded_parts(&[alias, "(", alias, "(", &expression, "))"])?;
+    }
     emit_step_assignment(language, step, profile, &expression)
 }
 
@@ -606,8 +633,14 @@ pub(super) fn emit_fragment(
         return Err(RenderError::InvalidPlan);
     }
     let literal_plan = step.literal_plan.as_ref().ok_or(RenderError::InvalidPlan)?;
-    let expression =
-        fragment_expression(language, value, literal_plan, step.numeric_style, profile)?;
+    let expression = fragment_expression(
+        language,
+        value,
+        literal_plan,
+        step.numeric_style,
+        profile,
+        profile.is_scoped_source(step.node),
+    )?;
     emit_step_assignment(language, step, profile, &expression)
 }
 
@@ -642,7 +675,7 @@ fn emit_assignment(
             let bytes_alias = profile
                 .alias(HelperSemantic::BytesAscii)
                 .ok_or(RenderError::InvalidPlan)?;
-            Some(bytes_call(bytes_alias, b"A")?)
+            Some(bytes_call(bytes_alias, b"A", profile, false)?)
         }
         (TemplateFamily::Direct | TemplateFamily::Helper | TemplateFamily::AliasChain, None) => {
             None
@@ -680,6 +713,7 @@ pub(super) fn emit_distractor(
         &distractor.literal_plan,
         NumericStyle::Decimal,
         profile,
+        false,
     )?;
     for step in &distractor.steps {
         let operation = step.operation.operation();
@@ -904,6 +938,7 @@ fn fragment_expression(
     literal_plan: &FragmentLiteralPlan,
     numeric_style: NumericStyle,
     profile: &ObfuscationProfile,
+    scoped: bool,
 ) -> Result<String, RenderError> {
     let bytes_alias = profile
         .alias(HelperSemantic::BytesAscii)
@@ -912,7 +947,7 @@ fn fragment_expression(
     let expression = match literal_plan {
         FragmentLiteralPlan::Whole => {
             reconstructed.extend_from_slice(value);
-            bytes_call(bytes_alias, value)?
+            bytes_call(bytes_alias, value, profile, scoped)?
         }
         FragmentLiteralPlan::OrderedChunks(chunks) => {
             validate_emitted_chunks(chunks, value.len())?;
@@ -927,7 +962,7 @@ fn fragment_expression(
             for chunk in chunks {
                 let bytes = value.get(chunk.clone()).ok_or(RenderError::InvalidPlan)?;
                 reconstructed.extend_from_slice(bytes);
-                calls.push(bytes_call(bytes_alias, bytes)?);
+                calls.push(bytes_call(bytes_alias, bytes, profile, scoped)?);
             }
             complete_call(concat_alias, &calls)?
         }
@@ -964,7 +999,7 @@ fn fragment_expression(
                     value
                         .get(chunk.clone())
                         .ok_or(RenderError::InvalidPlan)
-                        .and_then(|bytes| bytes_call(bytes_alias, bytes))
+                        .and_then(|bytes| bytes_call(bytes_alias, bytes, profile, scoped))
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             let mut restored_calls = Vec::with_capacity(restore_order.len());
@@ -993,8 +1028,18 @@ fn concat_alias(profile: &ObfuscationProfile) -> Result<&str, RenderError> {
         .ok_or(RenderError::InvalidPlan)
 }
 
-fn bytes_call(alias: &str, value: &[u8]) -> Result<String, RenderError> {
-    let value = std::str::from_utf8(value).map_err(|_| RenderError::InvalidPlan)?;
+fn bytes_call(
+    alias: &str,
+    value: &[u8],
+    profile: &ObfuscationProfile,
+    scoped: bool,
+) -> Result<String, RenderError> {
+    let displayed = if profile.text_call_reverses(scoped) {
+        value.iter().rev().copied().collect::<Vec<_>>()
+    } else {
+        value.to_vec()
+    };
+    let value = std::str::from_utf8(&displayed).map_err(|_| RenderError::InvalidPlan)?;
     let mut escaped = String::new();
     for character in value.chars() {
         for escaped_character in character.escape_default() {
@@ -1032,7 +1077,7 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
 
     use super::{
-        BYTE_SEMANTICS_PREAMBLE, MAX_STEP_BYTES, bounded_parts, common_question_bytes,
+        BYTE_SEMANTICS_PREAMBLE, MAX_STEP_BYTES, bounded_parts, bytes_call, common_question_bytes,
         common_question_bytes_checked, declared_template_max_bytes,
         emit_fragment as emit_fragment_step, emit_operation as emit_operation_step, emit_question,
         fragment_expression, helper_semantic_definition, helper_semantic_definition_variant,
@@ -1077,22 +1122,88 @@ mod tests {
 
     #[test]
     fn object_rule_uses_private_state_inherited_overrides_and_runtime_dispatch() {
-        for (active_is_a, active) in [(true, "PathA"), (false, "PathB")] {
+        for path_a_reverses in [true, false] {
             let mut rule = String::new();
-            push_object_dispatch_definition(&mut rule, "helper", active_is_a).unwrap();
+            push_object_dispatch_definition(&mut rule, "helper", path_a_reverses, true).unwrap();
             assert!(rule.contains("private text"));
             assert!(rule.contains("protected get() returns text"));
             assert_eq!(rule.matches("extends Box").count(), 2);
             assert_eq!(rule.matches("override run()").count(), 2);
-            assert_eq!(rule.matches("escaped ASCII").count(), 2);
-            assert_eq!(rule.matches("opposite positional order").count(), 1);
-            assert!(rule.contains(&format!("helper(text) = ((Box)new {active}(text)).run()")));
-            let active_definition = rule
+            assert_eq!(rule.matches("escaped ASCII").count(), 3);
+            assert_eq!(rule.matches("opposite positional order").count(), 3);
+            let selected = if path_a_reverses { "PathB" } else { "PathA" };
+            assert!(rule.contains(&format!(
+                "helper(text: Text) = ((Box)new {selected}(text)).run()"
+            )));
+            assert!(rule.contains("selected Text path reverses twice"));
+            assert!(rule.contains("helper(value: Bytes) = value in opposite positional order."));
+            let path_a_definition = rule
                 .lines()
-                .find(|line| line.starts_with(&format!("class {active} ")))
+                .find(|line| line.starts_with("class PathA "))
                 .unwrap();
-            assert!(!active_definition.contains("opposite positional order"));
+            assert_eq!(path_a_definition.contains("order once"), path_a_reverses);
         }
+    }
+
+    #[test]
+    fn text_overload_keeps_global_literals_and_reverses_local_literals() {
+        for path_a_reverses in [true, false] {
+            let profile = ObfuscationProfile::new(BTreeMap::from([(
+                HelperSemantic::BytesAscii,
+                "helper".to_owned(),
+            )]))
+            .with_object_dispatch_choice(path_a_reverses);
+            for length in 1..=16 {
+                let source = &b"ABCDEFGHIJKLMNOP"[..length];
+                for scoped in [false, true] {
+                    let call = bytes_call("helper", source, &profile, scoped).unwrap();
+                    let displayed = call
+                        .strip_prefix("helper(\"")
+                        .unwrap()
+                        .strip_suffix("\")")
+                        .unwrap()
+                        .as_bytes();
+                    let reverses = profile.text_call_reverses(scoped);
+                    let resolved = if reverses {
+                        displayed.iter().rev().copied().collect::<Vec<_>>()
+                    } else {
+                        displayed.to_vec()
+                    };
+                    assert_eq!(resolved, source);
+                    assert_eq!(reverses, scoped);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn selected_operation_uses_the_bytes_overload_twice_without_changing_its_value() {
+        let profile = ObfuscationProfile::new(BTreeMap::from([
+            (HelperSemantic::BytesAscii, "literal".to_owned()),
+            (
+                HelperSemantic::Operation(OperationKind::Reverse),
+                "turn".to_owned(),
+            ),
+        ]))
+        .with_object_dispatch_choice(true)
+        .with_overloaded_node(NodeId(0));
+        let step = operation_step(
+            TemplateFamily::Direct,
+            "output",
+            "local",
+            &Operation::Reverse,
+        );
+        let emitted = emit_operation_step(
+            RenderLanguage::Pseudocode,
+            &step,
+            &profile,
+            &["input".to_owned()],
+        )
+        .unwrap();
+        assert!(emitted.contains("literal(literal(turn(input)))"));
+        let mut preamble = String::new();
+        push_question_preamble(&mut preamble, &profile).unwrap();
+        assert!(preamble.contains("literal(value: Bytes) = value in opposite positional order."));
     }
 
     #[test]
@@ -1919,6 +2030,7 @@ mod tests {
                     &whole,
                     NumericStyle::IdentityOffset { delta: 7 },
                     &profile,
+                    false,
                 )
                 .unwrap(),
                 "mk(\"abcdef\")"
@@ -1930,6 +2042,7 @@ mod tests {
                     &ordered,
                     NumericStyle::IdentityOffset { delta: 7 },
                     &profile,
+                    false,
                 )
                 .unwrap(),
                 "join(mk(\"ab\"), mk(\"cd\"), mk(\"ef\"))"
@@ -1953,6 +2066,7 @@ mod tests {
                     &shuffled,
                     NumericStyle::IdentityOffset { delta: 7 },
                     &profile,
+                    false,
                 )
                 .unwrap(),
                 expected

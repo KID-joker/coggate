@@ -218,6 +218,26 @@ fn validate_obfuscation(
     {
         return Err(RenderError::InvalidPlan);
     }
+    if let Some(overloaded_node) = plan.profile.overloaded_node() {
+        if !graph.topological_nodes().iter().any(|node| {
+            node.id() == overloaded_node && matches!(node.kind(), NodeKind::Operation { .. })
+        }) {
+            return Err(RenderError::InvalidPlan);
+        }
+    }
+    if let Some(index) = plan.profile.scoped_fragment() {
+        let fragment = plan.fragments.get(index).ok_or(RenderError::InvalidPlan)?;
+        let expected = fragment
+            .steps
+            .iter()
+            .filter_map(|step| {
+                matches!(step.kind, DisplayStepKind::Fragment { .. }).then_some(step.node)
+            })
+            .collect::<BTreeSet<_>>();
+        if expected.is_empty() || &expected != plan.profile.scoped_sources() {
+            return Err(RenderError::InvalidPlan);
+        }
+    }
 
     for step in plan.fragments.iter().flat_map(|fragment| &fragment.steps) {
         match (step.template, step.guard_value) {
