@@ -85,6 +85,8 @@ mod tests {
         assert_eq!(before, after);
         assert_eq!(before, semantics.answer());
         assert!(rendered.question().contains("unpadded base64url"));
+        assert!(rendered.question().contains("abstract Box"));
+        assert_eq!(rendered.question().matches("extends Box").count(), 2);
         assert!(
             rendered
                 .question()

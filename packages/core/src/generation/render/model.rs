@@ -74,6 +74,7 @@ pub(super) struct ObfuscationProfile {
     definition_order: Vec<HelperSemantic>,
     definition_styles: BTreeMap<HelperSemantic, AliasDefinitionStyle>,
     heading_style: u8,
+    object_dispatch: Option<bool>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -96,6 +97,7 @@ impl ObfuscationProfile {
             definition_order,
             definition_styles,
             heading_style: 0,
+            object_dispatch: None,
         }
     }
 
@@ -130,6 +132,19 @@ impl ObfuscationProfile {
         &self.aliases
     }
 
+    pub(super) fn with_object_dispatch(
+        mut self,
+        random: &mut impl RandomSource,
+    ) -> Result<Self, RenderError> {
+        self.object_dispatch =
+            Some(sample_below(random, 2).map_err(RenderError::from_generation_error)? == 0);
+        Ok(self)
+    }
+
+    pub(super) fn object_dispatch(&self) -> Option<bool> {
+        self.object_dispatch
+    }
+
     pub(super) fn definition_order(&self) -> &[HelperSemantic] {
         &self.definition_order
     }
@@ -152,6 +167,7 @@ impl ObfuscationProfile {
             .copied()
             .collect::<std::collections::BTreeSet<_>>();
         self.heading_style < 3
+            && (self.object_dispatch.is_none() || expected.contains(&HelperSemantic::BytesAscii))
             && self.definition_order.len() == expected.len()
             && self
                 .definition_order

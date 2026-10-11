@@ -18,13 +18,19 @@ const DISPLAY_ORDER_WARNING: &str = "Display order is not evaluation order.\n";
 const OUTPUT_REQUEST_PREFIX: &str = "The requested result is output label ";
 const OUTPUT_REQUEST_SUFFIX: &str = ". Submit its byte array as unpadded base64url.\n";
 
+pub(super) fn common_question_bytes_checked(
+    profile: &ObfuscationProfile,
+) -> Result<usize, RenderError> {
+    let mut emitted = String::new();
+    push_question_preamble(&mut emitted, profile)?;
+    push_dependency_clues(&mut emitted, &[String::new()])?;
+    push_final_request(&mut emitted, "")?;
+    Ok(emitted.len())
+}
+
 #[cfg(test)]
 pub(super) fn common_question_bytes(profile: &ObfuscationProfile) -> usize {
-    let mut emitted = String::new();
-    push_question_preamble(&mut emitted, profile).unwrap();
-    push_dependency_clues(&mut emitted, &[String::new()]).unwrap();
-    push_final_request(&mut emitted, "").unwrap();
-    emitted.len()
+    common_question_bytes_checked(profile).unwrap()
 }
 
 pub(super) fn emit_question(
@@ -198,6 +204,12 @@ fn push_question_preamble(
             .aliases()
             .get(semantic)
             .ok_or(RenderError::InvalidPlan)?;
+        if *semantic == HelperSemantic::BytesAscii {
+            if let Some(path_a_is_effective) = profile.object_dispatch() {
+                push_object_dispatch_definition(question, alias, path_a_is_effective)?;
+                continue;
+            }
+        }
         let style = profile
             .definition_style(*semantic)
             .ok_or(RenderError::InvalidPlan)?;
@@ -218,6 +230,50 @@ fn push_question_preamble(
         push_with_limit(question, "\n", MAX_QUESTION_BYTES)?;
     }
     push_with_limit(question, "\n", MAX_QUESTION_BYTES)
+}
+
+fn push_object_dispatch_definition(
+    question: &mut String,
+    alias: &str,
+    path_a_is_effective: bool,
+) -> Result<(), RenderError> {
+    // This is a language-neutral object model for the per-question aliases. The base owns
+    // the private input, and the base-typed reference dispatches to the constructed subclass.
+    push_with_limit(
+        question,
+        "Box.run() dispatches to the class constructed after new.\n",
+        MAX_QUESTION_BYTES,
+    )?;
+    push_with_limit(
+        question,
+        "abstract Box { private text; Box(text) stores text; subclasses inherit Box(text); protected get() returns text; virtual run(); }\n",
+        MAX_QUESTION_BYTES,
+    )?;
+    for (path, effective) in [
+        ("PathA", path_a_is_effective),
+        ("PathB", !path_a_is_effective),
+    ] {
+        let action = if effective {
+            "bytes denoted by escaped ASCII get()"
+        } else {
+            "bytes denoted by escaped ASCII get(), in opposite positional order"
+        };
+        push_with_limit(
+            question,
+            &format!("class {path} extends Box {{ override run() = {action}; }}\n"),
+            MAX_QUESTION_BYTES,
+        )?;
+    }
+    let active = if path_a_is_effective {
+        "PathA"
+    } else {
+        "PathB"
+    };
+    push_with_limit(
+        question,
+        &format!("{alias}(text) = ((Box)new {active}(text)).run()\n"),
+        MAX_QUESTION_BYTES,
+    )
 }
 
 fn helper_semantic_definition_variant(
@@ -977,10 +1033,11 @@ mod tests {
 
     use super::{
         BYTE_SEMANTICS_PREAMBLE, MAX_STEP_BYTES, bounded_parts, common_question_bytes,
-        declared_template_max_bytes, emit_fragment as emit_fragment_step,
-        emit_operation as emit_operation_step, emit_question, fragment_expression,
-        helper_semantic_definition, helper_semantic_definition_variant,
-        operation_expression as operation_expression_step, push_question_preamble, render_number,
+        common_question_bytes_checked, declared_template_max_bytes,
+        emit_fragment as emit_fragment_step, emit_operation as emit_operation_step, emit_question,
+        fragment_expression, helper_semantic_definition, helper_semantic_definition_variant,
+        operation_expression as operation_expression_step, push_object_dispatch_definition,
+        push_question_preamble, render_number,
     };
     use crate::generation::render::error::RenderError;
     use crate::generation::render::model::{
@@ -1016,6 +1073,49 @@ mod tests {
             Operation::RotateLeftDerived => "rotate_left_derived",
             Operation::ConditionalOrder => "conditional_order",
         }
+    }
+
+    #[test]
+    fn object_rule_uses_private_state_inherited_overrides_and_runtime_dispatch() {
+        for (active_is_a, active) in [(true, "PathA"), (false, "PathB")] {
+            let mut rule = String::new();
+            push_object_dispatch_definition(&mut rule, "helper", active_is_a).unwrap();
+            assert!(rule.contains("private text"));
+            assert!(rule.contains("protected get() returns text"));
+            assert_eq!(rule.matches("extends Box").count(), 2);
+            assert_eq!(rule.matches("override run()").count(), 2);
+            assert_eq!(rule.matches("escaped ASCII").count(), 2);
+            assert_eq!(rule.matches("opposite positional order").count(), 1);
+            assert!(rule.contains(&format!("helper(text) = ((Box)new {active}(text)).run()")));
+            let active_definition = rule
+                .lines()
+                .find(|line| line.starts_with(&format!("class {active} ")))
+                .unwrap();
+            assert!(!active_definition.contains("opposite positional order"));
+        }
+    }
+
+    #[test]
+    fn object_rule_is_counted_when_it_exceeds_the_legacy_common_reservation() {
+        let mut operations = OperationKind::ALL
+            .into_iter()
+            .map(HelperSemantic::Operation)
+            .collect::<Vec<_>>();
+        operations
+            .sort_by_key(|semantic| std::cmp::Reverse(helper_semantic_definition(*semantic).len()));
+        let aliases = operations
+            .into_iter()
+            .take(11)
+            .chain([HelperSemantic::BytesAscii])
+            .enumerate()
+            .map(|(index, semantic)| (semantic, format!("a{index:015}")))
+            .collect();
+        let mut random = DeterministicRandom::new([17; 32]);
+        let profile = ObfuscationProfile::new(aliases)
+            .with_object_dispatch(&mut random)
+            .unwrap();
+        let common_bytes = common_question_bytes_checked(&profile).unwrap();
+        assert!(common_bytes > COMMON_QUESTION_BUDGET, "{common_bytes}");
     }
 
     fn operation_profile(operation: &Operation) -> ObfuscationProfile {

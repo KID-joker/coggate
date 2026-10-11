@@ -100,6 +100,6 @@ fn corpus_ids_and_questions_use_coggate_domains() {
     );
     assert_eq!(
         first.question_digest(),
-        "372a2f78f0b6b05a971c26457075815a19addb34ebe10d2b2888cfe067b8f48d"
+        "c6e4528016e88d5c3a895848b852e5f06294e8b320ef5752e290f979637e2fb7"
     );
 }

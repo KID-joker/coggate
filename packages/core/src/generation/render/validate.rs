@@ -4,8 +4,8 @@ use crate::generation::{NodeId, NodeKind, OperationKind, ValidatedSemanticGraph}
 
 use super::{
     emitter::{
-        MAX_STEP_BYTES, declared_template_max_bytes, emit_distractor, emit_fragment,
-        emit_operation, format_dependency_clue,
+        MAX_STEP_BYTES, common_question_bytes_checked, declared_template_max_bytes,
+        emit_distractor, emit_fragment, emit_operation, format_dependency_clue,
     },
     error::RenderError,
     model::{
@@ -568,7 +568,8 @@ fn validate_length_bounds(
         return Err(RenderError::LengthLimit);
     }
 
-    let mut total = checked_add(COMMON_QUESTION_BUDGET, output_label(plan, steps)?.len())?;
+    let common_bytes = common_question_bytes_checked(&plan.profile)?.max(COMMON_QUESTION_BUDGET);
+    let mut total = checked_add(common_bytes, output_label(plan, steps)?.len())?;
     for budget in fragment_budgets {
         total = checked_add(total, budget)?;
     }
