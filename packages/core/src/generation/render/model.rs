@@ -78,10 +78,6 @@ pub(super) struct ObfuscationProfile {
     definition_order: Vec<HelperSemantic>,
     definition_styles: BTreeMap<HelperSemantic, AliasDefinitionStyle>,
     heading_style: u8,
-    // Whether PathA, rather than PathB, reverses text. The Text overload selects
-    // the subclass that applies the reversal twice and preserves byte order.
-    object_dispatch: Option<bool>,
-    overloaded_node: Option<NodeId>,
     scoped_fragment: Option<usize>,
     scoped_sources: BTreeSet<NodeId>,
     surface: Option<SurfaceStyle>,
@@ -91,9 +87,7 @@ pub(super) struct ObfuscationProfile {
 pub(super) struct SurfaceStyle {
     pub(super) preamble: u8,
     pub(super) section: u8,
-    pub(super) clue: u8,
     pub(super) request: u8,
-    pub(super) wrapped_nodes: BTreeSet<NodeId>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -116,8 +110,6 @@ impl ObfuscationProfile {
             definition_order,
             definition_styles,
             heading_style: 0,
-            object_dispatch: None,
-            overloaded_node: None,
             scoped_fragment: None,
             scoped_sources: BTreeSet::new(),
             surface: None,
@@ -131,8 +123,9 @@ impl ObfuscationProfile {
         self.heading_style =
             sample_below(random, 3).map_err(RenderError::from_generation_error)? as u8;
         for (semantic, style) in &mut self.definition_styles {
-            style.wording =
-                sample_below(random, 3).map_err(RenderError::from_generation_error)? as u8;
+            let wording_count = if self.surface.is_some() { 5 } else { 3 };
+            style.wording = sample_below(random, wording_count)
+                .map_err(RenderError::from_generation_error)? as u8;
             style.layout =
                 sample_below(random, 3).map_err(RenderError::from_generation_error)? as u8;
             if matches!(
@@ -157,25 +150,12 @@ impl ObfuscationProfile {
 
     pub(super) fn randomized_surface(
         mut self,
-        nodes: impl IntoIterator<Item = NodeId>,
         random: &mut impl RandomSource,
     ) -> Result<Self, RenderError> {
-        for style in self.definition_styles.values_mut() {
-            style.wording =
-                sample_below(random, 5).map_err(RenderError::from_generation_error)? as u8;
-        }
-        let mut wrapped_nodes = BTreeSet::new();
-        for node in nodes {
-            if sample_below(random, 4).map_err(RenderError::from_generation_error)? == 0 {
-                wrapped_nodes.insert(node);
-            }
-        }
         self.surface = Some(SurfaceStyle {
             preamble: sample_below(random, 3).map_err(RenderError::from_generation_error)? as u8,
             section: sample_below(random, 3).map_err(RenderError::from_generation_error)? as u8,
-            clue: sample_below(random, 3).map_err(RenderError::from_generation_error)? as u8,
             request: sample_below(random, 3).map_err(RenderError::from_generation_error)? as u8,
-            wrapped_nodes,
         });
         Ok(self)
     }
@@ -188,48 +168,13 @@ impl ObfuscationProfile {
         self.surface = Some(SurfaceStyle {
             preamble: 0,
             section,
-            clue: 0,
             request: 0,
-            wrapped_nodes: BTreeSet::new(),
         });
         self
     }
 
-    pub(super) fn wraps(&self, node: NodeId) -> bool {
-        self.surface
-            .as_ref()
-            .is_some_and(|surface| surface.wrapped_nodes.contains(&node))
-    }
-
-    pub(super) fn with_object_dispatch(
-        mut self,
-        random: &mut impl RandomSource,
-    ) -> Result<Self, RenderError> {
-        self.object_dispatch =
-            Some(sample_below(random, 2).map_err(RenderError::from_generation_error)? == 0);
-        Ok(self)
-    }
-
-    pub(super) fn with_object_dispatch_choice(mut self, path_a_reverses: bool) -> Self {
-        self.object_dispatch = Some(path_a_reverses);
-        self
-    }
-
-    pub(super) fn object_dispatch(&self) -> Option<bool> {
-        self.object_dispatch
-    }
-
     pub(super) fn text_call_reverses(&self, scoped: bool) -> bool {
         scoped
-    }
-
-    pub(super) fn with_overloaded_node(mut self, node: NodeId) -> Self {
-        self.overloaded_node = Some(node);
-        self
-    }
-
-    pub(super) fn overloaded_node(&self) -> Option<NodeId> {
-        self.overloaded_node
     }
 
     pub(super) fn with_scoped_fragment(mut self, index: usize, sources: BTreeSet<NodeId>) -> Self {
@@ -272,10 +217,7 @@ impl ObfuscationProfile {
             .copied()
             .collect::<std::collections::BTreeSet<_>>();
         self.heading_style < 3
-            && (self.object_dispatch.is_none() || expected.contains(&HelperSemantic::BytesAscii))
-            && (self.overloaded_node.is_none() || self.object_dispatch.is_some())
             && (self.scoped_fragment.is_none() == self.scoped_sources.is_empty())
-            && (self.scoped_fragment.is_none() || self.object_dispatch.is_some())
             && self.definition_order.len() == expected.len()
             && self
                 .definition_order
@@ -290,10 +232,7 @@ impl ObfuscationProfile {
                 .collect::<std::collections::BTreeSet<_>>()
                 == expected
             && self.surface.as_ref().is_none_or(|surface| {
-                surface.preamble < 3
-                    && surface.section < 3
-                    && surface.clue < 3
-                    && surface.request < 3
+                surface.preamble < 3 && surface.section < 3 && surface.request < 3
             })
             && self.definition_styles.iter().all(|(semantic, style)| {
                 style.wording < if self.surface.is_some() { 5 } else { 3 }

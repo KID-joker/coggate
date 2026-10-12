@@ -2,7 +2,6 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::{
     emitter::{self, common_question_bytes, declared_template_max_bytes},
-    error::RenderError,
     model::{
         DisplayDistractor, DisplayDistractorStep, DisplayFragment, DisplayStep, DisplayStepKind,
         DistractorOperation, FragmentLiteralPlan, HelperSemantic, MAX_FRAGMENT_BYTES,
@@ -115,53 +114,7 @@ fn dense_legal_dependencies_render_for_every_stream_within_fixed_bounds() {
     for seed in 0_u8..=127 {
         let mut random = DeterministicRandom::new([seed; 32]);
         let rendered = render_with(&graph, &fragments, &mut random).unwrap();
-        let mut plan_random = DeterministicRandom::new([seed; 32]);
-        let plan = plan_rendering(&graph, &fragments, &mut plan_random).unwrap();
-        let mut locations = BTreeMap::<NodeId, (&str, usize)>::new();
-        for (display_index, fragment) in plan.fragments.iter().enumerate() {
-            for step in &fragment.steps {
-                assert!(
-                    locations
-                        .insert(step.node, (&step.output_label, display_index))
-                        .is_none()
-                );
-            }
-        }
-
-        let mut expected_clue_count = 0;
-        for (display_index, fragment) in plan.fragments.iter().enumerate() {
-            for step in &fragment.steps {
-                let DisplayStepKind::Operation { inputs, .. } = &step.kind else {
-                    continue;
-                };
-                let mut seen_producers = BTreeSet::new();
-                let mut producers = Vec::new();
-                for input in inputs {
-                    let (producer_label, producer_display_index) = locations[input];
-                    if producer_display_index != display_index && seen_producers.insert(*input) {
-                        producers.push((producer_label, producer_display_index));
-                    }
-                }
-                if producers.is_empty() {
-                    continue;
-                }
-
-                let clue = emitter::format_dependency_clue_for_profile(
-                    &producers,
-                    &step.output_label,
-                    display_index,
-                    &plan.profile,
-                )
-                .unwrap();
-                assert_eq!(
-                    rendered.question().matches(&clue).count(),
-                    1,
-                    "seed {seed}: {clue}"
-                );
-                expected_clue_count += 1;
-            }
-        }
-        assert!(expected_clue_count > 0, "seed {seed}");
+        assert!(!rendered.question().contains("Dependency clues:"));
         assert!(rendered.question().len() <= MAX_QUESTION_BYTES);
         assert_eq!(
             evaluate_semantic_graph(&graph, &fragment_slices(&fragments)).unwrap(),
@@ -716,13 +669,7 @@ fn maximum_surface_fixture_exercises_every_global_bound_factor() {
     assert!(question.contains("return "));
     assert!(question.contains("unrelated scratch calculation"));
     assert!(question.contains("not part of the requested result"));
-    assert_eq!(
-        question
-            .lines()
-            .filter(|line| line.starts_with("Dependency: "))
-            .count(),
-        7
-    );
+    assert!(!question.contains("Dependency: "));
 }
 
 #[test]
@@ -852,16 +799,7 @@ fn dense_exact_accounting_question_fits_actual_fragment_and_question_limits() {
     validate::validate_plan(&graph, &fragments, &plan).unwrap();
 
     let question = emitter::emit_question(&plan, &fragments).unwrap();
-    let expected_question_bytes = match usize::BITS {
-        64 => 5_320,
-        32 => 5_300,
-        width => panic!("unsupported usize width {width}"),
-    };
-    assert_eq!(question.len(), expected_question_bytes);
-    assert_eq!(
-        MAX_QUESTION_BYTES - question.len(),
-        12_288 - expected_question_bytes
-    );
+    assert!(question.len() <= MAX_QUESTION_BYTES);
     assert!(question.contains("unrelated scratch calculation"));
     assert!(question.contains("not part of the requested result"));
 
@@ -869,27 +807,7 @@ fn dense_exact_accounting_question_fits_actual_fragment_and_question_limits() {
         .match_indices("[Fragment ")
         .map(|(start, _)| start)
         .collect::<Vec<_>>();
-    let clues = question
-        .lines()
-        .filter(|line| line.starts_with("Dependency: "))
-        .collect::<Vec<_>>();
-    assert_eq!(clues.len(), 8);
-    assert_eq!(
-        clues.iter().map(|clue| clue.len() + 1).collect::<Vec<_>>(),
-        vec![115, 115, 115, 115, 115, 239, 115, 115]
-    );
-    let target_clue_counts = (1..=5)
-        .map(|target| {
-            let suffix = format!("in Fragment {target}.");
-            clues.iter().filter(|clue| clue.ends_with(&suffix)).count()
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(target_clue_counts, vec![0, 5, 1, 1, 1]);
-    let dependency_start = question.find("Dependency clues:\n").unwrap();
-    let dependency_end = question
-        .find("Display order is not evaluation order.\n")
-        .unwrap();
-    assert_eq!(dependency_end - dependency_start, 1_063);
+    assert!(!question.contains("Dependency clues:"));
 
     assert_eq!(sections.len(), 5);
     let distractor_start = question.find("[Unrelated scratch calculation").unwrap();
@@ -904,34 +822,15 @@ fn dense_exact_accounting_question_fits_actual_fragment_and_question_limits() {
         _ => unreachable!(),
     };
     assert_eq!(section_lengths, expected_sections);
-    let accounted_effective = section_lengths
-        .iter()
-        .zip([0, 575, 239, 115, 115])
-        .map(|(section, clue_bytes)| section + clue_bytes)
-        .collect::<Vec<_>>();
-    let expected_accounted = match usize::BITS {
-        64 => vec![735, 1_471, 648, 330, 305],
-        32 => vec![735, 1_461, 648, 320, 305],
-        _ => unreachable!(),
-    };
-    assert_eq!(accounted_effective, expected_accounted);
     assert!(
-        accounted_effective
+        section_lengths
             .iter()
             .all(|bytes| *bytes <= MAX_FRAGMENT_BYTES)
     );
-    let fragment_margins = accounted_effective
-        .iter()
-        .map(|bytes| MAX_FRAGMENT_BYTES - bytes)
-        .collect::<Vec<_>>();
-    let expected_margins = match usize::BITS {
-        64 => vec![1_313, 577, 1_400, 1_718, 1_743],
-        32 => vec![1_313, 587, 1_400, 1_728, 1_743],
-        _ => unreachable!(),
-    };
-    assert_eq!(fragment_margins, expected_margins);
-    assert_eq!(dependency_start - distractor_start, 444);
-    assert!(dependency_start - distractor_start <= MAX_FRAGMENT_BYTES);
+    let scratch_end = question
+        .find("Display order is not evaluation order.\n")
+        .unwrap();
+    assert!(scratch_end - distractor_start <= MAX_FRAGMENT_BYTES);
 }
 
 #[test]
@@ -960,8 +859,8 @@ fn maximum_dynamic_common_question_text_fits_the_validator_reservation() {
         maximum = maximum.max(common_question_bytes(&profile));
     }
 
-    assert_eq!(maximum, 1_818);
-    assert_eq!(COMMON_QUESTION_BUDGET - maximum, 230);
+    assert_eq!(maximum, 1_799);
+    assert_eq!(COMMON_QUESTION_BUDGET - maximum, 249);
     assert!(maximum <= COMMON_QUESTION_BUDGET);
 }
 
@@ -1126,72 +1025,13 @@ fn checked_compositional_question_bound(
     const MAX_OPERATIONS: usize = 8;
     const MAX_IDENTIFIER: usize = 16;
 
-    let clue_bytes = maximum_dependency_clue_bytes()?;
     let fragment_wrapper = FRAGMENT_WRAPPER_BUDGET.checked_add(MAX_IDENTIFIER)?;
     common_bytes
         .checked_add(MAX_IDENTIFIER)?
         .checked_add(MAX_SOURCE_FRAGMENTS.checked_mul(fragment_wrapper)?)?
         .checked_add(MAX_SOURCE_FRAGMENTS.checked_mul(max_source_step_budget)?)?
         .checked_add(MAX_OPERATIONS.checked_mul(max_operation_step_budget)?)?
-        .checked_add(clue_bytes)?
         .checked_add(distractor_bytes)
-}
-
-fn maximum_dependency_clue_bytes() -> Option<usize> {
-    const MAX_SOURCE_FRAGMENTS: usize = 5;
-    const MAX_OPERATIONS: usize = 8;
-    const MAX_IDENTIFIER: usize = 16;
-
-    let longest_label = "x".repeat(MAX_IDENTIFIER);
-    let mut chunk_sizes = [2, 2, 3, 3, 3];
-    let mut maximum = 0;
-    loop {
-        let mut starts = [0_usize; 5];
-        for index in 1..starts.len() {
-            starts[index] = starts[index - 1].checked_add(chunk_sizes[index - 1])?;
-        }
-        let total = (MAX_SOURCE_FRAGMENTS..MAX_SOURCE_FRAGMENTS + MAX_OPERATIONS).try_fold(
-            0_usize,
-            |total, position| {
-                let chunk_start = starts.iter().zip(chunk_sizes).find_map(|(start, size)| {
-                    (*start..start.checked_add(size)?)
-                        .contains(&position)
-                        .then_some(*start)
-                })?;
-                let producer_count = chunk_start.min(MAX_CONCAT_INPUTS);
-                let producers =
-                    vec![(longest_label.as_str(), MAX_SOURCE_FRAGMENTS - 1); producer_count];
-                let clue = emitter::format_dependency_clue(
-                    &producers,
-                    &longest_label,
-                    MAX_SOURCE_FRAGMENTS - 1,
-                )
-                .ok()?;
-                total.checked_add(clue.len())
-            },
-        )?;
-        maximum = maximum.max(total);
-        if !next_permutation(&mut chunk_sizes) {
-            break;
-        }
-    }
-    Some(maximum)
-}
-
-fn next_permutation(values: &mut [usize]) -> bool {
-    let Some(pivot) = (0..values.len().saturating_sub(1))
-        .rev()
-        .find(|index| values[*index] < values[*index + 1])
-    else {
-        return false;
-    };
-    let successor = (pivot + 1..values.len())
-        .rev()
-        .find(|index| values[pivot] < values[*index])
-        .unwrap();
-    values.swap(pivot, successor);
-    values[pivot + 1..].reverse();
-    true
 }
 
 #[test]
@@ -1215,7 +1055,6 @@ fn declared_budgets_compositionally_bound_every_legal_question() {
     let distractor_max = maximum_distractor_bytes();
     assert_eq!(source_step_max, 501);
     assert_eq!(distractor_max, 848);
-    assert_eq!(maximum_dependency_clue_bytes(), Some(2_563));
     assert!(source_step_max <= declared_step_max);
     assert!(distractor_max <= MAX_FRAGMENT_BYTES);
 
@@ -1226,10 +1065,10 @@ fn declared_budgets_compositionally_bound_every_legal_question() {
         distractor_max,
     )
     .unwrap();
-    assert_eq!(legal_bound, 12_233);
+    assert_eq!(legal_bound, 9_670);
     assert!(legal_bound <= MAX_QUESTION_BYTES);
 
-    let inflated_step_budget = declared_step_max.checked_add(64).unwrap();
+    let inflated_step_budget = declared_step_max.checked_add(400).unwrap();
     let inflated_bound = checked_compositional_question_bound(
         1_805,
         source_step_max,
@@ -1287,19 +1126,4 @@ fn maximum_legal_v1_slice_index_fits_every_template_declaration() {
             assert!(emitted.len() <= declared_template_max_bytes(language, family));
         }
     }
-}
-
-#[test]
-fn grouped_dependency_clue_names_every_ordered_unique_producer() {
-    assert_eq!(
-        emitter::format_dependency_clue(&[], "result_x", 3),
-        Err(RenderError::InvalidPlan)
-    );
-    let clue = emitter::format_dependency_clue(&[("source_a", 0), ("source_b", 2)], "result_x", 3)
-        .unwrap();
-
-    assert_eq!(
-        clue,
-        "Dependency: output labels source_a (Fragment 1), source_b (Fragment 3) are inputs to output label result_x in Fragment 4.\n"
-    );
 }

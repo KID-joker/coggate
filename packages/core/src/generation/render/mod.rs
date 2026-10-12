@@ -85,15 +85,7 @@ mod tests {
         assert_eq!(before, after);
         assert_eq!(before, semantics.answer());
         assert!(rendered.question().contains("base64url"));
-        assert!(rendered.question().contains("abstract Box"));
-        assert_eq!(rendered.question().matches("extends Box").count(), 2);
-        assert!(rendered.question().contains("((Box)new Path"));
-        assert!(rendered.question().contains("value: Bytes"));
-        assert!(
-            rendered
-                .question()
-                .contains("shadows the global Text overload")
-        );
+        assert!(rendered.question().contains("shadows the global text rule"));
         assert!(rendered.question().contains("order"));
         assert_eq!(rendered.question().len(), rendered.metadata().byte_length());
         assert!(rendered.question().len() <= MAX_QUESTION_BYTES);
@@ -135,10 +127,8 @@ mod tests {
         let semantics = planned_fixture();
         let mut preambles = BTreeSet::new();
         let mut sections = BTreeSet::new();
-        let mut clues = BTreeSet::new();
         let mut requests = BTreeSet::new();
         let mut formula_wording = false;
-        let mut wrapped = BTreeSet::new();
 
         for seed in 0_u8..=127 {
             let mut random = DeterministicRandom::new([seed; 32]);
@@ -147,9 +137,7 @@ mod tests {
             let surface = plan.profile.surface().unwrap();
             preambles.insert(surface.preamble);
             sections.insert(surface.section);
-            clues.insert(surface.clue);
             requests.insert(surface.request);
-            wrapped.insert(!surface.wrapped_nodes.is_empty());
             formula_wording |= plan.profile.aliases().keys().any(|semantic| {
                 plan.profile
                     .definition_style(*semantic)
@@ -160,9 +148,7 @@ mod tests {
         let expected = BTreeSet::from([0, 1, 2]);
         assert_eq!(preambles, expected);
         assert_eq!(sections, expected);
-        assert_eq!(clues, expected);
         assert_eq!(requests, expected);
-        assert_eq!(wrapped, BTreeSet::from([false, true]));
         assert!(formula_wording);
     }
 
@@ -323,18 +309,13 @@ mod tests {
 
         for alias in plan.profile.aliases().values() {
             let definition = format!("{alias}(");
-            let expected = if plan.profile.alias(HelperSemantic::BytesAscii) == Some(alias) {
-                2
-            } else {
-                1
-            };
             assert_eq!(
                 rendered
                     .question()
                     .lines()
                     .filter(|line| line.starts_with(&definition))
                     .count(),
-                expected,
+                1,
                 "unexpected definition count for {alias}"
             );
             assert!(rendered.question().matches(&definition).count() >= 2);
@@ -425,7 +406,7 @@ mod tests {
     }
 
     #[test]
-    fn repeated_ordered_inputs_emit_once_but_dependency_clues_are_deduplicated() {
+    fn repeated_ordered_inputs_emit_once_without_redundant_clues() {
         let fragments = vec![b"Ab".to_vec(), b"Cd".to_vec()];
         let source_x = NodeId(0);
         let source_y = NodeId(1);
@@ -488,9 +469,7 @@ mod tests {
         };
 
         let question = emitter::emit_question(&plan, &fragments).unwrap();
-        let clue = "Dependency: output labels source_x (Fragment 1) are inputs to output label combined in Fragment 2.\n";
-
         assert!(question.contains("join_bytes(source_x, source_x, source_y)"));
-        assert_eq!(question.matches(clue).count(), 1);
+        assert!(!question.contains("Dependency clues:"));
     }
 }

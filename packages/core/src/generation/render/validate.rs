@@ -5,7 +5,7 @@ use crate::generation::{NodeId, NodeKind, OperationKind, ValidatedSemanticGraph}
 use super::{
     emitter::{
         MAX_STEP_BYTES, common_question_bytes_checked, declared_template_max_bytes,
-        emit_distractor, emit_fragment, emit_operation, format_dependency_clue_for_profile,
+        emit_distractor, emit_fragment, emit_operation,
     },
     error::RenderError,
     model::{
@@ -217,25 +217,6 @@ fn validate_obfuscation(
         != expected_semantics
     {
         return Err(RenderError::InvalidPlan);
-    }
-    if let Some(overloaded_node) = plan.profile.overloaded_node() {
-        if !graph.topological_nodes().iter().any(|node| {
-            node.id() == overloaded_node && matches!(node.kind(), NodeKind::Operation { .. })
-        }) {
-            return Err(RenderError::InvalidPlan);
-        }
-    }
-    if let Some(surface) = plan.profile.surface() {
-        if plan.profile.object_dispatch().is_none()
-            || surface.wrapped_nodes.iter().any(|node| {
-                !graph
-                    .topological_nodes()
-                    .iter()
-                    .any(|candidate| candidate.id() == *node)
-            })
-        {
-            return Err(RenderError::InvalidPlan);
-        }
     }
     if let Some(index) = plan.profile.scoped_fragment() {
         let fragment = plan.fragments.get(index).ok_or(RenderError::InvalidPlan)?;
@@ -573,29 +554,6 @@ fn validate_length_bounds(
         )?;
         fragment_budgets[*fragment_index] =
             checked_add(fragment_budgets[*fragment_index], step_budget)?;
-
-        if let DisplayStepKind::Operation { inputs, .. } = &step.kind {
-            let mut seen_producers = BTreeSet::new();
-            let mut producers = Vec::new();
-            for input in inputs {
-                let (producer, producer_fragment) = steps
-                    .get(input)
-                    .ok_or(RenderError::MissingReference(*input))?;
-                if producer_fragment != fragment_index && seen_producers.insert(*input) {
-                    producers.push((producer.output_label.as_str(), *producer_fragment));
-                }
-            }
-            if !producers.is_empty() {
-                let clue = format_dependency_clue_for_profile(
-                    &producers,
-                    &step.output_label,
-                    *fragment_index,
-                    &plan.profile,
-                )?;
-                fragment_budgets[*fragment_index] =
-                    checked_add(fragment_budgets[*fragment_index], clue.len())?;
-            }
-        }
     }
 
     if fragment_budgets
@@ -1156,7 +1114,22 @@ mod tests {
     #[test]
     fn rejects_a_missing_effective_step() {
         let (graph, fragments, mut plan) = fixture_plan();
-        let removed = effective_fragments(&mut plan)[0].steps.pop().unwrap();
+        let fragment = effective_fragments(&mut plan)
+            .into_iter()
+            .find(|fragment| {
+                fragment.steps.len() > 1
+                    && fragment
+                        .steps
+                        .iter()
+                        .any(|step| matches!(step.kind, DisplayStepKind::Operation { .. }))
+            })
+            .unwrap();
+        let index = fragment
+            .steps
+            .iter()
+            .position(|step| matches!(step.kind, DisplayStepKind::Operation { .. }))
+            .unwrap();
+        let removed = fragment.steps.remove(index);
 
         assert_eq!(
             validate_plan(&graph, &fragments, &plan),

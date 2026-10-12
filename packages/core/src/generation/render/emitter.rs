@@ -13,7 +13,6 @@ use super::model::{
 pub(super) const MAX_STEP_BYTES: usize = 512;
 
 const BYTE_SEMANTICS_PREAMBLE: &str = "Intermediate and output values are byte arrays. Indices are zero-based and slices use half-open [start,end) ranges. Addition and subtraction use wrapping u8 arithmetic modulo 256. Rotate amounts are reduced modulo the nonempty current array length. Hex is lowercase. Base64url is unpadded base64url. The names below are per-question aliases with the stated mathematical semantics. Parenthesized additions and subtractions are nonnegative integer expressions evaluated mathematically before use. Guard predicates use mathematical arithmetic rendered in a widened integer type; the effective answer follows the true branch.\n\n";
-const DEPENDENCY_CLUES_HEADER: &str = "Dependency clues:\n";
 const DISPLAY_ORDER_WARNING: &str = "Display order is not evaluation order.\n";
 const OUTPUT_REQUEST_PREFIX: &str = "The requested result is output label ";
 const OUTPUT_REQUEST_SUFFIX: &str = ". Submit its byte array as unpadded base64url.\n";
@@ -28,7 +27,6 @@ pub(super) fn common_question_bytes_checked(
 ) -> Result<usize, RenderError> {
     let mut emitted = String::new();
     push_question_preamble(&mut emitted, profile)?;
-    push_dependency_clues(&mut emitted, &[String::new()], profile)?;
     push_final_request(&mut emitted, "", profile)?;
     Ok(emitted.len())
 }
@@ -45,9 +43,6 @@ pub(super) fn emit_question(
     let locations = index_output_locations(plan)?;
     let mut question = String::new();
     push_question_preamble(&mut question, &plan.profile)?;
-
-    let mut dependency_clues = Vec::new();
-    let mut dependency_bytes_by_fragment = vec![0_usize; plan.fragments.len()];
 
     for (display_index, display_fragment) in plan.fragments.iter().enumerate() {
         let mut rendered_fragment = String::new();
@@ -89,7 +84,7 @@ pub(super) fn emit_question(
                         .map(|input| {
                             locations
                                 .get(input)
-                                .map(|location| location.output_label.clone())
+                                .map(|label| (*label).to_owned())
                                 .ok_or(RenderError::MissingReference(*input))
                         })
                         .collect::<Result<Vec<_>, _>>()?;
@@ -106,50 +101,8 @@ pub(super) fn emit_question(
             }
             push_with_limit(&mut rendered_fragment, &emitted, MAX_FRAGMENT_BYTES)?;
             push_with_limit(&mut rendered_fragment, "\n", MAX_FRAGMENT_BYTES)?;
-
-            if let DisplayStepKind::Operation { inputs, .. } = &step.kind {
-                let mut seen_producers = BTreeSet::new();
-                let mut producers = Vec::new();
-                for input in inputs {
-                    let producer = locations
-                        .get(input)
-                        .ok_or(RenderError::MissingReference(*input))?;
-                    if producer.display_index != display_index && seen_producers.insert(*input) {
-                        producers.push((producer.output_label.as_str(), producer.display_index));
-                    }
-                }
-                if !producers.is_empty() {
-                    let clue = format_dependency_clue_for_profile(
-                        &producers,
-                        &step.output_label,
-                        display_index,
-                        &plan.profile,
-                    )?;
-                    let clue_bytes = dependency_bytes_by_fragment[display_index]
-                        .checked_add(clue.len())
-                        .ok_or(RenderError::LengthLimit)?;
-                    let accounted_fragment_bytes = rendered_fragment
-                        .len()
-                        .checked_add(clue_bytes)
-                        .ok_or(RenderError::LengthLimit)?;
-                    if accounted_fragment_bytes > MAX_FRAGMENT_BYTES {
-                        return Err(RenderError::LengthLimit);
-                    }
-                    dependency_bytes_by_fragment[display_index] = clue_bytes;
-                    dependency_clues.push(clue);
-                }
-            }
         }
         push_with_limit(&mut rendered_fragment, "\n", MAX_FRAGMENT_BYTES)?;
-
-        let accounted_fragment_bytes = rendered_fragment
-            .len()
-            .checked_add(dependency_bytes_by_fragment[display_index])
-            .ok_or(RenderError::LengthLimit)?;
-        if accounted_fragment_bytes > MAX_FRAGMENT_BYTES {
-            return Err(RenderError::LengthLimit);
-        }
-
         push_with_limit(&mut question, &rendered_fragment, MAX_QUESTION_BYTES)?;
     }
 
@@ -158,85 +111,12 @@ pub(super) fn emit_question(
         push_with_limit(&mut question, &rendered, MAX_QUESTION_BYTES)?;
     }
 
-    push_dependency_clues(&mut question, &dependency_clues, &plan.profile)?;
-
-    let output_label = locations
+    let output_label = *locations
         .get(&plan.output)
-        .map(|location| location.output_label.as_str())
         .ok_or(RenderError::MissingReference(plan.output))?;
     push_final_request(&mut question, output_label, &plan.profile)?;
 
     Ok(question)
-}
-
-pub(super) fn format_dependency_clue(
-    producers: &[(&str, usize)],
-    output_label: &str,
-    output_display_index: usize,
-) -> Result<String, RenderError> {
-    if producers.is_empty() {
-        return Err(RenderError::InvalidPlan);
-    }
-
-    let mut clue = String::new();
-    push_with_limit(&mut clue, "Dependency: output labels ", MAX_FRAGMENT_BYTES)?;
-    for (index, (label, display_index)) in producers.iter().enumerate() {
-        if index > 0 {
-            push_with_limit(&mut clue, ", ", MAX_FRAGMENT_BYTES)?;
-        }
-        push_with_limit(
-            &mut clue,
-            &format!("{label} (Fragment {})", display_index + 1),
-            MAX_FRAGMENT_BYTES,
-        )?;
-    }
-    push_with_limit(
-        &mut clue,
-        &format!(
-            " are inputs to output label {output_label} in Fragment {}.\n",
-            output_display_index + 1
-        ),
-        MAX_FRAGMENT_BYTES,
-    )?;
-    Ok(clue)
-}
-
-pub(super) fn format_dependency_clue_for_profile(
-    producers: &[(&str, usize)],
-    output_label: &str,
-    output_display_index: usize,
-    profile: &ObfuscationProfile,
-) -> Result<String, RenderError> {
-    let Some(surface) = profile.surface() else {
-        return format_dependency_clue(producers, output_label, output_display_index);
-    };
-    if producers.is_empty() {
-        return Err(RenderError::InvalidPlan);
-    }
-    let inputs = producers
-        .iter()
-        .map(|(label, section)| format!("{label} from part {}", section + 1))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let clue = match surface.clue {
-        0 => format!(
-            "For {output_label} in part {}, use {inputs}.\n",
-            output_display_index + 1
-        ),
-        1 => format!(
-            "Inputs crossing into part {} for {output_label}: {inputs}.\n",
-            output_display_index + 1
-        ),
-        2 => format!(
-            "{output_label} (part {}) depends on {inputs}.\n",
-            output_display_index + 1
-        ),
-        _ => return Err(RenderError::InvalidPlan),
-    };
-    if clue.len() > MAX_FRAGMENT_BYTES {
-        return Err(RenderError::LengthLimit);
-    }
-    Ok(clue)
 }
 
 fn push_question_preamble(
@@ -261,17 +141,6 @@ fn push_question_preamble(
             .aliases()
             .get(semantic)
             .ok_or(RenderError::InvalidPlan)?;
-        if *semantic == HelperSemantic::BytesAscii {
-            if let Some(path_a_reverses) = profile.object_dispatch() {
-                push_object_dispatch_definition(
-                    question,
-                    alias,
-                    path_a_reverses,
-                    profile.overloaded_node().is_some(),
-                )?;
-                continue;
-            }
-        }
         let style = profile
             .definition_style(*semantic)
             .ok_or(RenderError::InvalidPlan)?;
@@ -310,65 +179,18 @@ fn push_question_preamble(
         };
         let rule = if profile.surface().is_some() {
             format!(
-                "Within {scope} {} only, a local {alias}(text: Text) shadows the global Text overload: decode the ASCII text, then read its bytes from last to first. For example, {alias}(\"AB\") yields [66, 65] in this {scope}. The Bytes overload keeps its global meaning; outside this {scope}, the global Text rule applies.\n",
+                "Within {scope} {} only, a local {alias}(text: Text) shadows the global text rule: decode the ASCII text, then read its bytes from last to first. For example, {alias}(\"AB\") yields [66, 65] in this {scope}. Outside this {scope}, the global text rule applies.\n",
                 fragment + 1
             )
         } else {
             format!(
-                "Within {scope} {}, a local {alias}(text: Text) shadows the global Text overload: return bytes denoted by escaped ASCII text in opposite positional order. The Bytes overload keeps its global meaning.\n",
+                "Within {scope} {}, a local {alias}(text: Text) shadows the global text rule: return bytes denoted by escaped ASCII text in opposite positional order. Outside this {scope}, the global text rule applies.\n",
                 fragment + 1
             )
         };
         push_with_limit(question, &rule, MAX_QUESTION_BYTES)?;
     }
     push_with_limit(question, "\n", MAX_QUESTION_BYTES)
-}
-
-fn push_object_dispatch_definition(
-    question: &mut String,
-    alias: &str,
-    path_a_reverses: bool,
-    has_bytes_overload: bool,
-) -> Result<(), RenderError> {
-    push_with_limit(
-        question,
-        "Text is a quoted escaped ASCII literal; Bytes is a byte array. Overloads use the argument type. Box.run() dispatches to the constructed subclass.\n",
-        MAX_QUESTION_BYTES,
-    )?;
-    push_with_limit(
-        question,
-        "abstract Box { private text; Box(text) stores text; subclasses inherit Box(text); protected get() returns text; virtual run(); }\n",
-        MAX_QUESTION_BYTES,
-    )?;
-    for (path, reverses) in [("PathA", path_a_reverses), ("PathB", !path_a_reverses)] {
-        let count = if reverses { "once" } else { "twice" };
-        push_with_limit(
-            question,
-            &format!(
-                "class {path} extends Box {{ override run() = bytes denoted by escaped ASCII get(), placed in opposite positional order {count}; }}\n"
-            ),
-            MAX_QUESTION_BYTES,
-        )?;
-    }
-    let selected = if path_a_reverses { "PathB" } else { "PathA" };
-    push_with_limit(
-        question,
-        &format!("{alias}(text: Text) = ((Box)new {selected}(text)).run()\n"),
-        MAX_QUESTION_BYTES,
-    )?;
-    push_with_limit(
-        question,
-        "The selected Text path reverses twice and returns the decoded bytes in their original order.\n",
-        MAX_QUESTION_BYTES,
-    )?;
-    if has_bytes_overload {
-        push_with_limit(
-            question,
-            &format!("{alias}(value: Bytes) = value in opposite positional order.\n"),
-            MAX_QUESTION_BYTES,
-        )?;
-    }
-    Ok(())
 }
 
 fn helper_semantic_definition_variant(
@@ -680,27 +502,6 @@ fn helper_semantic_definition_contrast(semantic: HelperSemantic) -> &'static str
     }
 }
 
-fn push_dependency_clues(
-    question: &mut String,
-    clues: &[String],
-    profile: &ObfuscationProfile,
-) -> Result<(), RenderError> {
-    if clues.is_empty() {
-        return Ok(());
-    }
-    let heading = match profile.surface().map(|surface| surface.clue) {
-        Some(0) => "Cross-part references:\n",
-        Some(1) => "Inputs from other parts:\n",
-        Some(2) => "Dependency map:\n",
-        _ => DEPENDENCY_CLUES_HEADER,
-    };
-    push_with_limit(question, heading, MAX_QUESTION_BYTES)?;
-    for clue in clues {
-        push_with_limit(question, clue, MAX_QUESTION_BYTES)?;
-    }
-    push_with_limit(question, "\n", MAX_QUESTION_BYTES)
-}
-
 fn push_final_request(
     question: &mut String,
     output_label: &str,
@@ -730,25 +531,12 @@ fn push_final_request(
     }
 }
 
-struct OutputLocation {
-    output_label: String,
-    display_index: usize,
-}
-
-fn index_output_locations(
-    plan: &RenderPlan,
-) -> Result<BTreeMap<NodeId, OutputLocation>, RenderError> {
+fn index_output_locations(plan: &RenderPlan) -> Result<BTreeMap<NodeId, &str>, RenderError> {
     let mut locations = BTreeMap::new();
-    for (display_index, fragment) in plan.fragments.iter().enumerate() {
+    for fragment in &plan.fragments {
         for step in &fragment.steps {
             if locations
-                .insert(
-                    step.node,
-                    OutputLocation {
-                        output_label: step.output_label.clone(),
-                        display_index,
-                    },
-                )
+                .insert(step.node, step.output_label.as_str())
                 .is_some()
             {
                 return Err(RenderError::DuplicateReference(step.node));
@@ -793,24 +581,8 @@ pub(super) fn emit_operation(
     operation
         .validate_arity(inputs.len())
         .map_err(|_| RenderError::InvalidPlan)?;
-    let mut expression = operation_expression(operation, inputs, step.numeric_style, profile)?;
-    if profile.overloaded_node() == Some(step.node) {
-        let alias = profile
-            .alias(HelperSemantic::BytesAscii)
-            .ok_or(RenderError::InvalidPlan)?;
-        expression = bounded_parts(&[alias, "(", alias, "(", &expression, "))"])?;
-    }
-    if profile.wraps(step.node) {
-        expression = wrap_identity(&expression, profile)?;
-    }
+    let expression = operation_expression(operation, inputs, step.numeric_style, profile)?;
     emit_step_assignment(language, step, profile, &expression)
-}
-
-fn wrap_identity(expression: &str, profile: &ObfuscationProfile) -> Result<String, RenderError> {
-    let alias = profile
-        .alias(HelperSemantic::BytesAscii)
-        .ok_or(RenderError::InvalidPlan)?;
-    bounded_parts(&[alias, "(", alias, "(", expression, "))"])
 }
 
 pub(super) fn emit_fragment(
@@ -826,7 +598,7 @@ pub(super) fn emit_fragment(
         return Err(RenderError::InvalidPlan);
     }
     let literal_plan = step.literal_plan.as_ref().ok_or(RenderError::InvalidPlan)?;
-    let mut expression = fragment_expression(
+    let expression = fragment_expression(
         language,
         value,
         literal_plan,
@@ -834,9 +606,6 @@ pub(super) fn emit_fragment(
         profile,
         profile.is_scoped_source(step.node),
     )?;
-    if profile.wraps(step.node) {
-        expression = wrap_identity(&expression, profile)?;
-    }
     emit_step_assignment(language, step, profile, &expression)
 }
 
@@ -1285,11 +1054,10 @@ mod tests {
 
     use super::{
         BYTE_SEMANTICS_PREAMBLE, MAX_STEP_BYTES, bounded_parts, bytes_call, common_question_bytes,
-        common_question_bytes_checked, declared_template_max_bytes,
-        emit_fragment as emit_fragment_step, emit_operation as emit_operation_step, emit_question,
-        fragment_expression, helper_semantic_definition, helper_semantic_definition_variant,
-        operation_expression as operation_expression_step, push_object_dispatch_definition,
-        push_question_preamble, render_number,
+        declared_template_max_bytes, emit_fragment as emit_fragment_step,
+        emit_operation as emit_operation_step, emit_question, fragment_expression,
+        helper_semantic_definition, helper_semantic_definition_variant,
+        operation_expression as operation_expression_step, push_question_preamble, render_number,
     };
     use crate::generation::render::error::RenderError;
     use crate::generation::render::model::{
@@ -1328,112 +1096,31 @@ mod tests {
     }
 
     #[test]
-    fn object_rule_uses_private_state_inherited_overrides_and_runtime_dispatch() {
-        for path_a_reverses in [true, false] {
-            let mut rule = String::new();
-            push_object_dispatch_definition(&mut rule, "helper", path_a_reverses, true).unwrap();
-            assert!(rule.contains("private text"));
-            assert!(rule.contains("protected get() returns text"));
-            assert_eq!(rule.matches("extends Box").count(), 2);
-            assert_eq!(rule.matches("override run()").count(), 2);
-            assert_eq!(rule.matches("escaped ASCII").count(), 3);
-            assert_eq!(rule.matches("opposite positional order").count(), 3);
-            let selected = if path_a_reverses { "PathB" } else { "PathA" };
-            assert!(rule.contains(&format!(
-                "helper(text: Text) = ((Box)new {selected}(text)).run()"
-            )));
-            assert!(rule.contains("selected Text path reverses twice"));
-            assert!(rule.contains("helper(value: Bytes) = value in opposite positional order."));
-            let path_a_definition = rule
-                .lines()
-                .find(|line| line.starts_with("class PathA "))
-                .unwrap();
-            assert_eq!(path_a_definition.contains("order once"), path_a_reverses);
-        }
-    }
-
-    #[test]
     fn text_overload_keeps_global_literals_and_reverses_local_literals() {
-        for path_a_reverses in [true, false] {
-            let profile = ObfuscationProfile::new(BTreeMap::from([(
-                HelperSemantic::BytesAscii,
-                "helper".to_owned(),
-            )]))
-            .with_object_dispatch_choice(path_a_reverses);
-            for length in 1..=16 {
-                let source = &b"ABCDEFGHIJKLMNOP"[..length];
-                for scoped in [false, true] {
-                    let call = bytes_call("helper", source, &profile, scoped).unwrap();
-                    let displayed = call
-                        .strip_prefix("helper(\"")
-                        .unwrap()
-                        .strip_suffix("\")")
-                        .unwrap()
-                        .as_bytes();
-                    let reverses = profile.text_call_reverses(scoped);
-                    let resolved = if reverses {
-                        displayed.iter().rev().copied().collect::<Vec<_>>()
-                    } else {
-                        displayed.to_vec()
-                    };
-                    assert_eq!(resolved, source);
-                    assert_eq!(reverses, scoped);
-                }
+        let profile = ObfuscationProfile::new(BTreeMap::from([(
+            HelperSemantic::BytesAscii,
+            "helper".to_owned(),
+        )]));
+        for length in 1..=16 {
+            let source = &b"ABCDEFGHIJKLMNOP"[..length];
+            for scoped in [false, true] {
+                let call = bytes_call("helper", source, &profile, scoped).unwrap();
+                let displayed = call
+                    .strip_prefix("helper(\"")
+                    .unwrap()
+                    .strip_suffix("\")")
+                    .unwrap()
+                    .as_bytes();
+                let reverses = profile.text_call_reverses(scoped);
+                let resolved = if reverses {
+                    displayed.iter().rev().copied().collect::<Vec<_>>()
+                } else {
+                    displayed.to_vec()
+                };
+                assert_eq!(resolved, source);
+                assert_eq!(reverses, scoped);
             }
         }
-    }
-
-    #[test]
-    fn selected_operation_uses_the_bytes_overload_twice_without_changing_its_value() {
-        let profile = ObfuscationProfile::new(BTreeMap::from([
-            (HelperSemantic::BytesAscii, "literal".to_owned()),
-            (
-                HelperSemantic::Operation(OperationKind::Reverse),
-                "turn".to_owned(),
-            ),
-        ]))
-        .with_object_dispatch_choice(true)
-        .with_overloaded_node(NodeId(0));
-        let step = operation_step(
-            TemplateFamily::Direct,
-            "output",
-            "local",
-            &Operation::Reverse,
-        );
-        let emitted = emit_operation_step(
-            RenderLanguage::Pseudocode,
-            &step,
-            &profile,
-            &["input".to_owned()],
-        )
-        .unwrap();
-        assert!(emitted.contains("literal(literal(turn(input)))"));
-        let mut preamble = String::new();
-        push_question_preamble(&mut preamble, &profile).unwrap();
-        assert!(preamble.contains("literal(value: Bytes) = value in opposite positional order."));
-    }
-
-    #[test]
-    fn object_rule_is_counted_when_it_exceeds_the_legacy_common_reservation() {
-        let mut operations = OperationKind::ALL
-            .into_iter()
-            .map(HelperSemantic::Operation)
-            .collect::<Vec<_>>();
-        operations
-            .sort_by_key(|semantic| std::cmp::Reverse(helper_semantic_definition(*semantic).len()));
-        let aliases = operations
-            .into_iter()
-            .take(11)
-            .chain([HelperSemantic::BytesAscii])
-            .enumerate()
-            .map(|(index, semantic)| (semantic, format!("a{index:015}")))
-            .collect();
-        let mut random = DeterministicRandom::new([17; 32]);
-        let profile = ObfuscationProfile::new(aliases)
-            .with_object_dispatch(&mut random)
-            .unwrap();
-        let common_bytes = common_question_bytes_checked(&profile).unwrap();
-        assert!(common_bytes > COMMON_QUESTION_BUDGET, "{common_bytes}");
     }
 
     fn operation_profile(operation: &Operation) -> ObfuscationProfile {
