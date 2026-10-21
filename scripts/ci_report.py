@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Expose bounded public experiment diagnostics in GitHub check annotations."""
+"""Expose compact diagnostics; retain full evidence in the uploaded artifact."""
 import os
 import json
 import platform
@@ -45,14 +45,33 @@ provenance = {
 }
 Path("artifacts").mkdir(exist_ok=True)
 Path("artifacts/provenance.json").write_text(json.dumps(provenance, indent=2) + "\n")
-notice("provenance.json", json.dumps(provenance, indent=2))
 
-for name in (
+REPORTS = (
     "size.json", "offline-solver.json", "composition-solver.json",
     "boundary-mutants.json", "shortcut-before.json", "guards-before.json",
     "shortcut-after.json", "guards-after.json", "original-guards-before.json",
     "original-guards-after.json", "screened-adaptive.json",
-):
+    "screened-size.json", "distribution-before.json", "distribution-after.json",
+)
+# GitHub also caps the number of annotations per step. Put one compact overview
+# first, so large early reports cannot hide the later experimental outcomes.
+# Full JSON (including provenance and hashes) is uploaded as prototype-evidence.
+summary = {"commit": provenance["commit"], "full_reports": "prototype-evidence", "reports": {}}
+for name in REPORTS:
+    path = Path("artifacts") / name
+    if not path.is_file():
+        continue
+    report = json.loads(path.read_text())
+    evaluation = report.get("evaluation", report)
+    fields = ("status", "increment_bytes", "budget_passed", "passed",
+              "sample_count", "issuance_attempts", "issuance_failures")
+    summary["reports"][name] = {key: evaluation[key] for key in fields if key in evaluation}
+    if "status" in report:
+        summary["reports"][name]["status"] = report["status"]
+notice("Experiment overview", json.dumps(summary, separators=(",", ":")))
+notice("provenance.json", json.dumps(provenance, indent=2))
+
+for name in REPORTS:
     path = Path("artifacts") / name
     if path.is_file():
         notice(name, path.read_text())

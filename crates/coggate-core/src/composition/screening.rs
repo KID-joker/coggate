@@ -15,6 +15,8 @@ use serde_json::{json, Value};
 const CANDIDATE_LIMIT: usize = 64;
 const POOL_LIMIT: usize = 128;
 const EXTRA_DRAW_LIMIT: usize = 192;
+const HOLDOUT_CASE_COUNT: usize = 8;
+const SEARCH_CASE_COUNT: usize = HIDDEN_TEST_COUNT - HOLDOUT_CASE_COUNT;
 
 /// Aggregate development metrics. Contains no seeds, task parameters, input
 /// values, expected outputs, or reference source. Keep separate from the public
@@ -39,9 +41,14 @@ pub struct ScreeningStats {
     pub mutation_evaluations: usize,
     pub requirement_count: usize,
     /// Greedy witness selection size, including the four mandatory boundaries,
-    /// before filling the suite to 32 inputs.
+    /// before filling the search portion to 24 inputs.
     pub witness_case_count: usize,
     pub mandatory_case_count: usize,
+    pub selected_search_case_count: usize,
+    /// Independently drawn after a candidate is accepted. These inputs never
+    /// participate in candidate screening or witness selection.
+    pub holdout_case_count: usize,
+    pub holdout_evaluations: usize,
     pub final_case_count: usize,
 }
 
@@ -73,17 +80,21 @@ impl Engine {
     ) -> Result<(PublicChallenge, PrivateChallenge, ScreeningStats), Error> {
         let expires_at = validate_request(scope, factor, now_secs)?;
         let derive = |label: &[u8]| derive_seed(&self.key, label, scope.as_bytes(), factor, &nonce);
-        let mut problem = RandomStream::new(derive(b"composition-screened/v2/problem"));
-        let mut wording = RandomStream::new(derive(b"composition-screened/v2/wording"));
-        let mut tests = RandomStream::new(derive(b"composition-screened/v2/tests"));
-        let (task, cases, stats) = find_screened(
+        let mut problem = RandomStream::new(derive(b"composition-screened/v3/problem"));
+        let mut wording = RandomStream::new(derive(b"composition-screened/v3/wording"));
+        let mut tests = RandomStream::new(derive(b"composition-screened/v3/tests"));
+        let (task, mut cases, mut stats) = find_screened(
             &mut problem,
             &mut tests,
             CANDIDATE_LIMIT,
             Composition::generate,
         )
         .map_err(|_| Error::GenerationExhausted)?;
-        let id = hex(&derive(b"composition-screened/v2/id"));
+        // A separate stream is first used only after acceptance. Neither the
+        // holdout values nor their outputs can influence candidate selection.
+        let mut holdout = RandomStream::new(derive(b"composition-screened/v3/holdout"));
+        append_holdout(&task, &mut cases, &mut stats, &mut holdout);
+        let id = hex(&derive(b"composition-screened/v3/id"));
         let public = PublicChallenge {
             id: id.clone(),
             scope: scope.to_owned(),
@@ -197,13 +208,10 @@ fn find_screened(
         let pool = input_pool(&task, tests);
         stats.total_pool_inputs += pool.len();
         stats.peak_pool_inputs = stats.peak_pool_inputs.max(pool.len());
-        match screen_candidate(&task, &pool, HIDDEN_TEST_COUNT, &mut stats) {
-            Ok(mut cases) => {
-                for i in (1..cases.len()).rev() {
-                    cases.swap(i, tests.below((i + 1) as u64) as usize);
-                }
+        match screen_candidate(&task, &pool, SEARCH_CASE_COUNT, &mut stats) {
+            Ok(cases) => {
                 stats.accepted_pool_inputs = pool.len();
-                stats.final_case_count = cases.len();
+                stats.selected_search_case_count = cases.len();
                 return Ok((task, cases, stats));
             }
             Err(reason) => {
@@ -220,6 +228,106 @@ fn find_screened(
         }
     }
     Err(Box::new(stats))
+}
+
+fn shuffle<T>(values: &mut [T], random: &mut RandomStream) {
+    for index in (1..values.len()).rev() {
+        values.swap(index, random.below((index + 1) as u64) as usize);
+    }
+}
+
+/// Mix scales within each input rather than choosing one distribution for an
+/// entire array. Long inputs contain every category, then draw additional
+/// categories independently. Short inputs retain both a small and a large
+/// value with opposite signs. The full-domain category gives every legal
+/// integer positive probability; this does not promise to cover rare branches.
+fn holdout_inputs(task: &Composition, random: &mut RandomStream) -> Vec<Vec<i64>> {
+    const LENGTH_STRATA: [(usize, usize); HOLDOUT_CASE_COUNT] = [
+        (2, 8),
+        (9, 12),
+        (13, 24),
+        (25, 36),
+        (37, 48),
+        (49, 63),
+        (64, 64),
+        (64, 64),
+    ];
+    LENGTH_STRATA
+        .into_iter()
+        .enumerate()
+        .map(|(case_index, (minimum, maximum))| {
+            let length = minimum + random.below((maximum - minimum + 1) as u64) as usize;
+            let sign = if random.below(2) == 0 { -1 } else { 1 };
+            let mut categories = [1, 6, 0, 4, 5, 2, 3, 7];
+            // Keep the first two categories for short inputs, while varying
+            // which other scales are represented when fewer than eight fit.
+            shuffle(&mut categories[2..], random);
+            let mut input: Vec<_> = (0..length)
+                .map(|index| {
+                    let category = if index < categories.len() {
+                        categories[index]
+                    } else {
+                        random.below(8)
+                    };
+                    let random_sign = if random.below(2) == 0 { -1 } else { 1 };
+                    match category {
+                        0 => 0,
+                        1 => sign * super::between(random, 1, 8),
+                        2 => task.predicates.threshold + super::between(random, -3, 3),
+                        3 => {
+                            super::between(random, -4, 4) * task.predicates.modulus
+                                + task.predicates.residue
+                        }
+                        4 => random_sign * super::between(random, 16, 255),
+                        5 => random_sign * super::between(random, 256, 4095),
+                        6 => -sign * super::between(random, MAX_INPUT_ABS - 255, MAX_INPUT_ABS),
+                        _ => super::between(random, -MAX_INPUT_ABS, MAX_INPUT_ABS),
+                    }
+                })
+                .collect();
+            // Permute the guaranteed category prefix without losing a scale.
+            let prefix_len = length.min(categories.len());
+            shuffle(&mut input[..prefix_len], random);
+            if matches!(case_index, 1 | 4 | 7) {
+                // These positions are beyond the category prefix. Keep that
+                // coverage while adding a bounded number of duplicate values.
+                for index in categories.len()..length {
+                    if random.below(4) == 0 {
+                        input[index] = input[random.below(categories.len() as u64) as usize];
+                    }
+                }
+            }
+            match case_index {
+                2 => input.sort_unstable(),
+                3 => input.sort_unstable_by(|left, right| right.cmp(left)),
+                // Only some cases require a non-adjacent repeat. Forcing it
+                // on every holdout would itself create a recognizable shape.
+                4 | 7 => {
+                    input[length - 1] = input[0];
+                }
+                _ => shuffle(&mut input, random),
+            }
+            input
+        })
+        .collect()
+}
+
+fn append_holdout(
+    task: &Composition,
+    cases: &mut Vec<TestCase>,
+    stats: &mut ScreeningStats,
+    random: &mut RandomStream,
+) {
+    let holdouts = holdout_inputs(task, random);
+    stats.holdout_case_count = holdouts.len();
+    stats.holdout_evaluations = holdouts.len();
+    stats.reference_evaluations += holdouts.len();
+    cases.extend(holdouts.into_iter().map(|input| TestCase {
+        expected: task.evaluate(&input),
+        input,
+    }));
+    shuffle(cases, random);
+    stats.final_case_count = cases.len();
 }
 
 fn insert_unique(pool: &mut Vec<Vec<i64>>, input: Vec<i64>) {
@@ -580,10 +688,23 @@ mod tests {
         ]);
         let pool = input_pool(&task, &mut RandomStream::new([7; 32]));
         let mut stats = ScreeningStats::default();
-        let cases = screen_candidate(&task, &pool, 32, &mut stats).unwrap();
+        let mut cases = screen_candidate(&task, &pool, SEARCH_CASE_COUNT, &mut stats).unwrap();
+        let search_inputs: Vec<_> = cases.iter().map(|case| case.input().to_vec()).collect();
+        assert_eq!(cases.len(), 24);
+        assert!(stats.witness_case_count <= 24);
+        append_holdout(
+            &task,
+            &mut cases,
+            &mut stats,
+            &mut RandomStream::new([8; 32]),
+        );
         assert_eq!(cases.len(), 32);
-        assert!(stats.witness_case_count <= 32);
+        assert_eq!(stats.holdout_case_count, 8);
+        assert_eq!(stats.holdout_evaluations, 8);
         assert_eq!(stats.mandatory_case_count, 4);
+        for input in search_inputs {
+            assert!(cases.iter().any(|case| case.input() == input));
+        }
         assert!(cases.iter().any(|case| case.input().is_empty()));
         assert!(cases.iter().any(|case| case.input().len() == 64));
         for shortcut in SHORTCUTS {
@@ -621,6 +742,143 @@ mod tests {
     }
 
     #[test]
+    fn holdouts_cover_length_strata_scales_signs_and_nonadjacent_repeats() {
+        let task = task(vec![stage(Operation::Affine(2, 1))]);
+        for seed in 0..32 {
+            let inputs = holdout_inputs(&task, &mut RandomStream::new([seed; 32]));
+            assert_eq!(inputs.len(), HOLDOUT_CASE_COUNT);
+            let strata = [
+                (2, 8),
+                (9, 12),
+                (13, 24),
+                (25, 36),
+                (37, 48),
+                (49, 63),
+                (64, 64),
+                (64, 64),
+            ];
+            for (case_index, (input, (minimum, maximum))) in inputs.iter().zip(strata).enumerate() {
+                assert!((minimum..=maximum).contains(&input.len()));
+                assert!(input.iter().all(|value| value.abs() <= MAX_INPUT_ABS));
+                assert!(input.iter().any(|&value| value < 0));
+                assert!(input.iter().any(|&value| value > 0));
+                assert!(input.iter().any(|value| (1..=8).contains(&value.abs())));
+                assert!(input
+                    .iter()
+                    .any(|value| (MAX_INPUT_ABS - 255..=MAX_INPUT_ABS).contains(&value.abs())));
+                if input.len() >= 8 {
+                    assert!(input.contains(&0));
+                    assert!(input.iter().any(|value| (16..=255).contains(&value.abs())));
+                    assert!(input
+                        .iter()
+                        .any(|value| (256..=4095).contains(&value.abs())));
+                }
+                if matches!(case_index, 4 | 7) {
+                    assert_eq!(input.first(), input.last());
+                }
+            }
+            assert!(inputs[2].windows(2).all(|pair| pair[0] <= pair[1]));
+            assert!(inputs[3].windows(2).all(|pair| pair[0] >= pair[1]));
+            assert_ne!(inputs[2].first(), inputs[2].last());
+            assert_ne!(inputs[3].first(), inputs[3].last());
+            // Both ordered shapes still mix scales and signs, so ordering
+            // cannot be used to recognize an omitted distribution category.
+            for ordered in &inputs[2..=3] {
+                assert!(ordered.contains(&0));
+                assert!(ordered
+                    .iter()
+                    .any(|value| (256..=4095).contains(&value.abs())));
+                assert!(ordered.iter().any(|&value| value < 0));
+                assert!(ordered.iter().any(|&value| value > 0));
+            }
+        }
+    }
+
+    #[test]
+    fn holdout_seed_changes_final_cases_without_changing_acceptance_or_search_cases() {
+        let accepted = || {
+            find_screened(
+                &mut RandomStream::new([11; 32]),
+                &mut RandomStream::new([12; 32]),
+                CANDIDATE_LIMIT,
+                Composition::generate,
+            )
+            .unwrap()
+        };
+        let (left_task, mut left_cases, mut left_stats) = accepted();
+        let (right_task, mut right_cases, mut right_stats) = accepted();
+        assert_eq!(
+            left_task.reference_solution(),
+            right_task.reference_solution()
+        );
+        assert_eq!(
+            serde_json::to_value(&left_stats).unwrap(),
+            serde_json::to_value(&right_stats).unwrap()
+        );
+        assert_eq!(left_stats.final_case_count, 0);
+        assert_eq!(left_stats.holdout_evaluations, 0);
+        assert_eq!(left_stats.selected_search_case_count, SEARCH_CASE_COUNT);
+        let search_inputs: Vec<_> = left_cases
+            .iter()
+            .map(|case| case.input().to_vec())
+            .collect();
+        let search_evaluations = left_stats.reference_evaluations;
+        append_holdout(
+            &left_task,
+            &mut left_cases,
+            &mut left_stats,
+            &mut RandomStream::new([13; 32]),
+        );
+        append_holdout(
+            &right_task,
+            &mut right_cases,
+            &mut right_stats,
+            &mut RandomStream::new([14; 32]),
+        );
+        for input in search_inputs {
+            assert!(left_cases.iter().any(|case| case.input() == input));
+            assert!(right_cases.iter().any(|case| case.input() == input));
+        }
+        assert!(left_cases.iter().any(|left| {
+            !right_cases
+                .iter()
+                .any(|right| left.input() == right.input())
+        }));
+        assert_eq!(left_stats.reference_evaluations, search_evaluations + 8);
+        assert_eq!(
+            serde_json::to_value(&left_stats).unwrap(),
+            serde_json::to_value(&right_stats).unwrap()
+        );
+    }
+
+    #[test]
+    fn independent_holdout_stream_ignores_search_randomness_consumption() {
+        let task = task(vec![stage(Operation::Affine(2, 1))]);
+        let holdout_seed = derive_seed(
+            &[37; 32],
+            b"composition-screened/v3/holdout",
+            b"s",
+            b"f",
+            &[9; 32],
+        );
+        let tests_seed = derive_seed(
+            &[37; 32],
+            b"composition-screened/v3/tests",
+            b"s",
+            b"f",
+            &[9; 32],
+        );
+        assert_ne!(holdout_seed, tests_seed);
+        let before = holdout_inputs(&task, &mut RandomStream::new(holdout_seed));
+        let mut search_random = RandomStream::new(tests_seed);
+        for _ in 0..17 {
+            input_pool(&task, &mut search_random);
+        }
+        let after = holdout_inputs(&task, &mut RandomStream::new(holdout_seed));
+        assert_eq!(before, after);
+    }
+
+    #[test]
     fn exhausted_budget_reports_failure_without_a_fallback() {
         let exhausted = find_screened(
             &mut RandomStream::new([8; 32]),
@@ -634,6 +892,9 @@ mod tests {
         assert_eq!(exhausted.rejected_count, 3);
         assert_eq!(exhausted.rejected_constant, 3);
         assert_eq!(exhausted.final_case_count, 0);
+        assert_eq!(exhausted.selected_search_case_count, 0);
+        assert_eq!(exhausted.holdout_case_count, 0);
+        assert_eq!(exhausted.holdout_evaluations, 0);
         assert!(exhausted.peak_pool_inputs <= POOL_LIMIT);
     }
 
@@ -688,7 +949,21 @@ mod tests {
                 &[9; 32]
             ))
         );
+        assert_ne!(
+            public.id,
+            hex(&derive_seed(
+                &[37; 32],
+                b"composition-screened/v2/id",
+                b"s",
+                b"f",
+                &[9; 32]
+            ))
+        );
         assert_eq!(private.cases().len(), 32);
+        assert_eq!(stats.selected_search_case_count, 24);
+        assert_eq!(stats.holdout_case_count, 8);
+        assert_eq!(stats.holdout_evaluations, 8);
+        assert_eq!(stats.final_case_count, 32);
         assert!(stats.candidate_count <= CANDIDATE_LIMIT);
         assert!(stats.accepted_pool_inputs <= POOL_LIMIT);
         assert_eq!(stats.rejected_count + 1, stats.candidate_count);

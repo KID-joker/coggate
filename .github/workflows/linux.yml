@@ -8,7 +8,7 @@ permissions:
 jobs:
   prototype:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 25
     defaults:
       run:
         shell: bash
@@ -42,6 +42,13 @@ jobs:
         continue-on-error: true
         run: |
           python3 scripts/measure_size.py --baseline target/release/examples/host-baseline --integrated target/release/examples/host-integrated --worker "$(cat artifacts/worker-path.txt)" --output artifacts/size.json
+      - name: Build and measure the complete screened experiment
+        id: screened_size
+        continue-on-error: true
+        run: |
+          cargo build -p coggate --release --example host-baseline --example host-screened --features dev-tools --locked --message-format=json > artifacts/screened-release-build.jsonl
+          python3 scripts/worker_path.py < artifacts/screened-release-build.jsonl > artifacts/screened-worker-path.txt
+          python3 scripts/measure_size.py --baseline target/release/examples/host-baseline --integrated target/release/examples/host-screened --worker "$(cat artifacts/screened-worker-path.txt)" --mechanism screened-composition --output artifacts/screened-size.json
       - name: Record solver and build the fixture generator
         run: |
           sha256sum scripts/offline_solver.py scripts/composition_solver.py scripts/shortcut_solver.py > artifacts/solver.sha256
@@ -83,8 +90,18 @@ jobs:
           assert report["sample_count"] + report["issuance_failures"] == 1000
           assert report["sample_count"] == report["passed"] > 0
           PY
+      - name: Pin the v2 comparison source
+        uses: actions/checkout@v4
+        with:
+          ref: 39adabef6d62e9d0272a586b55ea2273bf5b6b6d
+          path: .before-v2
+      - name: Independently witnessed input-distribution comparison
+        run: |
+          cargo build --manifest-path .before-v2/Cargo.toml --target-dir target/before-v2 -p coggate --example demo --features dev-tools --locked
+          python3 scripts/check_distribution_mutant.py --samples 1000 --fixture-generator target/before-v2/debug/examples/demo --worker "$(cat artifacts/worker-path.txt)" > artifacts/distribution-before.json
+          python3 scripts/check_distribution_mutant.py --samples 1000 --require-rejected --worker "$(cat artifacts/worker-path.txt)" > artifacts/distribution-after.json
       - name: Enforce complete size budget
-        if: steps.size.outcome == 'failure'
+        if: steps.size.outcome == 'failure' || steps.screened_size.outcome == 'failure'
         run: exit 1
       - name: Publish public experiment diagnostics
         if: always()
@@ -107,6 +124,10 @@ jobs:
             artifacts/original-guards-before.json
             artifacts/original-guards-after.json
             artifacts/screened-adaptive.json
+            artifacts/distribution-after.json
+            artifacts/distribution-before.json
+            artifacts/screened-size.json
+            artifacts/screened-release-build.jsonl
             artifacts/solver.sha256
             artifacts/release-build.jsonl
             artifacts/provenance.json

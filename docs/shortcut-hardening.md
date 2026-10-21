@@ -23,9 +23,9 @@ generates fresh challenges. The two affected families must fail with wrong
 answers, while the other eight families must pass. Missing families, execution
 errors or unverified fixture freshness fail this regression check.
 
-## Development-only screened composition
+## Development-only screened composition v2 (historical design)
 
-`Engine::issue_screened_composition` preserves the old public composition
+The v2 `Engine::issue_screened_composition` preserves the old public composition
 language and reference semantics. The original `issue_composition` remains
 available as the before-control. The new experiment has separate HMAC domains
 (`composition-screened/v2/*`) for problem selection, wording, hidden inputs and
@@ -190,6 +190,64 @@ The current screening bank is public and finite. It cannot detect every partial
 implementation, and killing its own chosen mutations is a regression property,
 not independent evidence of general script resistance. Model success rates,
 the two-team attack exercise and the long fuzz campaign remain unmeasured.
+
+## Follow-up: independent mixed-distribution inputs
+
+A new coverage probe leaves the complete public-grammar parser intact, but
+returns `null` when an input contains both zero and a value whose absolute value
+is between 128 and 4,096. This deliberately wrong program is a diagnostic
+mutation, **not a cheaper solver**. Its trigger was frozen before generating
+fresh v2 challenges.
+
+In the initial macOS engine-only run, it passed 199 of 200 challenges, while
+the complete parser passed 200/200. The independent valid input `[0, 257, -193]`
+was run through both the mutant and the trusted reference in the actual engine
+for every issued challenge: all 200 programs were incorrect. Thus the 199
+passes are confirmed misses by the finite test suite, rather than potentially
+equivalent programs. There were no issuance failures. The frozen source and
+private fixture bytes were retained locally for exact replay; they are not
+published. The mutant SHA-256 is
+`2cbfc979d7d04304ca9034ad5dabcca8622cbee673cca3cd671686dc344013c2`.
+The initial fixture SHA-256 is
+`3746bce9aabe08444404b73d331df4920626747e1e958f45c5bd1d1ff415ce9e`.
+
+The underlying bias is not a complete absence of long arrays. The old generator
+generally draws each entire random array from a single numeric distribution,
+and selection prefers its existing cases when filling unused slots. Boundary
+and mutation witnesses alone do not adequately sample mixed numeric scales.
+
+The v3 implementation reserves 24 cases for boundaries, existing mutation witnesses and
+pool fill, plus eight independent inputs generated only after the candidate is
+accepted. These additional inputs span length bands and mix numeric scales,
+signs and repetition patterns. They never determine candidate acceptance.
+Separate secret derivation keeps their randomness independent of the screening
+search. The total remains 32 cases, with at most 128 search inputs and 64
+candidates. Insufficient witness space still rejects a candidate.
+
+`scripts/check_distribution_mutant.py` freezes both executable sources before
+issuance, compares the same private fixtures with the incorrect program and
+complete parser, and independently proves the mutation wrong. By default it
+records observations; `--require-rejected` additionally fails unless every
+issued challenge rejects the mutant specifically with a wrong answer.
+Compilation, protocol and execution failures cannot satisfy that check.
+
+```sh
+python3 scripts/check_distribution_mutant.py --samples 1000 \
+  --require-rejected --worker /path/to/strict/coggate-worker
+```
+
+For a historical comparison, `--fixture-generator` accepts a trusted pinned
+v2 demo binary. CI builds it from commit
+`39adabef6d62e9d0272a586b55ea2273bf5b6b6d`. Each before/after run creates fresh
+keys after source freezing; the two runs use independent instances.
+`--retain-private-dir` retains source snapshots and private fixtures locally,
+and must not point to a directory that is published as an artifact.
+
+This reduces a measured sampling bias. It does not guarantee detection of
+arbitrarily rare input-dependent mistakes, and it does not make the complete
+parser less capable. A separate `host-screened` release-size probe includes
+screened issuance, state handling, verification and the strict mandatory worker;
+the default host's size must not be substituted for this measurement.
 
 For background, [EvalPlus](https://arxiv.org/abs/2305.01210) studies how stronger
 test inputs reveal incorrect generated programs. This experiment uses only

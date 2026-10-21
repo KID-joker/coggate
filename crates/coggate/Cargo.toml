@@ -17,3 +17,7 @@ getrandom = "0.3.4"
 [[example]]
 name = "demo"
 required-features = ["dev-tools"]
+
+[[example]]
+name = "host-screened"
+required-features = ["dev-tools"]
