@@ -66,4 +66,5 @@ jobs:
             artifacts/offline-solver.json
             artifacts/solver.sha256
             artifacts/release-build.jsonl
+            artifacts/provenance.json
             artifacts/*.log

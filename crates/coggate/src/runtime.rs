@@ -52,12 +52,19 @@ impl Runtime {
     }
 
     pub(crate) fn reserve(&self) -> Option<Permit> {
-        self.active
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
-                (n < self.max_parallel).then(|| n + 1)
-            })
-            .ok()
-            .map(|_| Permit(Arc::clone(&self.active)))
+        let mut active = self.active.load(Ordering::Acquire);
+        while active < self.max_parallel {
+            match self.active.compare_exchange_weak(
+                active,
+                active + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return Some(Permit(Arc::clone(&self.active))),
+                Err(current) => active = current,
+            }
+        }
+        None
     }
 
     pub fn execute(&self, challenge: &PrivateChallenge, source: &str) -> Verdict {
@@ -279,6 +286,30 @@ mod tests {
         assert!(runtime.reserve().is_none());
         drop(permit);
         assert!(runtime.reserve().is_some());
+    }
+
+    #[test]
+    fn concurrent_reservations_never_exceed_capacity() {
+        let runtime = Arc::new(Runtime::new("does-not-run", 4));
+        let barrier = Arc::new(std::sync::Barrier::new(16));
+        let handles: Vec<_> = (0..16)
+            .map(|_| {
+                let runtime = Arc::clone(&runtime);
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    let permit = runtime.reserve();
+                    // Keep every acquired permit alive until all contenders try.
+                    barrier.wait();
+                    permit.is_some()
+                })
+            })
+            .collect();
+        let acquired = handles
+            .into_iter()
+            .map(|handle| usize::from(handle.join().unwrap()))
+            .sum::<usize>();
+        assert_eq!(acquired, 4);
+        assert_eq!(runtime.active.load(Ordering::Acquire), 0);
     }
 
     #[test]
