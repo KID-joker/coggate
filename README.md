@@ -16,7 +16,7 @@ bindings: the complete runtime increment can fit in 512,000 bytes, and a public
 generator can impose a meaningful cost on specialized offline-developed solvers.
 The default Rust/Linux x86_64 prototype measured **347,664 bytes** of complete
 increment; the screened experiment including its strict worker measured
-**371,432 bytes**.
+**371,536 bytes**.
 The current generator has failed the second hypothesis: the included offline
 solver passed **1,000/1,000** fresh challenges on the strict Linux worker.
 
@@ -153,7 +153,9 @@ The composition experiment also includes a development-only
 [public-example order-synthesis pilot](docs/composition-experiment.md#public-example-order-synthesis-pilot).
 It hides the ordering of four operation cards and proves that the public examples
 identify exactly one order. An adapted offline solver searches the 24 orders;
-the first engine-only batch passed 200/200 challenges. This tests synthesis
-directly instead of treating an obsolete parser's format errors as a defense.
+it passed **1,000/1,000** fresh challenges on the strict Linux worker, averaging
+29 ms per cold solver process. The previous parser and an exact public-example
+lookup both passed 0/1,000 on that same batch. This synthesis pilot also fails
+the anti-solver hypothesis; incompatibility with an obsolete parser is not a defense.
 
 MIT licensed; upstream MicroQuickJS notices are retained.
