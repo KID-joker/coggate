@@ -1,0 +1,2 @@
+# Preserve the pinned upstream snapshot byte-for-byte.
+third_party/mquickjs/** -whitespace

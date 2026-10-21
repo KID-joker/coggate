@@ -1,0 +1,59 @@
+name: Linux prototype
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  prototype:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Toolchain provenance
+        run: |
+          rustc -Vv
+          cargo -V
+          cc --version
+          uname -a
+          lscpu
+      - name: Formatting and lint
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --workspace --all-targets --features coggate/dev-tools --locked -- -D warnings
+      - name: Core, lifecycle, engine and Linux isolation tests
+        run: cargo test --workspace --features coggate/dev-tools --locked
+      - name: Build production artifacts
+        run: |
+          mkdir -p artifacts
+          cargo build -p coggate --release --example host-baseline --example host-integrated --locked --message-format=json > artifacts/release-build.jsonl
+          python3 scripts/worker_path.py < artifacts/release-build.jsonl > artifacts/worker-path.txt
+      - name: Complete Rust-host size increment
+        id: size
+        continue-on-error: true
+        run: |
+          python3 scripts/measure_size.py --baseline target/release/examples/host-baseline --integrated target/release/examples/host-integrated --worker "$(cat artifacts/worker-path.txt)" --output artifacts/size.json
+      - name: Record solver and build the fixture generator
+        run: |
+          sha256sum scripts/offline_solver.py > artifacts/solver.sha256
+          cargo build -p coggate --example demo --features dev-tools --locked
+      - name: Strict Linux reference and independent solver evaluation
+        run: |
+          target/debug/examples/demo --run 100
+          python3 scripts/evaluate_solver.py --samples 1000 --worker "$(cat artifacts/worker-path.txt)" > artifacts/offline-solver.json
+      - name: Enforce complete size budget
+        if: steps.size.outcome == 'failure'
+        run: exit 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: prototype-evidence
+          path: |
+            artifacts/size.json
+            artifacts/offline-solver.json
+            artifacts/solver.sha256
+            artifacts/release-build.jsonl

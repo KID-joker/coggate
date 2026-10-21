@@ -1,0 +1,18 @@
+[package]
+name = "coggate-core"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Experimental challenge generation and private judging data for CogGate"
+
+[features]
+default = []
+# Exposes reference solutions only for local measurement and development tools.
+dev-tools = []
+
+[dependencies]
+getrandom = "0.3.4"
+hmac = "0.12.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+sha2 = "0.10.9"
