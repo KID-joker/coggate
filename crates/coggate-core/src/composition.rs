@@ -5,6 +5,7 @@
 //! All task semantics are present in the public prompt. Hidden factors change
 //! instances, but do not hide the language that an adaptive parser can learn.
 
+pub mod order_synthesis;
 pub mod screening;
 
 use crate::{

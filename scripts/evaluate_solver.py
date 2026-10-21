@@ -31,6 +31,15 @@ CASE_LIMIT = 32
 INPUT_LIMIT = 4_096
 OUTPUT_LIMIT = 65_536
 STATUS_NAMES = {0: "ok", 1: "submission_failure", 2: "resource_limit", 3: "internal_failure"}
+METRICS_PREFIX = b"COGGATE_SOLVER_METRICS "
+METRICS_STDERR_LIMIT = 65_536
+METRICS_LINE_LIMIT = 4_096
+METRICS_VALUE_LIMIT = 1_000_000_000_000
+METRICS_FIELDS = frozenset({
+    "permutations_enumerated", "example_evaluations", "matching_orders",
+    "card_count", "public_example_count", "parse_ms", "search_ms",
+    "codegen_ms", "source_bytes", "model_calls",
+})
 
 
 def digest(data):
@@ -109,6 +118,71 @@ def timing_summary(values):
     }
 
 
+def numeric_summary(values):
+    if not values:
+        return {"count": 0}
+    ordered = sorted(values)
+    return {
+        "count": len(values),
+        "total": sum(values),
+        "min": ordered[0],
+        "max": ordered[-1],
+        "mean": round(sum(values) / len(values), 6),
+        "p50": ordered[max(0, math.ceil(len(values) * 0.50) - 1)],
+        "p95": ordered[max(0, math.ceil(len(values) * 0.95) - 1)],
+        "p99": ordered[max(0, math.ceil(len(values) * 0.99) - 1)],
+    }
+
+
+def solver_metrics(stderr):
+    """Return optional untrusted diagnostics; malformed metrics never judge code."""
+    if len(stderr) > METRICS_STDERR_LIMIT:
+        return None, 1
+    records = [line[len(METRICS_PREFIX):] for line in stderr.splitlines()
+               if line.startswith(METRICS_PREFIX)]
+    if not records:
+        return None, 0
+    if len(records) != 1 or len(records[0]) > METRICS_LINE_LIMIT:
+        return None, 1
+    try:
+        value = json.loads(records[0].decode("utf-8"), parse_constant=reject_constant)
+        if not isinstance(value, dict) or value.get("schema") != "coggate-order-solver-v1":
+            return None, 1
+        metrics = {key: value[key] for key in METRICS_FIELDS if key in value}
+        if not metrics or any(
+            type(number) not in (int, float)
+            or not 0 <= number <= METRICS_VALUE_LIMIT
+            or not math.isfinite(number)
+            for number in metrics.values()
+        ):
+            return None, 1
+        return metrics, 0
+    except (ValueError, UnicodeError, RecursionError, OverflowError):
+        return None, 1
+
+
+def retain_private_snapshot(path, solver_bytes, data, report):
+    directory = Path(path).expanduser().resolve()
+    if "PRIVATE" not in directory.name:
+        raise ValueError("--retain-private-dir directory name must contain PRIVATE")
+    # An explicit private directory is separate from the solver's working
+    # directory, owner-only, and never overwrites a previous evidence bundle.
+    directory.mkdir(mode=0o700, parents=True, exist_ok=False)
+    for name, content in (("frozen-solver.py", solver_bytes), ("private-fixtures.jsonl", data)):
+        with (directory / name).open("xb") as handle:
+            handle.write(content)
+    manifest = {
+        "contains_private_judging_data": True,
+        "experiment": report["experiment"],
+        "solver_sha256": report["solver_sha256"],
+        "fixtures_sha256": report["fixtures_sha256"],
+        "fixture_provenance": report["fixture_provenance"],
+    }
+    with (directory / "manifest.json").open("x") as handle:
+        handle.write(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    return {"directory": str(directory), "contains_private_judging_data": True}
+
+
 def worker_path(arguments):
     name = "coggate-engine-test-UNSANDBOXED" if arguments.engine_only else "coggate-worker"
     if arguments.worker:
@@ -149,6 +223,7 @@ def fixture_data(arguments):
     completed = subprocess.run(
         ["cargo", "run", "--quiet", "-p", "coggate", "--example", "demo",
          "--features", "dev-tools", "--",
+         "--order-dump" if getattr(arguments, "order_synthesis", False) else
          "--screened-dump" if arguments.screened_composition else (
              "--composition-dump" if arguments.composition else "--dump"
          ),
@@ -162,6 +237,7 @@ def fixture_data(arguments):
 
 def evaluate(arguments):
     started = time.perf_counter()
+    order_synthesis = getattr(arguments, "order_synthesis", False)
     solver_bytes = Path(arguments.solver).read_bytes()
     solver_sha = digest(solver_bytes)
     if platform.system() != "Linux" and not arguments.engine_only:
@@ -169,7 +245,8 @@ def evaluate(arguments):
     report = {
         "schema_version": 1,
         "experiment": (
-            "screened_composition_shortcut_resistance"
+            "public_examples_order_synthesis"
+            if order_synthesis else "screened_composition_shortcut_resistance"
             if arguments.screened_composition else "composition_grammar_adaptive_white_box"
             if arguments.composition else "public_grammar_white_box_baseline"
         ),
@@ -178,14 +255,8 @@ def evaluate(arguments):
         "solver_filename": Path(arguments.solver).name,
         "solver_arguments": arguments.solver_arg,
         "solver_input": "allowlisted_public_challenge_only",
-        "model_calls_during_solving": (
-            0 if Path(arguments.solver).resolve() in {
-                ROOT / "scripts/offline_solver.py",
-                ROOT / "scripts/composition_solver.py",
-                ROOT / "scripts/shortcut_solver.py",
-            } else None
-        ),
-        "model_use_audit": "included_solver_source_review_only_not_enforced_by_evaluator",
+        "model_calls_during_solving": None,
+        "model_use_audit": "not_verified_by_evaluator_requires_review_of_frozen_solver_sha256",
         "submissions_per_challenge": 1,
         "platform": platform.platform(),
         "python_version": platform.python_version(),
@@ -201,7 +272,12 @@ def evaluate(arguments):
     family_results = {}
     failures = []
     solver_times, worker_times, generation_times = [], [], []
+    solver_timeout_count = worker_timeout_count = 0
+    source_sizes = []
     screening_stats = collections.defaultdict(list)
+    order_stats = collections.defaultdict(list)
+    reported_metrics = collections.defaultdict(list)
+    valid_metrics = invalid_metrics = 0
     with tempfile.TemporaryDirectory(prefix="coggate-offline-solver-") as temporary:
         frozen_solver = Path(temporary) / "offline_solver.py"
         frozen_solver.write_bytes(solver_bytes)
@@ -210,6 +286,10 @@ def evaluate(arguments):
         data, provenance = fixture_data(arguments)
         report["fixture_provenance"] = provenance
         report["fixtures_sha256"] = digest(data)
+        if getattr(arguments, "retain_private_dir", None):
+            report["retained_private_evidence"] = retain_private_snapshot(
+                arguments.retain_private_dir, solver_bytes, data, report
+            )
         worker = worker_path(arguments)
         report["worker"] = str(worker)
         report["worker_sha256"] = digest(worker.read_bytes())
@@ -226,7 +306,7 @@ def evaluate(arguments):
                 generation_times.append(fixture["generation_ms"])
             if "generation_error" in fixture:
                 if (
-                    not arguments.screened_composition
+                    not (arguments.screened_composition or order_synthesis)
                     or fixture["generation_error"] != "candidate_budget_exhausted"
                     or any(key in fixture for key in ("public", "cases", "reference_source"))
                 ):
@@ -246,32 +326,53 @@ def evaluate(arguments):
                 for key, value in fixture["screening"].items():
                     if type(value) in (int, float):
                         screening_stats[key].append(value)
+            if isinstance(fixture.get("order_synthesis"), dict):
+                for key, value in fixture["order_synthesis"].items():
+                    if type(value) in (int, float):
+                        order_stats[key].append(value)
             report["sample_count"] += 1
             report["case_count"] += len(cases)
             outcome, family, detail = "solver_failure", "unrecognized", ""
             before = time.perf_counter()
             try:
-                generated = subprocess.run(
-                    [sys.executable, "-I", str(frozen_solver), *arguments.solver_arg],
-                    input=json.dumps(public).encode("utf-8"),
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=3,
-                    cwd=temporary, env={"PATH": os.defpath, "LC_ALL": "C"},
-                )
-                solver_times.append((time.perf_counter() - before) * 1000)
+                try:
+                    generated = subprocess.run(
+                        [sys.executable, "-I", str(frozen_solver), *arguments.solver_arg],
+                        input=json.dumps(public).encode("utf-8"),
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=3,
+                        cwd=temporary, env={"PATH": os.defpath, "LC_ALL": "C"},
+                    )
+                except subprocess.TimeoutExpired:
+                    solver_timeout_count += 1
+                    raise
+                finally:
+                    solver_times.append((time.perf_counter() - before) * 1000)
+                metrics, invalid = solver_metrics(generated.stderr)
+                invalid_metrics += invalid
+                if metrics is not None:
+                    valid_metrics += 1
+                    for key, value in metrics.items():
+                        reported_metrics[key].append(value)
                 if generated.returncode:
                     detail = generated.stderr.decode("utf-8", errors="replace")[:300]
                 else:
+                    source_sizes.append(len(generated.stdout))
                     source = generated.stdout.decode("utf-8")
                     first_line = source.splitlines()[0] if source else ""
                     if first_line.startswith("// public-grammar family: "):
                         family = first_line.split(": ", 1)[1]
                     payload = request(source, inputs)
                     before = time.perf_counter()
-                    executed = subprocess.run(
-                        [str(worker)], input=payload, stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE, timeout=2, env={},
-                    )
-                    worker_times.append((time.perf_counter() - before) * 1000)
+                    try:
+                        executed = subprocess.run(
+                            [str(worker)], input=payload, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, timeout=2, env={},
+                        )
+                    except subprocess.TimeoutExpired:
+                        worker_timeout_count += 1
+                        raise
+                    finally:
+                        worker_times.append((time.perf_counter() - before) * 1000)
                     if executed.returncode:
                         outcome, detail = "worker_exit_failure", str(executed.returncode)
                     else:
@@ -311,8 +412,23 @@ def evaluate(arguments):
     report["runtime_cost"] = {
         "solver_process_including_python_startup": timing_summary(solver_times),
         "worker_process_including_startup_compile_execute_ipc": timing_summary(worker_times),
+        "solver_timeout_count": solver_timeout_count,
+        "worker_timeout_count": worker_timeout_count,
+        "timing_scope": "all_started_solver_and_worker_runs_including_timeout_termination_and_cleanup",
+        "timeout_censoring": "timeout_wall_cost_is_observed_but_uninterrupted_completion_time_is_unknown",
         "evaluation_total_ms": round((time.perf_counter() - started) * 1000, 3),
         "generator_per_challenge": timing_summary(generation_times),
+    }
+    report["solver_stdout_source_bytes"] = {
+        "provenance": "trusted_evaluator_measurement_of_successful_solver_stdout",
+        **numeric_summary(source_sizes),
+    }
+    report["solver_self_reported_metrics"] = {
+        "provenance": "untrusted_solver_stderr_diagnostics_not_used_for_verdict",
+        "schema": "coggate-order-solver-v1",
+        "valid_records": valid_metrics,
+        "invalid_records": invalid_metrics,
+        "fields": {key: numeric_summary(values) for key, values in sorted(reported_metrics.items())},
     }
     if screening_stats:
         report["screening"] = {
@@ -321,8 +437,12 @@ def evaluate(arguments):
                   "mean": round(sum(values) / len(values), 3)}
             for key, values in sorted(screening_stats.items())
         }
+    if order_stats:
+        report["order_synthesis"] = {
+            key: numeric_summary(values) for key, values in sorted(order_stats.items())
+        }
     report["conclusion"] = (
-        "current_generator_is_solved_by_a_non_model_specialized_script"
+        "all_issued_challenges_passed"
         if report["pass_rate"] == 1.0
         else "attack_success_observed" if report["passed"] else "no_success_in_this_sample"
     )
@@ -333,6 +453,8 @@ def evaluate(arguments):
         "No LLM baseline or formal confidence-bound acceptance result is included.",
         "Timing includes cold subprocess startup and is not the warmed-worker performance gate.",
         "Issuance failures are availability failures, not successful defenses against a solver.",
+        "Solver-reported metrics, including model_calls, are diagnostics rather than verified evidence.",
+        "The solver runner is not an OS, filesystem, or network sandbox; included attack access claims require review of its frozen source.",
     ]
     return report
 
@@ -346,13 +468,21 @@ def main():
     mechanism.add_argument("--composition", action="store_true", help="evaluate the development-only composition generator")
     mechanism.add_argument("--screened-composition", action="store_true",
                            help="evaluate the development-only screened composition generator")
+    mechanism.add_argument("--order-synthesis", action="store_true",
+                           help="evaluate the development-only public-example order synthesis generator")
     parser.add_argument("--samples", type=int, default=200)
     parser.add_argument("--fixtures", help="trusted JSONL fixture file; fresh-key provenance is then unverified")
+    parser.add_argument("--retain-private-dir",
+                        help="new owner-only directory with PRIVATE in its name; saves frozen source and PRIVATE fixtures, never upload")
     parser.add_argument("--worker", help="worker executable; default is the latest debug native build")
     parser.add_argument("--engine-only", action="store_true", help="explicitly use UNSANDBOXED engine compatibility mode")
     arguments = parser.parse_args()
     if arguments.solver is None:
-        name = "composition_solver.py" if arguments.composition or arguments.screened_composition else "offline_solver.py"
+        name = (
+            "order_solver.py" if arguments.order_synthesis else
+            "composition_solver.py" if arguments.composition or arguments.screened_composition else
+            "offline_solver.py"
+        )
         arguments.solver = str(ROOT / "scripts" / name)
     if not 1 <= arguments.samples <= 100_000:
         parser.error("--samples must be in 1..100000")

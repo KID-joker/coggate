@@ -21,45 +21,54 @@ fn main() {
     );
     let composition = matches!(mode, "--composition-dump" | "--composition-run");
     let screened = matches!(mode, "--screened-dump" | "--screened-run");
-    let dump = matches!(mode, "--dump" | "--composition-dump" | "--screened-dump");
-    let run = matches!(mode, "--run" | "--composition-run" | "--screened-run");
+    let order = matches!(mode, "--order-dump" | "--order-run");
+    let dump = matches!(
+        mode,
+        "--dump" | "--composition-dump" | "--screened-dump" | "--order-dump"
+    );
+    let run = matches!(
+        mode,
+        "--run" | "--composition-run" | "--screened-run" | "--order-run"
+    );
     assert!(
         dump || run,
-        "usage: demo [--dump|--run|--composition-dump|--composition-run|--screened-dump|--screened-run] [count]"
+        "usage: demo [--dump|--run|--composition-dump|--composition-run|--screened-dump|--screened-run|--order-dump|--order-run] [count]"
     );
     let mut passed = 0;
     let mut issued = 0;
     for i in 0..count {
         let started = Instant::now();
-        let (public, private, screening) = if screened {
-            let (public, private, stats) =
-                match engine.issue_screened_composition("development-only", &i.to_be_bytes(), 1000)
-                {
-                    Ok(result) => result,
-                    Err(coggate_core::Error::GenerationExhausted) => {
-                        println!(
-                            "{}",
-                            json!({
-                                "generation_error": "candidate_budget_exhausted",
-                                "generation_ms": started.elapsed().as_secs_f64() * 1000.0,
-                                "issuance_attempt": i
-                            })
-                        );
-                        continue;
-                    }
-                    Err(error) => panic!("screened issuance failed: {error}"),
-                };
-            (public, private, Some(stats))
+        let issued_challenge = if order {
+            engine
+                .issue_order_synthesis("development-only", &i.to_be_bytes(), 1000)
+                .map(|(public, private, stats)| (public, private, Some(json!(stats))))
+        } else if screened {
+            engine
+                .issue_screened_composition("development-only", &i.to_be_bytes(), 1000)
+                .map(|(public, private, stats)| (public, private, Some(json!(stats))))
         } else if composition {
-            let (public, private) = engine
+            engine
                 .issue_composition("development-only", &i.to_be_bytes(), 1000)
-                .expect("issue");
-            (public, private, None)
+                .map(|(public, private)| (public, private, None))
         } else {
-            let (public, private) = engine
+            engine
                 .issue("development-only", &i.to_be_bytes(), 1000)
-                .expect("issue");
-            (public, private, None)
+                .map(|(public, private)| (public, private, None))
+        };
+        let (public, private, diagnostics) = match issued_challenge {
+            Ok(result) => result,
+            Err(coggate_core::Error::GenerationExhausted) if screened || order => {
+                println!(
+                    "{}",
+                    json!({
+                        "generation_error": "candidate_budget_exhausted",
+                        "generation_ms": started.elapsed().as_secs_f64() * 1000.0,
+                        "issuance_attempt": i
+                    })
+                );
+                continue;
+            }
+            Err(error) => panic!("issuance failed: {error}"),
         };
         issued += 1;
         let generation_ms = started.elapsed().as_secs_f64() * 1000.0;
@@ -74,7 +83,9 @@ fn main() {
                 "{}",
                 json!({
                     "public": public, "cases": cases, "reference_source": source,
-                    "screening": screening, "generation_ms": generation_ms
+                    "screening": if screened { diagnostics.as_ref() } else { None },
+                    "order_synthesis": if order { diagnostics.as_ref() } else { None },
+                    "generation_ms": generation_ms
                 })
             );
         } else {

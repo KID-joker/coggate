@@ -149,4 +149,11 @@ parsers passed 1,000/1,000 in both groups. The screened runtime now has its own
 complete size measurement above. These results improve test coverage; the core
 offline-solver gate remains failed.
 
+The composition experiment also includes a development-only
+[public-example order-synthesis pilot](docs/composition-experiment.md#public-example-order-synthesis-pilot).
+It hides the ordering of four operation cards and proves that the public examples
+identify exactly one order. An adapted offline solver searches the 24 orders;
+the first engine-only batch passed 200/200 challenges. This tests synthesis
+directly instead of treating an obsolete parser's format errors as a defense.
+
 MIT licensed; upstream MicroQuickJS notices are retained.

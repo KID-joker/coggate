@@ -132,3 +132,115 @@ jobs:
             artifacts/release-build.jsonl
             artifacts/provenance.json
             artifacts/*.log
+  order_synthesis:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.99.1"
+      - name: Freeze solver identities and check the public parser
+        run: |
+          mkdir -p artifacts
+          sha256sum scripts/order_solver.py scripts/composition_solver.py > artifacts/order-solver.sha256
+          python3 scripts/order_solver.py --self-test
+      - name: Build strict release worker and development fixture generator
+        run: |
+          cargo build -p coggate --release --example host-integrated --locked --message-format=json > artifacts/order-release-build.jsonl
+          python3 scripts/worker_path.py < artifacts/order-release-build.jsonl > artifacts/order-worker-path.txt
+          cargo build -p coggate --example demo --features dev-tools --locked
+      - name: Strict Linux order-synthesis reference control
+        run: |
+          COGGATE_WORKER="$(cat artifacts/order-worker-path.txt)" target/debug/examples/demo --order-run 100 2>&1 | tee artifacts/order-reference.log
+      - name: Adapted solver and controls on one fresh private batch
+        run: |
+          python3 scripts/evaluate_solver.py --order-synthesis --samples 1000 --worker "$(cat artifacts/order-worker-path.txt)" --retain-private-dir artifacts/order-PRIVATE > artifacts/order-adapted.json
+          python3 scripts/evaluate_solver.py --order-synthesis --solver scripts/composition_solver.py --samples 1000 --worker "$(cat artifacts/order-worker-path.txt)" --fixtures artifacts/order-PRIVATE/private-fixtures.jsonl > artifacts/order-legacy-parser.json
+          python3 scripts/evaluate_solver.py --order-synthesis --solver-arg=--examples-only --samples 1000 --worker "$(cat artifacts/order-worker-path.txt)" --fixtures artifacts/order-PRIVATE/private-fixtures.jsonl > artifacts/order-examples-only.json
+          sha256sum --check artifacts/order-solver.sha256
+      - name: Check judging outcomes and shared issuance denominators
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+          names = ("order-adapted.json", "order-legacy-parser.json", "order-examples-only.json")
+          reports = [json.loads((Path("artifacts") / name).read_text()) for name in names]
+          adapted, legacy, lookup = reports
+          issued = adapted["sample_count"]
+          assert issued > 0
+          assert adapted["fixture_provenance"] == "fresh_key_generated_after_solver_snapshot"
+          for name, report in zip(names, reports):
+              assert report["experiment"] == "public_examples_order_synthesis", name
+              assert report["issuance_attempts"] == 1000, name
+              assert report["sample_count"] == issued, name
+              assert report["issuance_failures"] == adapted["issuance_failures"], name
+              assert report["sample_count"] + report["issuance_failures"] == 1000, name
+              assert report["case_count"] == 32 * issued, name
+              assert report["fixtures_sha256"] == adapted["fixtures_sha256"], name
+              assert report["worker_sha256"] == adapted["worker_sha256"], name
+              assert report["os_isolation"] == "strict_worker_self_test", name
+          assert adapted["statuses"] == {"passed": issued}
+          assert legacy["statuses"] == {"solver_failure": issued}
+          assert lookup["statuses"] == {"wrong_answer": issued}
+          assert adapted["passed"] == issued
+          assert legacy["passed"] == lookup["passed"] == 0
+          order_sha = hashlib.sha256(Path("scripts/order_solver.py").read_bytes()).hexdigest()
+          legacy_sha = hashlib.sha256(Path("scripts/composition_solver.py").read_bytes()).hexdigest()
+          assert adapted["solver_sha256"] == lookup["solver_sha256"] == order_sha
+          assert legacy["solver_sha256"] == legacy_sha
+          # A legacy parser's incompatibility is not evidence of resistance.
+          # The adapted non-model solver is the decisive positive control.
+          PY
+      - name: Check diagnostic instrumentation separately from judging
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          fields = {
+              "permutations_enumerated", "example_evaluations", "matching_orders",
+              "card_count", "public_example_count", "parse_ms", "search_ms",
+              "codegen_ms", "source_bytes", "model_calls",
+          }
+          for name in ("order-adapted.json", "order-examples-only.json"):
+              report = json.loads((Path("artifacts") / name).read_text())
+              metrics = report["solver_self_reported_metrics"]
+              assert metrics["provenance"] == "untrusted_solver_stderr_diagnostics_not_used_for_verdict"
+              assert metrics["schema"] == "coggate-order-solver-v1"
+              assert metrics["valid_records"] == report["sample_count"]
+              assert metrics["invalid_records"] == 0
+              assert set(metrics["fields"]) == fields
+              for values in metrics["fields"].values():
+                  assert values["count"] == report["sample_count"]
+                  assert 0 <= values["min"] <= values["max"] <= 1_000_000_000_000
+              observed = report["solver_stdout_source_bytes"]
+              assert observed["provenance"] == "trusted_evaluator_measurement_of_successful_solver_stdout"
+              for key in ("count", "total", "min", "max"):
+                  assert metrics["fields"]["source_bytes"][key] == observed[key]
+          # These checks validate reporting only. Self-reported timing and
+          # model_calls neither establish model use nor change any verdict.
+          PY
+      - name: Publish public order-synthesis diagnostics
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+          EVIDENCE_ARTIFACT: order-synthesis-evidence
+          EVIDENCE_TEST_SCOPE: order solver self-test, strict Linux references and three public-only solver controls
+        run: python3 scripts/ci_report.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: order-synthesis-evidence
+          # Explicit public allowlist. Never upload artifacts/order-PRIVATE.
+          path: |
+            artifacts/order-adapted.json
+            artifacts/order-legacy-parser.json
+            artifacts/order-examples-only.json
+            artifacts/provenance.json
+            artifacts/order-release-build.jsonl
+            artifacts/order-solver.sha256
+            artifacts/order-reference.log

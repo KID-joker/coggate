@@ -108,3 +108,92 @@ mechanism is impossible. No model success benchmark, two-team five-day attack
 exercise or 24-hour fuzz campaign has been completed. The measured 347,160-byte
 increment belongs to the default Rust/Linux baseline, not a production package
 containing this development experiment.
+
+## Why the complete offline solver survives
+
+The attack is a small compiler: public declarations become a local symbol table,
+aliases become Boolean expressions, and numbered operations become a guarded
+execution plan. A fixed JavaScript interpreter executes that plan on each new
+input. It does not need to predict tomorrow's challenge or recover the hidden
+test seed. The current public prompt supplies the necessary semantics.
+
+| Proposed obstacle | How an adapted script handles it |
+| --- | --- |
+| Fresh names and different meanings for the same word | Rebuild the symbol table for each prompt |
+| Synonyms and more alias levels | Parse the public grammar and resolve references |
+| Secret factors and many random combinations | Compile the newly issued instance |
+| Independent private tests | Execute the correct semantics on arbitrary inputs |
+| Unspecified operation order, constrained by examples | Search candidate orders against public examples |
+
+The last row is a different hypothesis and now has its own falsifiable pilot.
+Program synthesis from examples already has non-model approaches:
+[FlashFill++](https://www.microsoft.com/en-us/research/publication/flashfill-scaling-programming-by-example-by-cutting-to-the-chase/)
+combines enumeration and deductive search, while the
+[SemGuS toolkit](https://arxiv.org/abs/2406.01792) includes enumerative solvers for
+user-defined syntax and semantics. These works motivate testing an adapted
+synthesizer; they do not establish the cost of solving this particular generator.
+
+## Public-example order synthesis pilot
+
+The development-only `order-synthesis/v1` generator presents four unordered
+operation cards with complete semantics. A solution must apply each card once,
+in one fixed order for every input. Public input/output examples must uniquely
+identify one of the 24 card-ID permutations and contain at least two different
+outputs. Exchangeable cards are rejected even when multiple orders compute the
+same function. The card labels and display order reveal no execution ordering.
+
+Issuance tries at most 64 candidates and 32 public probes per candidate. Only
+after public-only uniqueness succeeds does a separate random stream create
+32 distinct private inputs, excluding every public-example input, with at most
+128 draws. Exhaustion is an explicit availability failure, never a defense
+success or a fallback to an ambiguous challenge. Private tests do not decide
+which interpretation the user was supposed to choose.
+
+`scripts/order_solver.py` adapts the original parser and JavaScript interpreter.
+Its added Python simulator enumerates all 24 orders and checks the public
+examples, then emits code for the unique surviving plan. The solver is frozen
+before fresh keys and challenges are generated and receives only allowlisted
+public fields. It uses no model during solving; that statement is based on
+source review, not on the solver's self-reported `model_calls` field.
+
+Two controls share the same private fixtures: the previous composition parser,
+which cannot read card syntax, and an exact public-example lookup program,
+which returns `null` for all unseen inputs. Their failure alone is not evidence
+of resistance to an adapted solver.
+
+The first macOS engine-only batch passed **200/200** challenges and all 6,400
+private cases, with no issuance failures. The solver's diagnostic mean search
+time was about 0.50 ms; the trusted evaluator measured about 46 ms per cold
+Python process including startup. Those diagnostics are not a warm gateway
+latency benchmark, and macOS engine-only testing does not validate isolation.
+Linux evidence is recorded separately when available.
+
+```sh
+# Run on Linux without --engine-only; add it for macOS compatibility testing.
+# PRIVATE contains judging data and must never be published.
+python3 scripts/evaluate_solver.py --order-synthesis --samples 1000 \
+  --retain-private-dir artifacts/order-PRIVATE > artifacts/order-solver.json
+python3 scripts/evaluate_solver.py --order-synthesis --samples 1000 \
+  --fixtures artifacts/order-PRIVATE/private-fixtures.jsonl \
+  --solver scripts/composition_solver.py > artifacts/order-legacy.json
+python3 scripts/evaluate_solver.py --order-synthesis --samples 1000 \
+  --fixtures artifacts/order-PRIVATE/private-fixtures.jsonl \
+  --solver-arg=--examples-only > artifacts/order-lookup.json
+```
+
+The paired controls correctly label their supplied fixtures' freshness as
+unverified in isolation; the matching fixture hash links them to the fresh
+adaptive run. CI records both solver hashes before generating that shared batch.
+Uploaded artifacts explicitly exclude private fixture directories. Internal
+parse/search/code-generation timings are untrusted diagnostics; pass/fail,
+stdout source bytes and subprocess timing come from the evaluator.
+The attacker Python runner is not an OS, filesystem or network sandbox.
+The included frozen source was reviewed to use only stdin, but the evaluator
+does not enforce that access policy for arbitrary replacement solvers.
+
+The pilot already rejects the claim that hiding a four-card order forces model
+use. It adds a small finite search, not a measured model advantage. Increasing
+the number of cards alone also increases the issuer's uniqueness search, and
+does not establish favorable attacker/defender cost. No controlled model
+baseline or adaptation labor comparison has been measured. This failed pilot
+stays development-only; its complete production size has not been qualified.

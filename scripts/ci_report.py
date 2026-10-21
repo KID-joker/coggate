@@ -33,15 +33,32 @@ cpu = next(
      if line.startswith("model name")),
     "unavailable",
 ) if cpu_info.exists() else platform.processor()
+artifact_name = os.environ.get("EVIDENCE_ARTIFACT", "prototype-evidence")
+size_reports = {}
+for name in ("size.json", "screened-size.json"):
+    path = Path("artifacts") / name
+    if path.is_file():
+        report = json.loads(path.read_text())
+        # Each size report carries the actual feature selection and scope.
+        # Building a host/worker alone is not a complete size measurement.
+        size_reports[name] = {
+            key: report[key] for key in ("mechanism", "build_features", "scope", "note")
+            if key in report
+        }
 provenance = {
     "commit": os.environ.get("GITHUB_SHA", command("git", "rev-parse", "HEAD")),
+    "job": os.environ.get("GITHUB_JOB", "local"),
+    "artifact": artifact_name,
     "platform": platform.platform(),
     "architecture": platform.machine(),
     "cpu": cpu,
     "rustc": command("rustc", "-Vv"),
     "cc": command("cc", "--version"),
-    "size_build": "release profile, Rust baseline/integrated host, no dev-tools",
-    "tests": "workspace with coggate/dev-tools",
+    "size_build": {
+        "status": "see_individual_size_reports" if size_reports else "not_measured_in_this_job",
+        "reports": size_reports,
+    },
+    "tests": os.environ.get("EVIDENCE_TEST_SCOPE", "workspace with coggate/dev-tools"),
 }
 Path("artifacts").mkdir(exist_ok=True)
 Path("artifacts/provenance.json").write_text(json.dumps(provenance, indent=2) + "\n")
@@ -52,11 +69,15 @@ REPORTS = (
     "shortcut-after.json", "guards-after.json", "original-guards-before.json",
     "original-guards-after.json", "screened-adaptive.json",
     "screened-size.json", "distribution-before.json", "distribution-after.json",
+    "order-adapted.json", "order-legacy-parser.json", "order-examples-only.json",
 )
 # GitHub also caps the number of annotations per step. Put one compact overview
 # first, so large early reports cannot hide the later experimental outcomes.
-# Full JSON (including provenance and hashes) is uploaded as prototype-evidence.
-summary = {"commit": provenance["commit"], "full_reports": "prototype-evidence", "reports": {}}
+# Full JSON (including provenance and hashes) is uploaded in the named artifact.
+summary = {
+    "commit": provenance["commit"], "job": provenance["job"],
+    "full_reports": artifact_name, "reports": {},
+}
 for name in REPORTS:
     path = Path("artifacts") / name
     if not path.is_file():
