@@ -28,12 +28,27 @@ fn main() {
         "usage: demo [--dump|--run|--composition-dump|--composition-run|--screened-dump|--screened-run] [count]"
     );
     let mut passed = 0;
+    let mut issued = 0;
     for i in 0..count {
         let started = Instant::now();
         let (public, private, screening) = if screened {
-            let (public, private, stats) = engine
-                .issue_screened_composition("development-only", &i.to_be_bytes(), 1000)
-                .expect("screened issuance exhausted or failed; no fallback");
+            let (public, private, stats) =
+                match engine.issue_screened_composition("development-only", &i.to_be_bytes(), 1000)
+                {
+                    Ok(result) => result,
+                    Err(coggate_core::Error::GenerationExhausted) => {
+                        println!(
+                            "{}",
+                            json!({
+                                "generation_error": "candidate_budget_exhausted",
+                                "generation_ms": started.elapsed().as_secs_f64() * 1000.0,
+                                "issuance_attempt": i
+                            })
+                        );
+                        continue;
+                    }
+                    Err(error) => panic!("screened issuance failed: {error}"),
+                };
             (public, private, Some(stats))
         } else if composition {
             let (public, private) = engine
@@ -46,6 +61,7 @@ fn main() {
                 .expect("issue");
             (public, private, None)
         };
+        issued += 1;
         let generation_ms = started.elapsed().as_secs_f64() * 1000.0;
         let source = private.reference_solution();
         if dump {
@@ -69,7 +85,10 @@ fn main() {
             }
         }
     }
-    if run && passed != count {
-        std::process::exit(1);
+    if run {
+        eprintln!("issuance_attempts={count} issued={issued} reference_passed={passed}");
+        if passed != issued || issued == 0 {
+            std::process::exit(1);
+        }
     }
 }

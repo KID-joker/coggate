@@ -213,9 +213,9 @@ function solve(input){
     step=plan[s];mode=step[0];operation=step[2];n=current.length;
     run=(mode===0 || mode===2);
     if(mode!==0){
-      for(i=0;i<n;i++){
-        if(mode===1 && predicate(step[1],current[i])){run=true;}
-        if(mode===2 && !predicate(step[1],current[i])){run=false;}
+      for(i=0;i<GUARD_LENGTH;i++){
+        if(mode===1 && predicate(step[1],GUARD_VALUES[i])){run=true;}
+        if(mode===2 && !predicate(step[1],GUARD_VALUES[i])){run=false;}
       }
     }
     if(run){
@@ -258,7 +258,9 @@ function solve(input){
 """
 
 
-def solve(prompt, ignore_guards=False):
+def solve(prompt, ignore_guards=False, original_input_guards=False):
+    if ignore_guards and original_input_guards:
+        raise ValueError("guard variants are mutually exclusive")
     predicates, plan, result_mode = parse_prompt(prompt)
     if ignore_guards:
         for stage in plan:
@@ -268,12 +270,17 @@ def solve(prompt, ignore_guards=False):
         dispatch += "if(id===%d){return %s;}\n" % (index, predicate_js(expression))
     dispatch += "return false;\n}\n"
     body = INTERPRETER.replace("PLAN_LITERAL", json.dumps(plan, separators=(",", ":")))
+    # This held-out attack changes only the condition's sequence. Operations
+    # still consume current, and every operation produces a new array, so input
+    # retains its original values throughout the generated program.
+    body = body.replace("GUARD_LENGTH", "input.length" if original_input_guards else "n")
+    body = body.replace("GUARD_VALUES", "input" if original_input_guards else "current")
     body = body.replace(
         "RETURN_EXPRESSION",
         "for(i=0;i<current.length;i++){total=total+current[i];}return total;"
         if result_mode == "sum" else "return current;",
     )
-    suffix = "_ignore_guards" if ignore_guards else ""
+    suffix = "_ignore_guards" if ignore_guards else "_original_input_guards" if original_input_guards else ""
     return "// public-grammar family: composition_%d_steps%s\n%s%s" % (
         len(plan), suffix, dispatch, body,
     )
@@ -281,13 +288,20 @@ def solve(prompt, ignore_guards=False):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
+    variants = parser.add_mutually_exclusive_group()
+    variants.add_argument(
         "--ignore-guards", action="store_true",
         help="ablation attack: execute every stage regardless of its public condition",
     )
+    variants.add_argument(
+        "--original-input-guards", action="store_true",
+        help="ablation attack: check guards against original input while operations use the current sequence",
+    )
     arguments = parser.parse_args()
     try:
-        sys.stdout.write(solve(read_prompt(sys.stdin.read()), arguments.ignore_guards))
+        sys.stdout.write(solve(
+            read_prompt(sys.stdin.read()), arguments.ignore_guards, arguments.original_input_guards,
+        ))
     except ValueError as error:
         print("composition solver: " + str(error), file=sys.stderr)
         return 2

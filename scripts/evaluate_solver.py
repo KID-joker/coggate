@@ -191,10 +191,13 @@ def evaluate(arguments):
         "python_version": platform.python_version(),
         "os_isolation": "NOT_VALIDATED_UNSANDBOXED_ENGINE_ONLY" if arguments.engine_only else "strict_worker_self_test",
         "sample_count": 0,
+        "issuance_attempts": 0,
+        "issuance_failures": 0,
         "passed": 0,
         "case_count": 0,
     }
     statuses = collections.Counter()
+    issuance_errors = collections.Counter()
     family_results = {}
     failures = []
     solver_times, worker_times, generation_times = [], [], []
@@ -215,9 +218,22 @@ def evaluate(arguments):
         for line_number, line in enumerate(data.splitlines(), 1):
             if not line.strip():
                 continue
-            if report["sample_count"] >= arguments.samples:
+            if report["issuance_attempts"] >= arguments.samples:
                 break
             fixture = json.loads(line)
+            report["issuance_attempts"] += 1
+            if isinstance(fixture.get("generation_ms"), (int, float)):
+                generation_times.append(fixture["generation_ms"])
+            if "generation_error" in fixture:
+                if (
+                    not arguments.screened_composition
+                    or fixture["generation_error"] != "candidate_budget_exhausted"
+                    or any(key in fixture for key in ("public", "cases", "reference_source"))
+                ):
+                    raise ValueError("invalid issuance-failure fixture")
+                report["issuance_failures"] += 1
+                issuance_errors[fixture["generation_error"]] += 1
+                continue
             public = public_challenge(fixture)
             cases = fixture.get("cases")
             if not isinstance(cases, list) or not 0 < len(cases) <= CASE_LIMIT:
@@ -226,8 +242,6 @@ def evaluate(arguments):
             # cases; the source-generation subprocess receives public JSON only.
             inputs = [case["input"] for case in cases]
             expected = [case["expected"] for case in cases]
-            if isinstance(fixture.get("generation_ms"), (int, float)):
-                generation_times.append(fixture["generation_ms"])
             if isinstance(fixture.get("screening"), dict):
                 for key, value in fixture["screening"].items():
                     if type(value) in (int, float):
@@ -288,6 +302,9 @@ def evaluate(arguments):
     for family_report in family_results.values():
         family_report["pass_rate"] = family_report["passed"] / family_report["sample_count"]
     report["pass_rate"] = report["passed"] / report["sample_count"]
+    report["pass_rate_denominator"] = "issued_challenges_only"
+    report["pass_rate_per_issuance_attempt"] = report["passed"] / report["issuance_attempts"]
+    report["issuance_failure_reasons"] = dict(issuance_errors)
     report["by_family"] = dict(sorted(family_results.items()))
     report["statuses"] = dict(statuses)
     report["failure_examples"] = failures
@@ -315,6 +332,7 @@ def evaluate(arguments):
         "Direct worker evaluation bypasses gateway admission and challenge lifecycle handling.",
         "No LLM baseline or formal confidence-bound acceptance result is included.",
         "Timing includes cold subprocess startup and is not the warmed-worker performance gate.",
+        "Issuance failures are availability failures, not successful defenses against a solver.",
     ]
     return report
 

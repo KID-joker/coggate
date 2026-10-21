@@ -29,6 +29,7 @@ pub struct ScreeningStats {
     pub rejected_shortcut: usize,
     pub rejected_stage: usize,
     pub rejected_guard: usize,
+    pub rejected_original_guard: usize,
     pub rejected_coverage: usize,
     pub total_pool_inputs: usize,
     pub peak_pool_inputs: usize,
@@ -48,7 +49,8 @@ impl Engine {
     /// Development-only, bounded quality-screened composition experiment.
     ///
     /// A successful result kills the documented shortcuts and witnesses every
-    /// stage deletion and conditional-to-always mutation on the returned suite.
+    /// stage deletion, conditional-to-always mutation, and original-input guard
+    /// mutation on the returned suite.
     /// After 64 rejected candidates it fails explicitly; there is no fallback.
     pub fn issue_screened_composition(
         &self,
@@ -71,9 +73,9 @@ impl Engine {
     ) -> Result<(PublicChallenge, PrivateChallenge, ScreeningStats), Error> {
         let expires_at = validate_request(scope, factor, now_secs)?;
         let derive = |label: &[u8]| derive_seed(&self.key, label, scope.as_bytes(), factor, &nonce);
-        let mut problem = RandomStream::new(derive(b"composition-screened/v1/problem"));
-        let mut wording = RandomStream::new(derive(b"composition-screened/v1/wording"));
-        let mut tests = RandomStream::new(derive(b"composition-screened/v1/tests"));
+        let mut problem = RandomStream::new(derive(b"composition-screened/v2/problem"));
+        let mut wording = RandomStream::new(derive(b"composition-screened/v2/wording"));
+        let mut tests = RandomStream::new(derive(b"composition-screened/v2/tests"));
         let (task, cases, stats) = find_screened(
             &mut problem,
             &mut tests,
@@ -81,7 +83,7 @@ impl Engine {
             Composition::generate,
         )
         .map_err(|_| Error::GenerationExhausted)?;
-        let id = hex(&derive(b"composition-screened/v1/id"));
+        let id = hex(&derive(b"composition-screened/v2/id"));
         let public = PublicChallenge {
             id: id.clone(),
             scope: scope.to_owned(),
@@ -106,6 +108,7 @@ enum Rejection {
     Shortcut,
     Stage,
     Guard,
+    OriginalGuard,
     Coverage,
 }
 
@@ -210,6 +213,7 @@ fn find_screened(
                     Rejection::Shortcut => stats.rejected_shortcut += 1,
                     Rejection::Stage => stats.rejected_stage += 1,
                     Rejection::Guard => stats.rejected_guard += 1,
+                    Rejection::OriginalGuard => stats.rejected_original_guard += 1,
                     Rejection::Coverage => stats.rejected_coverage += 1,
                 }
             }
@@ -282,6 +286,30 @@ fn add_requirement(
         *requirement_count += 1;
     }
     witnessed
+}
+
+/// Independent semantic mutant: every guard observes the original input, while
+/// its operation still transforms the current sequence. This intentionally
+/// differs from the correct contract and is only used to seek counterexamples.
+fn evaluate_with_original_guards(task: &Composition, input: &[i64]) -> Value {
+    let mut current = input.to_vec();
+    for stage in &task.stages {
+        let enabled = match stage.guard {
+            Guard::Always => true,
+            Guard::Any(predicate) => input.iter().any(|&x| task.predicates.matches(predicate, x)),
+            Guard::All(predicate) => input.iter().all(|&x| task.predicates.matches(predicate, x)),
+        };
+        if enabled {
+            let mut operation = stage.clone();
+            operation.guard = Guard::Always;
+            operation.apply(&mut current, &task.predicates);
+        }
+    }
+    if task.sum {
+        json!(current.iter().sum::<i64>())
+    } else {
+        json!(current)
+    }
 }
 
 fn screen_candidate(
@@ -359,6 +387,16 @@ fn screen_candidate(
         &mut requirements,
     ) {
         return Err(Rejection::Guard);
+    }
+    stats.mutation_evaluations += pool.len();
+    if !add_requirement(
+        pool.iter()
+            .zip(&outputs)
+            .map(|(input, expected)| evaluate_with_original_guards(task, input) != *expected),
+        &mut masks,
+        &mut requirements,
+    ) {
+        return Err(Rejection::OriginalGuard);
     }
 
     let alternating: Vec<_> = (0..MAX_INPUT_LEN)
@@ -509,6 +547,28 @@ mod tests {
     }
 
     #[test]
+    fn original_input_guard_mutant_changes_a_noncommuting_example() {
+        let mut task = task(vec![
+            stage(Operation::Affine(-3, 2)),
+            Stage {
+                operation: Operation::Filter(1),
+                guard: Guard::Any(0),
+            },
+        ]);
+        task.predicates.greater = false;
+        task.predicates.residue = 0;
+        task.sum = true;
+        // Original -31 qualifies for x <= 0, but the current value 95 does not.
+        // The buggy guard therefore runs a residue filter that removes 95.
+        assert_eq!(task.evaluate(&[-31]), json!(95));
+        assert_eq!(evaluate_with_original_guards(&task, &[-31]), json!(0));
+        // Operations themselves still use the current value, not the original.
+        assert_eq!(task.evaluate(&[1]), json!(0));
+        assert_eq!(evaluate_with_original_guards(&task, &[1]), json!(-1));
+        assert_eq!(evaluate_with_original_guards(&task, &[]), json!(0));
+    }
+
+    #[test]
     fn selected_suite_preserves_every_shortcut_and_mutation_witness() {
         let task = task(vec![
             stage(Operation::Affine(2, 1)),
@@ -552,6 +612,9 @@ mod tests {
         assert!(cases
             .iter()
             .any(|case| mutant.evaluate(case.input()) != *case.expected()));
+        assert!(cases.iter().any(|case| {
+            evaluate_with_original_guards(&task, case.input()) != *case.expected()
+        }));
         for case in cases {
             assert_eq!(case.expected(), &task.evaluate(case.input()));
         }
@@ -614,6 +677,16 @@ mod tests {
                 .unwrap()
                 .0
                 .id
+        );
+        assert_ne!(
+            public.id,
+            hex(&derive_seed(
+                &[37; 32],
+                b"composition-screened/v1/id",
+                b"s",
+                b"f",
+                &[9; 32]
+            ))
         );
         assert_eq!(private.cases().len(), 32);
         assert!(stats.candidate_count <= CANDIDATE_LIMIT);

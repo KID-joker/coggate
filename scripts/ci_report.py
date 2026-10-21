@@ -8,8 +8,18 @@ from pathlib import Path
 
 
 def notice(title, body):
-    body = body.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
-    print(f"::notice title={title}::{body}")
+    # Long annotation messages were truncated at 4 KiB in the public API.
+    # Preserve complete JSON evidence as independently bounded UTF-8 chunks.
+    remaining = body.encode("utf-8")
+    chunks = []
+    while remaining:
+        chunk = remaining[:3000].decode("utf-8", errors="ignore")
+        chunks.append(chunk)
+        remaining = remaining[len(chunk.encode("utf-8")):]
+    for index, chunk in enumerate(chunks or [""]):
+        name = title if len(chunks) <= 1 else f"{title} [part {index + 1}/{len(chunks)}]"
+        escaped = chunk.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+        print(f"::notice title={name}::{escaped}")
 
 
 def command(*args):
@@ -40,11 +50,12 @@ notice("provenance.json", json.dumps(provenance, indent=2))
 for name in (
     "size.json", "offline-solver.json", "composition-solver.json",
     "boundary-mutants.json", "shortcut-before.json", "guards-before.json",
-    "shortcut-after.json", "guards-after.json", "screened-adaptive.json",
+    "shortcut-after.json", "guards-after.json", "original-guards-before.json",
+    "original-guards-after.json", "screened-adaptive.json",
 ):
     path = Path("artifacts") / name
     if path.is_file():
-        notice(name, path.read_text()[-16000:])
+        notice(name, path.read_text())
 
 if os.environ.get("JOB_STATUS") != "success":
     logs = sorted(Path("artifacts").glob("*.log"), key=lambda p: p.stat().st_mtime_ns)

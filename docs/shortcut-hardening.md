@@ -28,7 +28,8 @@ errors or unverified fixture freshness fail this regression check.
 `Engine::issue_screened_composition` preserves the old public composition
 language and reference semantics. The original `issue_composition` remains
 available as the before-control. The new experiment has separate HMAC domains
-for problem selection, wording, hidden inputs and challenge IDs.
+(`composition-screened/v2/*`) for problem selection, wording, hidden inputs and
+challenge IDs.
 
 For each candidate, the generator builds at most 128 distinct input probes,
 using the original cases, small integer singletons and bounded random arrays.
@@ -39,6 +40,8 @@ It looks for inputs that distinguish the reference behavior from:
 - Deleting each individual stage.
 - Executing each conditional stage unconditionally.
 - Executing all conditional stages unconditionally together.
+- Evaluating every condition on the original input while applying operations
+  to the current sequence.
 
 A candidate without every required witness is rejected. This can mean a truly
 redundant task or merely an unsuccessful finite witness search; the code does
@@ -55,9 +58,25 @@ none qualifies. It never falls back to an unscreened challenge. Development
 statistics record candidate rejections, evaluation counts and witness counts;
 they are not part of the public challenge.
 
+The evaluator records an exhausted attempt as an issuance failure and continues
+the remaining requested issuance attempts. It reports issued challenges and
+issuance failures separately. Solver pass rate uses only issued challenges;
+generation failures must never be counted as blocked attacks. Generation timing
+includes exhausted attempts. A zero-issuance run is an evaluation failure.
+
 This is a task-distribution change, not just a hidden-test change. Requiring
 every stage to affect an observable result can favor shorter tasks and particular
 operation combinations. Report these effects alongside issuance cost.
+
+The original-input guard check was added after an independent development
+probe of the first screening version. That previously unscreened mutation
+passed 12 of 100 issued challenges; additional inputs demonstrated incorrect
+results in four of those passes. The other eight were not distinguished within
+1,024 additional probes and must not be labelled incorrect. The original fixture
+batch was not retained, so these exploratory figures cannot be replayed
+instance-for-instance. The final CLI variant and fresh Linux regression provide
+the repeatable check. Once added to the screening bank, this variant is no
+longer a held-out attack.
 
 ## Reproducible attack comparison
 
@@ -65,6 +84,8 @@ operation combinations. Report these effects alongside issuance cost.
 defaults to returning `[]` or `0`. `scripts/composition_solver.py --ignore-guards`
 parses the full public specification but deliberately executes all stages.
 Its normal mode retains the complete, correct parser as the stronger control.
+The `--original-input-guards` mode separately exercises the timing of condition
+evaluation.
 
 For each run, the evaluator copies and hashes the solver before creating fresh
 keys and instances. Arguments are recorded. Only the allowlisted public fields
@@ -83,13 +104,17 @@ python3 scripts/evaluate_solver.py --composition \
   --solver-arg=--ignore-guards --samples 1000
 python3 scripts/evaluate_solver.py --screened-composition \
   --solver-arg=--ignore-guards --samples 1000
+python3 scripts/evaluate_solver.py --composition \
+  --solver-arg=--original-input-guards --samples 1000
+python3 scripts/evaluate_solver.py --screened-composition \
+  --solver-arg=--original-input-guards --samples 1000
 python3 scripts/evaluate_solver.py --screened-composition --samples 1000
 ```
 
 On macOS, `--engine-only` explicitly selects the unsandboxed compatibility
 worker and makes no Linux isolation claim.
 
-The CI regression requires the two screened shortcut attacks to fail specifically
+The CI regression requires the three screened shortcut attacks to fail specifically
 with wrong answers and the full adaptive solver to keep passing as a correctness
 control. Its success therefore does not imply successful anti-agent
 discrimination. Zero successes in 1,000 shortcut samples is also insufficient
