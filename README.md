@@ -131,4 +131,9 @@ operations, conditional execution and fresh local term definitions against an
 adaptive parser; that parser passed 1,000/1,000 challenges in both local
 compatibility and strict Linux runs.
 
+The [shortcut-hardening experiment](docs/shortcut-hardening.md) adds bounded
+screening against constant answers, skipped stages and ignored conditions, plus
+inclusive-boundary regressions for the default generator. Screening remains
+development-only; correct adaptive solvers remain a separate acceptance barrier.
+
 MIT licensed; upstream MicroQuickJS notices are retained.

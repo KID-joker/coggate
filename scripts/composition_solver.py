@@ -11,6 +11,7 @@ resolve references -> parse guarded sequence operations -> emit a small JS
 interpreter plus the extracted operation plan.
 """
 
+import argparse
 import json
 import re
 import sys
@@ -257,8 +258,11 @@ function solve(input){
 """
 
 
-def solve(prompt):
+def solve(prompt, ignore_guards=False):
     predicates, plan, result_mode = parse_prompt(prompt)
+    if ignore_guards:
+        for stage in plan:
+            stage[0], stage[1] = 0, -1
     dispatch = "function predicate(id,x){\n"
     for index, expression in enumerate(predicates):
         dispatch += "if(id===%d){return %s;}\n" % (index, predicate_js(expression))
@@ -269,12 +273,21 @@ def solve(prompt):
         "for(i=0;i<current.length;i++){total=total+current[i];}return total;"
         if result_mode == "sum" else "return current;",
     )
-    return "// public-grammar family: composition_%d_steps\n%s%s" % (len(plan), dispatch, body)
+    suffix = "_ignore_guards" if ignore_guards else ""
+    return "// public-grammar family: composition_%d_steps%s\n%s%s" % (
+        len(plan), suffix, dispatch, body,
+    )
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--ignore-guards", action="store_true",
+        help="ablation attack: execute every stage regardless of its public condition",
+    )
+    arguments = parser.parse_args()
     try:
-        sys.stdout.write(solve(read_prompt(sys.stdin.read())))
+        sys.stdout.write(solve(read_prompt(sys.stdin.read()), arguments.ignore_guards))
     except ValueError as error:
         print("composition solver: " + str(error), file=sys.stderr)
         return 2

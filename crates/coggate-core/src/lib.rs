@@ -12,6 +12,8 @@
 /// Experimental composition generator; excluded from default production builds.
 #[cfg(feature = "dev-tools")]
 pub mod composition;
+#[cfg(feature = "dev-tools")]
+pub use composition::screening::ScreeningStats;
 mod task;
 
 use hmac::{Hmac, Mac};
@@ -119,6 +121,8 @@ pub enum Error {
     ContextFactorTooLarge,
     TimeOverflow,
     RandomnessUnavailable,
+    #[cfg(feature = "dev-tools")]
+    GenerationExhausted,
 }
 
 impl fmt::Display for Error {
@@ -128,6 +132,8 @@ impl fmt::Display for Error {
             Self::ContextFactorTooLarge => "context factor exceeds 1024 bytes",
             Self::TimeOverflow => "challenge expiry overflows the clock range",
             Self::RandomnessUnavailable => "operating-system randomness unavailable",
+            #[cfg(feature = "dev-tools")]
+            Self::GenerationExhausted => "screened generation exhausted its candidate budget",
         };
         f.write_str(message)
     }

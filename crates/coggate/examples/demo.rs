@@ -2,6 +2,7 @@
 //! never send this output to a client or use it as the public challenge protocol.
 use coggate::{Engine, Runtime, Verdict};
 use serde_json::json;
+use std::time::Instant;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -19,20 +20,33 @@ fn main() {
         2,
     );
     let composition = matches!(mode, "--composition-dump" | "--composition-run");
-    let dump = matches!(mode, "--dump" | "--composition-dump");
-    let run = matches!(mode, "--run" | "--composition-run");
+    let screened = matches!(mode, "--screened-dump" | "--screened-run");
+    let dump = matches!(mode, "--dump" | "--composition-dump" | "--screened-dump");
+    let run = matches!(mode, "--run" | "--composition-run" | "--screened-run");
     assert!(
         dump || run,
-        "usage: demo [--dump|--run|--composition-dump|--composition-run] [count]"
+        "usage: demo [--dump|--run|--composition-dump|--composition-run|--screened-dump|--screened-run] [count]"
     );
     let mut passed = 0;
     for i in 0..count {
-        let (public, private) = if composition {
-            engine.issue_composition("development-only", &i.to_be_bytes(), 1000)
+        let started = Instant::now();
+        let (public, private, screening) = if screened {
+            let (public, private, stats) = engine
+                .issue_screened_composition("development-only", &i.to_be_bytes(), 1000)
+                .expect("screened issuance exhausted or failed; no fallback");
+            (public, private, Some(stats))
+        } else if composition {
+            let (public, private) = engine
+                .issue_composition("development-only", &i.to_be_bytes(), 1000)
+                .expect("issue");
+            (public, private, None)
         } else {
-            engine.issue("development-only", &i.to_be_bytes(), 1000)
-        }
-        .expect("issue");
+            let (public, private) = engine
+                .issue("development-only", &i.to_be_bytes(), 1000)
+                .expect("issue");
+            (public, private, None)
+        };
+        let generation_ms = started.elapsed().as_secs_f64() * 1000.0;
         let source = private.reference_solution();
         if dump {
             let cases: Vec<_> = private
@@ -42,7 +56,10 @@ fn main() {
                 .collect();
             println!(
                 "{}",
-                json!({"public": public, "cases": cases, "reference_source": source})
+                json!({
+                    "public": public, "cases": cases, "reference_source": source,
+                    "screening": screening, "generation_ms": generation_ms
+                })
             );
         } else {
             let result = runtime.execute(&private, &source);

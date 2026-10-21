@@ -127,3 +127,9 @@ This baseline is susceptible to a prompt parser plus code templates. It is an
 engineering fixture and adversarial baseline, not evidence that the planned
 anti-solver product is viable. A failed attack-resistance gate blocks promoting
 this generator to production; changing labels or keys alone does not fix it.
+
+The [screened composition experiment](shortcut-hardening.md) rejects candidates
+with observable constant/shortcut solutions or ineffective stages, then retains
+distinguishing hidden inputs within the 32-case budget. Its search is bounded
+and fails explicitly on exhaustion. This development-only quality gate does
+not change the public grammar or establish resistance to a correct parser.

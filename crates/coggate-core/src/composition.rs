@@ -5,6 +5,8 @@
 //! All task semantics are present in the public prompt. Hidden factors change
 //! instances, but do not hide the language that an adaptive parser can learn.
 
+pub mod screening;
+
 use crate::{
     derive_seed, hex, task::RandomStream, validate_request, Engine, Error, PrivateChallenge,
     PublicChallenge, Reference, TestCase, HIDDEN_TEST_COUNT, MAX_ATTEMPTS, MAX_INPUT_ABS,
@@ -202,6 +204,7 @@ impl Stage {
     }
 }
 
+#[derive(Clone)]
 struct Composition {
     predicates: Predicates,
     stages: Vec<Stage>,

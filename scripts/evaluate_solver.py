@@ -149,7 +149,9 @@ def fixture_data(arguments):
     completed = subprocess.run(
         ["cargo", "run", "--quiet", "-p", "coggate", "--example", "demo",
          "--features", "dev-tools", "--",
-         "--composition-dump" if arguments.composition else "--dump",
+         "--screened-dump" if arguments.screened_composition else (
+             "--composition-dump" if arguments.composition else "--dump"
+         ),
          str(arguments.samples)],
         cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180,
     )
@@ -167,17 +169,20 @@ def evaluate(arguments):
     report = {
         "schema_version": 1,
         "experiment": (
-            "composition_grammar_adaptive_white_box"
+            "screened_composition_shortcut_resistance"
+            if arguments.screened_composition else "composition_grammar_adaptive_white_box"
             if arguments.composition else "public_grammar_white_box_baseline"
         ),
         "formal_red_team_complete": False,
         "solver_sha256": solver_sha,
         "solver_filename": Path(arguments.solver).name,
+        "solver_arguments": arguments.solver_arg,
         "solver_input": "allowlisted_public_challenge_only",
         "model_calls_during_solving": (
             0 if Path(arguments.solver).resolve() in {
                 ROOT / "scripts/offline_solver.py",
                 ROOT / "scripts/composition_solver.py",
+                ROOT / "scripts/shortcut_solver.py",
             } else None
         ),
         "model_use_audit": "included_solver_source_review_only_not_enforced_by_evaluator",
@@ -192,7 +197,8 @@ def evaluate(arguments):
     statuses = collections.Counter()
     family_results = {}
     failures = []
-    solver_times, worker_times = [], []
+    solver_times, worker_times, generation_times = [], [], []
+    screening_stats = collections.defaultdict(list)
     with tempfile.TemporaryDirectory(prefix="coggate-offline-solver-") as temporary:
         frozen_solver = Path(temporary) / "offline_solver.py"
         frozen_solver.write_bytes(solver_bytes)
@@ -220,13 +226,19 @@ def evaluate(arguments):
             # cases; the source-generation subprocess receives public JSON only.
             inputs = [case["input"] for case in cases]
             expected = [case["expected"] for case in cases]
+            if isinstance(fixture.get("generation_ms"), (int, float)):
+                generation_times.append(fixture["generation_ms"])
+            if isinstance(fixture.get("screening"), dict):
+                for key, value in fixture["screening"].items():
+                    if type(value) in (int, float):
+                        screening_stats[key].append(value)
             report["sample_count"] += 1
             report["case_count"] += len(cases)
             outcome, family, detail = "solver_failure", "unrecognized", ""
             before = time.perf_counter()
             try:
                 generated = subprocess.run(
-                    [sys.executable, "-I", str(frozen_solver)],
+                    [sys.executable, "-I", str(frozen_solver), *arguments.solver_arg],
                     input=json.dumps(public).encode("utf-8"),
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=3,
                     cwd=temporary, env={"PATH": os.defpath, "LC_ALL": "C"},
@@ -283,7 +295,15 @@ def evaluate(arguments):
         "solver_process_including_python_startup": timing_summary(solver_times),
         "worker_process_including_startup_compile_execute_ipc": timing_summary(worker_times),
         "evaluation_total_ms": round((time.perf_counter() - started) * 1000, 3),
+        "generator_per_challenge": timing_summary(generation_times),
     }
+    if screening_stats:
+        report["screening"] = {
+            key: {"count": len(values), "total": sum(values),
+                  "min": min(values), "max": max(values),
+                  "mean": round(sum(values) / len(values), 3)}
+            for key, values in sorted(screening_stats.items())
+        }
     report["conclusion"] = (
         "current_generator_is_solved_by_a_non_model_specialized_script"
         if report["pass_rate"] == 1.0
@@ -302,14 +322,19 @@ def evaluate(arguments):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--solver", help="solver script; defaults to the included solver for the selected generator")
-    parser.add_argument("--composition", action="store_true", help="evaluate the development-only composition generator")
+    parser.add_argument("--solver-arg", action="append", default=[],
+                        help="frozen solver argument; use --solver-arg=--flag for options")
+    mechanism = parser.add_mutually_exclusive_group()
+    mechanism.add_argument("--composition", action="store_true", help="evaluate the development-only composition generator")
+    mechanism.add_argument("--screened-composition", action="store_true",
+                           help="evaluate the development-only screened composition generator")
     parser.add_argument("--samples", type=int, default=200)
     parser.add_argument("--fixtures", help="trusted JSONL fixture file; fresh-key provenance is then unverified")
     parser.add_argument("--worker", help="worker executable; default is the latest debug native build")
     parser.add_argument("--engine-only", action="store_true", help="explicitly use UNSANDBOXED engine compatibility mode")
     arguments = parser.parse_args()
     if arguments.solver is None:
-        name = "composition_solver.py" if arguments.composition else "offline_solver.py"
+        name = "composition_solver.py" if arguments.composition or arguments.screened_composition else "offline_solver.py"
         arguments.solver = str(ROOT / "scripts" / name)
     if not 1 <= arguments.samples <= 100_000:
         parser.error("--samples must be in 1..100000")

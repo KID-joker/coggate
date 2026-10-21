@@ -301,6 +301,27 @@ impl Task {
             vec![self.threshold; self.width],
             vec![1; self.width + 1],
         ];
+        match self.kind {
+            6 => {
+                // The predicate is applied to adjacent differences, not input
+                // values. Exercise each signed boundary and its neighbours.
+                let limit = self.width as i64 * 3;
+                for magnitude in [limit - 1, limit, limit + 1] {
+                    cases.push(vec![0, -magnitude]);
+                    cases.push(vec![0, magnitude]);
+                }
+            }
+            7 => {
+                // A width-long array has exactly one window. Its sum must hit
+                // the threshold itself as well as either side of the boundary.
+                for sum in [self.threshold - 1, self.threshold, self.threshold + 1] {
+                    let mut input = vec![0; self.width];
+                    input[0] = sum;
+                    cases.push(input);
+                }
+            }
+            _ => {}
+        }
         while cases.len() < HIDDEN_TEST_COUNT {
             let length = random.below((MAX_INPUT_LEN + 1) as u64) as usize;
             let index = cases.len();
@@ -441,6 +462,106 @@ mod tests {
         assert_eq!(task(7, false).evaluate(&[4]), json!([]));
         assert_eq!(task(7, false).evaluate(&[-2, 3]), json!([1]));
         assert_eq!(task(0, false).evaluate(&[-4]), json!(11));
+    }
+
+    #[test]
+    fn hidden_difference_cases_distinguish_inclusive_bounds_from_strict_mutants() {
+        let mut random = RandomStream::new([97; 32]);
+        for width in 1..=6 {
+            let current = Task {
+                width,
+                ..task(6, false)
+            };
+            let limit = width as i64 * 3;
+            let inputs = current.test_inputs(&mut random);
+            assert_eq!(inputs.len(), HIDDEN_TEST_COUNT);
+            for magnitude in [limit - 1, limit, limit + 1] {
+                for difference in [-magnitude, magnitude] {
+                    let witness = vec![0, difference];
+                    assert!(inputs.contains(&witness));
+                    assert_eq!(
+                        current.evaluate(&witness),
+                        if magnitude <= limit {
+                            json!([current.multiplier * difference + current.offset])
+                        } else {
+                            json!([])
+                        }
+                    );
+                }
+            }
+            // Test lower-only, upper-only, and both-boundary mistakes.
+            for (strict_lower, strict_upper) in [(true, false), (false, true), (true, true)] {
+                let mutant = |input: &[i64]| {
+                    json!(input
+                        .windows(2)
+                        .map(|pair| pair[1] - pair[0])
+                        .filter(|&difference| {
+                            let lower = if strict_lower {
+                                difference > -limit
+                            } else {
+                                difference >= -limit
+                            };
+                            let upper = if strict_upper {
+                                difference < limit
+                            } else {
+                                difference <= limit
+                            };
+                            lower && upper
+                        })
+                        .map(|difference| { current.multiplier * difference + current.offset })
+                        .collect::<Vec<_>>())
+                };
+                assert!(
+                    inputs
+                        .iter()
+                        .any(|input| current.evaluate(input) != mutant(input)),
+                    "width={width}, strict_lower={strict_lower}, strict_upper={strict_upper}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn hidden_window_cases_distinguish_inclusive_threshold_from_strict_mutant() {
+        let mut random = RandomStream::new([103; 32]);
+        for width in 1..=6 {
+            for threshold in -20..=20 {
+                let current = Task {
+                    width,
+                    threshold,
+                    ..task(7, false)
+                };
+                let inputs = current.test_inputs(&mut random);
+                assert_eq!(inputs.len(), HIDDEN_TEST_COUNT);
+                for sum in [threshold - 1, threshold, threshold + 1] {
+                    let mut witness = vec![0; width];
+                    witness[0] = sum;
+                    assert!(inputs.contains(&witness));
+                    assert!(witness.iter().all(|x| x.abs() <= MAX_INPUT_ABS));
+                    assert_eq!(
+                        current.evaluate(&witness),
+                        if sum >= threshold {
+                            json!([sum])
+                        } else {
+                            json!([])
+                        }
+                    );
+                }
+                let mutant = |input: &[i64]| {
+                    json!(input
+                        .windows(width)
+                        .map(|window| window.iter().sum::<i64>())
+                        .filter(|&sum| sum > threshold)
+                        .collect::<Vec<_>>())
+                };
+                assert!(
+                    inputs
+                        .iter()
+                        .any(|input| current.evaluate(input) != mutant(input)),
+                    "width={width}, threshold={threshold}"
+                );
+            }
+        }
     }
 
     #[test]

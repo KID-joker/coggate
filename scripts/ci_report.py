@@ -37,7 +37,11 @@ Path("artifacts").mkdir(exist_ok=True)
 Path("artifacts/provenance.json").write_text(json.dumps(provenance, indent=2) + "\n")
 notice("provenance.json", json.dumps(provenance, indent=2))
 
-for name in ("size.json", "offline-solver.json", "composition-solver.json"):
+for name in (
+    "size.json", "offline-solver.json", "composition-solver.json",
+    "boundary-mutants.json", "shortcut-before.json", "guards-before.json",
+    "shortcut-after.json", "guards-after.json", "screened-adaptive.json",
+):
     path = Path("artifacts") / name
     if path.is_file():
         notice(name, path.read_text()[-16000:])

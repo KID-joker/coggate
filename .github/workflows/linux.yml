@@ -44,7 +44,7 @@ jobs:
           python3 scripts/measure_size.py --baseline target/release/examples/host-baseline --integrated target/release/examples/host-integrated --worker "$(cat artifacts/worker-path.txt)" --output artifacts/size.json
       - name: Record solver and build the fixture generator
         run: |
-          sha256sum scripts/offline_solver.py scripts/composition_solver.py > artifacts/solver.sha256
+          sha256sum scripts/offline_solver.py scripts/composition_solver.py scripts/shortcut_solver.py > artifacts/solver.sha256
           cargo build -p coggate --example demo --features dev-tools --locked
       - name: Strict Linux reference and independent solver evaluation
         run: |
@@ -54,6 +54,29 @@ jobs:
         run: |
           target/debug/examples/demo --composition-run 100 2>&1 | tee artifacts/composition-reference.log
           python3 scripts/evaluate_solver.py --composition --samples 1000 --worker "$(cat artifacts/worker-path.txt)" > artifacts/composition-solver.json
+      - name: Boundary mutation regressions
+        run: |
+          python3 scripts/check_boundary_mutants.py --samples 1000 --worker "$(cat artifacts/worker-path.txt)" > artifacts/boundary-mutants.json
+      - name: Screened challenge references and frozen attacks
+        run: |
+          target/debug/examples/demo --screened-run 100 2>&1 | tee artifacts/screened-reference.log
+          python3 scripts/evaluate_solver.py --composition --solver scripts/shortcut_solver.py --samples 1000 --worker "$(cat artifacts/worker-path.txt)" > artifacts/shortcut-before.json
+          python3 scripts/evaluate_solver.py --composition --solver-arg=--ignore-guards --samples 1000 --worker "$(cat artifacts/worker-path.txt)" > artifacts/guards-before.json
+          python3 scripts/evaluate_solver.py --screened-composition --solver scripts/shortcut_solver.py --samples 1000 --worker "$(cat artifacts/worker-path.txt)" > artifacts/shortcut-after.json
+          python3 scripts/evaluate_solver.py --screened-composition --solver-arg=--ignore-guards --samples 1000 --worker "$(cat artifacts/worker-path.txt)" > artifacts/guards-after.json
+          python3 scripts/evaluate_solver.py --screened-composition --samples 1000 --worker "$(cat artifacts/worker-path.txt)" > artifacts/screened-adaptive.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          for name in ("shortcut-after.json", "guards-after.json"):
+              report = json.loads((Path("artifacts") / name).read_text())
+              assert report["sample_count"] == 1000, name
+              assert report["statuses"] == {"wrong_answer": 1000}, name
+          # Full adaptive success is a control, and demonstrates the mechanism
+          # still fails the product's anti-solver gate.
+          report = json.loads(Path("artifacts/screened-adaptive.json").read_text())
+          assert report["sample_count"] == report["passed"] == 1000
+          PY
       - name: Enforce complete size budget
         if: steps.size.outcome == 'failure'
         run: exit 1
@@ -70,6 +93,12 @@ jobs:
             artifacts/size.json
             artifacts/offline-solver.json
             artifacts/composition-solver.json
+            artifacts/boundary-mutants.json
+            artifacts/shortcut-before.json
+            artifacts/guards-before.json
+            artifacts/shortcut-after.json
+            artifacts/guards-after.json
+            artifacts/screened-adaptive.json
             artifacts/solver.sha256
             artifacts/release-build.jsonl
             artifacts/provenance.json
