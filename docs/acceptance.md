@@ -8,6 +8,7 @@ a success; design revisions require an explicit new acceptance version.
 | Area | Gate |
 | --- | --- |
 | Complete runtime size increment | <=512,000 uncompressed bytes per supported language/platform, counting all mandatory newly shipped files |
+| Gateway model independence | Issuance and verification complete with no model inference, weights, credentials or model-service dependency |
 | Model evaluation | Three different model families, pinned versions and parameters, >=1,000 fresh challenges each |
 | Model success | One-sided exact 95% lower bound >=95% on first attempt and >=99% within two submissions |
 | Offline-developed solver | >=10,000 fresh challenge sessions per frozen solver; one-sided exact 95% upper bound <=0.1% overall and <=1% in each task family |
@@ -16,6 +17,15 @@ a success; design revisions require an explicit new acceptance version.
 | Input/memory | Source <=64 KiB, test input <=4 KiB, worker peak RSS <=32 MiB |
 | Execution budget | 200 ms CPU and 500 ms wall time per submission, from parsing through judging, with termination/reaping |
 | Isolation/stability | All fixed malicious cases pass; >=24 hours fuzzing; reproducible host crash, unauthorized access, cross-request leak or incorrect acceptance blocks release |
+
+## Gateway dependency check
+
+Exercise issuance and verification with local state, no model runtime or
+credentials, and outbound network access disabled. Include a correct
+submission, an incorrect submission and a resource-exhausting submission.
+Separately run client-side model evaluations do not relax this requirement.
+Passing this check establishes runtime independence only; the model-success
+and offline-solver gates remain required and unchanged.
 
 ## Statistical and adversarial rules
 

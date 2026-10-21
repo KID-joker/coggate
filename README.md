@@ -3,6 +3,10 @@
 An experimental Rust gateway SDK for issuing programming challenges and judging
 submitted JavaScript in a bounded Linux worker.
 
+The gateway generates and verifies challenges locally, without model inference,
+model credentials or a model service. Visiting agents may use their own models
+to solve them; the integrating application decides what access a pass grants.
+
 **The current task generator is an intentionally measurable baseline, not a
 production agent detector. An independent, non-model script solves its public
 grammar. Passing a challenge does not prove a model was called.**

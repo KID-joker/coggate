@@ -11,6 +11,24 @@ Five gateway-side language integrations remain the intended delivery scope:
 Rust, Go, Java, Python and server-side JavaScript. A single JavaScript subset is
 the submission language. Browser-side verification is not a trust boundary.
 
+## Runtime dependency boundary
+
+The gateway SDK must complete challenge generation, wording, hidden-test
+construction, sandboxed source execution and result comparison using local
+algorithms. None of these steps may require local or remote model inference,
+model weights, model credentials or an external model service. This applies to
+both issuance and verification, including any future challenge mechanism.
+
+A visiting agent may use its own model to solve the public challenge. Model use
+in development and separately run evaluations is also permitted; it must not
+become a gateway runtime dependency. The host remains responsible for granting
+access after an SDK result.
+
+This dependency requirement is separate from attack resistance. A model-free
+gateway does not establish that a successful visitor used a model. Any candidate
+generator must still pass the frozen model and offline-solver acceptance gates.
+The current baseline and composition experiment have failed the solver gate.
+
 ## Trusted and untrusted data
 
 Trusted: host configuration, namespace assignment, secret key, state store,
