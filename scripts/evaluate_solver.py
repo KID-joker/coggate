@@ -148,7 +148,9 @@ def fixture_data(arguments):
         return Path(arguments.fixtures).read_bytes(), "supplied_fixtures_freshness_unverified"
     completed = subprocess.run(
         ["cargo", "run", "--quiet", "-p", "coggate", "--example", "demo",
-         "--features", "dev-tools", "--", "--dump", str(arguments.samples)],
+         "--features", "dev-tools", "--",
+         "--composition-dump" if arguments.composition else "--dump",
+         str(arguments.samples)],
         cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180,
     )
     if completed.returncode != 0:
@@ -164,12 +166,19 @@ def evaluate(arguments):
         raise ValueError("strict OS isolation evaluation requires Linux; --engine-only explicitly runs UNSANDBOXED compatibility testing")
     report = {
         "schema_version": 1,
-        "experiment": "public_grammar_white_box_baseline",
+        "experiment": (
+            "composition_grammar_adaptive_white_box"
+            if arguments.composition else "public_grammar_white_box_baseline"
+        ),
         "formal_red_team_complete": False,
         "solver_sha256": solver_sha,
+        "solver_filename": Path(arguments.solver).name,
         "solver_input": "allowlisted_public_challenge_only",
         "model_calls_during_solving": (
-            0 if Path(arguments.solver).resolve() == ROOT / "scripts/offline_solver.py" else None
+            0 if Path(arguments.solver).resolve() in {
+                ROOT / "scripts/offline_solver.py",
+                ROOT / "scripts/composition_solver.py",
+            } else None
         ),
         "model_use_audit": "included_solver_source_review_only_not_enforced_by_evaluator",
         "submissions_per_challenge": 1,
@@ -292,12 +301,16 @@ def evaluate(arguments):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--solver", default=str(ROOT / "scripts/offline_solver.py"))
+    parser.add_argument("--solver", help="solver script; defaults to the included solver for the selected generator")
+    parser.add_argument("--composition", action="store_true", help="evaluate the development-only composition generator")
     parser.add_argument("--samples", type=int, default=200)
     parser.add_argument("--fixtures", help="trusted JSONL fixture file; fresh-key provenance is then unverified")
     parser.add_argument("--worker", help="worker executable; default is the latest debug native build")
     parser.add_argument("--engine-only", action="store_true", help="explicitly use UNSANDBOXED engine compatibility mode")
     arguments = parser.parse_args()
+    if arguments.solver is None:
+        name = "composition_solver.py" if arguments.composition else "offline_solver.py"
+        arguments.solver = str(ROOT / "scripts" / name)
     if not 1 <= arguments.samples <= 100_000:
         parser.error("--samples must be in 1..100000")
     try:

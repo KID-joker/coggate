@@ -9,6 +9,9 @@
 //! Pass only source and test inputs to an isolated execution worker. The core
 //! does not implement a sandbox, persistent state, attempt accounting, or tokens.
 
+/// Experimental composition generator; excluded from default production builds.
+#[cfg(feature = "dev-tools")]
+pub mod composition;
 mod task;
 
 use hmac::{Hmac, Mac};
@@ -48,7 +51,14 @@ pub struct PrivateChallenge {
     expires_at: u64,
     cases: Vec<TestCase>,
     #[cfg(any(test, feature = "dev-tools"))]
-    task: Task,
+    reference: Reference,
+}
+
+#[cfg(any(test, feature = "dev-tools"))]
+enum Reference {
+    Baseline(Task),
+    #[cfg(feature = "dev-tools")]
+    Composition(String),
 }
 
 impl PrivateChallenge {
@@ -78,7 +88,11 @@ impl PrivateChallenge {
     /// Never enable this feature or return this source in a production endpoint.
     #[cfg(any(test, feature = "dev-tools"))]
     pub fn reference_solution(&self) -> String {
-        self.task.reference_solution()
+        match &self.reference {
+            Reference::Baseline(task) => task.reference_solution(),
+            #[cfg(feature = "dev-tools")]
+            Reference::Composition(source) => source.clone(),
+        }
     }
 }
 
@@ -190,7 +204,7 @@ impl Engine {
             expires_at,
             cases,
             #[cfg(any(test, feature = "dev-tools"))]
-            task,
+            reference: Reference::Baseline(task),
         };
         Ok((public, private))
     }

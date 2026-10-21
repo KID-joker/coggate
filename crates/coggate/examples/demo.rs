@@ -18,13 +18,23 @@ fn main() {
         std::env::var_os("COGGATE_WORKER").unwrap_or_else(|| coggate_worker::WORKER_PATH.into()),
         2,
     );
+    let composition = matches!(mode, "--composition-dump" | "--composition-run");
+    let dump = matches!(mode, "--dump" | "--composition-dump");
+    let run = matches!(mode, "--run" | "--composition-run");
+    assert!(
+        dump || run,
+        "usage: demo [--dump|--run|--composition-dump|--composition-run] [count]"
+    );
     let mut passed = 0;
     for i in 0..count {
-        let (public, private) = engine
-            .issue("development-only", &i.to_be_bytes(), 1000)
-            .expect("issue");
+        let (public, private) = if composition {
+            engine.issue_composition("development-only", &i.to_be_bytes(), 1000)
+        } else {
+            engine.issue("development-only", &i.to_be_bytes(), 1000)
+        }
+        .expect("issue");
         let source = private.reference_solution();
-        if mode == "--dump" {
+        if dump {
             let cases: Vec<_> = private
                 .cases()
                 .iter()
@@ -34,17 +44,15 @@ fn main() {
                 "{}",
                 json!({"public": public, "cases": cases, "reference_source": source})
             );
-        } else if mode == "--run" {
+        } else {
             let result = runtime.execute(&private, &source);
             println!("{result:?}");
             if result == Verdict::Passed {
                 passed += 1;
             }
-        } else {
-            panic!("usage: demo [--dump|--run] [count]");
         }
     }
-    if mode == "--run" && passed != count {
+    if run && passed != count {
         std::process::exit(1);
     }
 }

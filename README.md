@@ -10,7 +10,9 @@ grammar. Passing a challenge does not prove a model was called.**
 The first milestone tests two hypotheses before investing in five language
 bindings: the complete runtime increment can fit in 512,000 bytes, and a public
 generator can impose a meaningful cost on specialized offline-developed solvers.
-The current generator has not met the second hypothesis.
+The Rust/Linux x86_64 prototype measured **347,160 bytes** of complete increment.
+The current generator has failed the second hypothesis: the included offline
+solver passed **1,000/1,000** fresh challenges on the strict Linux worker.
 
 ## Implemented
 
@@ -45,8 +47,9 @@ cargo run -p coggate --example demo --features dev-tools -- --run 100
 ```
 
 Production execution requires Linux with the required seccomp facilities. The
-prototype implements x86_64 and aarch64 syscall architectures; an architecture
-is not considered validated until its Linux CI and size checks run.
+prototype implements x86_64 and aarch64 syscall architectures. The first x86_64
+Linux CI checks passed; aarch64 and broader deployment compatibility have not
+been validated.
 
 On macOS, production execution returns `Unsupported`. An explicit development
 feature builds `coggate-engine-test-UNSANDBOXED` for language compatibility tests.
@@ -117,7 +120,10 @@ See [product and security boundaries](docs/design.md) and the
 [unfulfilled acceptance gates](docs/acceptance.md). Dependencies are pinned and
 their provenance is in [third_party/README.md](third_party/README.md).
 
-The [first prototype experiment](docs/prototype-results.md) records the current
-attack result and the checks that still need a Linux runner.
+The [first prototype experiment](docs/prototype-results.md) records the exact
+Linux build, size and attack evidence, and the remaining acceptance gaps.
+The [composition experiment](docs/composition-experiment.md) tests ordered
+operations, conditional execution and fresh local term definitions against an
+adaptive parser; its first local run also passed 1,000/1,000 challenges.
 
 MIT licensed; upstream MicroQuickJS notices are retained.

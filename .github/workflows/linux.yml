@@ -16,6 +16,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: "1.99.1"
           components: rustfmt, clippy
       - name: Toolchain provenance
         run: |
@@ -43,12 +44,16 @@ jobs:
           python3 scripts/measure_size.py --baseline target/release/examples/host-baseline --integrated target/release/examples/host-integrated --worker "$(cat artifacts/worker-path.txt)" --output artifacts/size.json
       - name: Record solver and build the fixture generator
         run: |
-          sha256sum scripts/offline_solver.py > artifacts/solver.sha256
+          sha256sum scripts/offline_solver.py scripts/composition_solver.py > artifacts/solver.sha256
           cargo build -p coggate --example demo --features dev-tools --locked
       - name: Strict Linux reference and independent solver evaluation
         run: |
           target/debug/examples/demo --run 100 2>&1 | tee artifacts/reference.log
           python3 scripts/evaluate_solver.py --samples 1000 --worker "$(cat artifacts/worker-path.txt)" > artifacts/offline-solver.json
+      - name: Composition reference and adaptive solver experiment
+        run: |
+          target/debug/examples/demo --composition-run 100 2>&1 | tee artifacts/composition-reference.log
+          python3 scripts/evaluate_solver.py --composition --samples 1000 --worker "$(cat artifacts/worker-path.txt)" > artifacts/composition-solver.json
       - name: Enforce complete size budget
         if: steps.size.outcome == 'failure'
         run: exit 1
@@ -64,6 +69,7 @@ jobs:
           path: |
             artifacts/size.json
             artifacts/offline-solver.json
+            artifacts/composition-solver.json
             artifacts/solver.sha256
             artifacts/release-build.jsonl
             artifacts/provenance.json
