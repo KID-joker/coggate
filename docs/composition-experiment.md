@@ -43,9 +43,40 @@ need a failed evaluation followed by private-feedback-driven revisions.
 | Six-stage challenges | 249 / 249 passed |
 | Model calls during solving | Zero in the source-reviewed included solver |
 
+The obsolete ten-family solver passed 0/1,000, failing to recognize the grammar
+before any worker execution. These are independent fresh-key samples rather
+than a paired comparison on the same challenges. The adaptive script is 10,930
+bytes of Python using only the standard library. Its development took one short
+agent programming session; no controlled human-effort or monetary comparison
+was measured. The [local control reports](results/macos-composition-control.json)
+retain the exact sample and script hashes.
+
 This local run uses the explicitly unsandboxed compatibility worker. Linux
-isolation and runtime recovery are tested separately; a strict Linux rerun of
-this experiment is part of CI.
+isolation and runtime recovery are tested separately.
+
+## Strict Linux rerun
+
+[CI run 39545223464](https://github.com/KID-joker/coggate/actions/runs/39545223464)
+completed successfully for commit
+`201d25d6459fbfebc7ba0be0f077c0a753577d8c`. The unchanged frozen adaptive
+solver again passed **1,000/1,000** new composition challenges and all 32,000
+hidden cases through the strict Linux release worker.
+
+The 3/4/5/6-stage strata had 236/252/252/260 challenges respectively; every
+stratum passed completely. The new fixture hash was
+`6b7af39d34987040ad31be13477f091b9830ed0dbb8c051e0337365defd7d0e3`.
+The original ten-family baseline also passed 1,000/1,000 on a separate fresh
+sample. [Complete Linux evidence](results/linux-composition.json) includes
+the compiler, platform, per-family results, hashes and observed cold timings.
+
+The same CI run passed malicious recursion, retained heap growth, infinite
+serialization getters and deeply nested source tests. Each malicious request
+was followed by a successful reference request through the same Runtime,
+checking that process cleanup and admission capacity recovered.
+
+The default Rust host increment remained 347,160 bytes. Development composition
+code is excluded from that production build. These successful engineering
+checks do not alter the failed attack-resistance result.
 
 ```sh
 # macOS compatibility experiment

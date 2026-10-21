@@ -124,6 +124,7 @@ The [first prototype experiment](docs/prototype-results.md) records the exact
 Linux build, size and attack evidence, and the remaining acceptance gaps.
 The [composition experiment](docs/composition-experiment.md) tests ordered
 operations, conditional execution and fresh local term definitions against an
-adaptive parser; its first local run also passed 1,000/1,000 challenges.
+adaptive parser; that parser passed 1,000/1,000 challenges in both local
+compatibility and strict Linux runs.
 
 MIT licensed; upstream MicroQuickJS notices are retained.

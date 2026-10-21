@@ -1,0 +1,257 @@
+{
+  "platform_scope": "macOS unsandboxed compatibility experiments; independently sampled fresh keys, not paired challenges",
+  "adaptive": {
+    "by_family": {
+      "composition_3_steps": {
+        "pass_rate": 1.0,
+        "passed": 252,
+        "sample_count": 252
+      },
+      "composition_4_steps": {
+        "pass_rate": 1.0,
+        "passed": 234,
+        "sample_count": 234
+      },
+      "composition_5_steps": {
+        "pass_rate": 1.0,
+        "passed": 265,
+        "sample_count": 265
+      },
+      "composition_6_steps": {
+        "pass_rate": 1.0,
+        "passed": 249,
+        "sample_count": 249
+      }
+    },
+    "case_count": 32000,
+    "conclusion": "current_generator_is_solved_by_a_non_model_specialized_script",
+    "experiment": "composition_grammar_adaptive_white_box",
+    "failure_examples": [],
+    "fixture_provenance": "fresh_key_generated_after_solver_snapshot",
+    "fixtures_sha256": "42f4ef9a2dbe9d9177f01e22a9538835da4ffca7b5593b6a23ef0981fba8497d",
+    "formal_red_team_complete": false,
+    "limitations": [
+      "One source-visible specialized solver; not two independent five-day attack teams.",
+      "Hidden-case pass rate does not prove correctness on all possible inputs.",
+      "Direct worker evaluation bypasses gateway admission and challenge lifecycle handling.",
+      "No LLM baseline or formal confidence-bound acceptance result is included.",
+      "Timing includes cold subprocess startup and is not the warmed-worker performance gate."
+    ],
+    "model_calls_during_solving": 0,
+    "model_use_audit": "included_solver_source_review_only_not_enforced_by_evaluator",
+    "os_isolation": "NOT_VALIDATED_UNSANDBOXED_ENGINE_ONLY",
+    "pass_rate": 1.0,
+    "passed": 1000,
+    "platform": "macOS-15.3.1-arm64-arm-64bit",
+    "python_version": "3.9.6",
+    "runtime_cost": {
+      "evaluation_total_ms": 51081.65,
+      "solver_process_including_python_startup": {
+        "count": 1000,
+        "max_ms": 66.265,
+        "mean_ms": 42.89,
+        "p50_ms": 42.563,
+        "p95_ms": 44.837,
+        "p99_ms": 50.838,
+        "total_ms": 42889.872
+      },
+      "worker_process_including_startup_compile_execute_ipc": {
+        "count": 1000,
+        "max_ms": 8.228,
+        "mean_ms": 5.837,
+        "p50_ms": 5.769,
+        "p95_ms": 6.423,
+        "p99_ms": 6.894,
+        "total_ms": 5836.707
+      }
+    },
+    "sample_count": 1000,
+    "schema_version": 1,
+    "solver_filename": "composition_solver.py",
+    "solver_input": "allowlisted_public_challenge_only",
+    "solver_sha256": "ae058fd2627cf7f2491960cfb6fc9414bcb1f93fe4fc0dbd6e917beebb0d6cbb",
+    "statuses": {
+      "passed": 1000
+    },
+    "submissions_per_challenge": 1,
+    "worker": "target/debug/build/coggate-worker-d7b77f6639bc5a6b/out/coggate-engine-test-UNSANDBOXED",
+    "worker_sha256": "13dcd237f4aeb128b5dcf2102b7035505562e6330ee031edba19d8bc1bee1b7d"
+  },
+  "obsolete": {
+    "by_family": {
+      "unrecognized": {
+        "pass_rate": 0.0,
+        "passed": 0,
+        "sample_count": 1000
+      }
+    },
+    "case_count": 32000,
+    "conclusion": "no_success_in_this_sample",
+    "experiment": "composition_grammar_adaptive_white_box",
+    "failure_examples": [
+      {
+        "detail": "offline solver: unrecognized or ambiguous public task grammar\n",
+        "family": "unrecognized",
+        "fixture_line": 1,
+        "status": "solver_failure"
+      },
+      {
+        "detail": "offline solver: unrecognized or ambiguous public task grammar\n",
+        "family": "unrecognized",
+        "fixture_line": 2,
+        "status": "solver_failure"
+      },
+      {
+        "detail": "offline solver: unrecognized or ambiguous public task grammar\n",
+        "family": "unrecognized",
+        "fixture_line": 3,
+        "status": "solver_failure"
+      },
+      {
+        "detail": "offline solver: unrecognized or ambiguous public task grammar\n",
+        "family": "unrecognized",
+        "fixture_line": 4,
+        "status": "solver_failure"
+      },
+      {
+        "detail": "offline solver: unrecognized or ambiguous public task grammar\n",
+        "family": "unrecognized",
+        "fixture_line": 5,
+        "status": "solver_failure"
+      },
+      {
+        "detail": "offline solver: unrecognized or ambiguous public task grammar\n",
+        "family": "unrecognized",
+        "fixture_line": 6,
+        "status": "solver_failure"
+      },
+      {
+        "detail": "offline solver: unrecognized or ambiguous public task grammar\n",
+        "family": "unrecognized",
+        "fixture_line": 7,
+        "status": "solver_failure"
+      },
+      {
+        "detail": "offline solver: unrecognized or ambiguous public task grammar\n",
+        "family": "unrecognized",
+        "fixture_line": 8,
+        "status": "solver_failure"
+      },
+      {
+        "detail": "offline solver: unrecognized or ambiguous public task grammar\n",
+        "family": "unrecognized",
+        "fixture_line": 9,
+        "status": "solver_failure"
+      },
+      {
+        "detail": "offline solver: unrecognized or ambiguous public task grammar\n",
+        "family": "unrecognized",
+        "fixture_line": 10,
+        "status": "solver_failure"
+      },
+      {
+        "detail": "offline solver: unrecognized or ambiguous public task grammar\n",
+        "family": "unrecognized",
+        "fixture_line": 11,
+        "status": "solver_failure"
+      },
+      {
+        "detail": "offline solver: unrecognized or ambiguous public task grammar\n",
+        "family": "unrecognized",
+        "fixture_line": 12,
+        "status": "solver_failure"
+      },
+      {
+        "detail": "offline solver: unrecognized or ambiguous public task grammar\n",
+        "family": "unrecognized",
+        "fixture_line": 13,
+        "status": "solver_failure"
+      },
+      {
+        "detail": "offline solver: unrecognized or ambiguous public task grammar\n",
+        "family": "unrecognized",
+        "fixture_line": 14,
+        "status": "solver_failure"
+      },
+      {
+        "detail": "offline solver: unrecognized or ambiguous public task grammar\n",
+        "family": "unrecognized",
+        "fixture_line": 15,
+        "status": "solver_failure"
+      },
+      {
+        "detail": "offline solver: unrecognized or ambiguous public task grammar\n",
+        "family": "unrecognized",
+        "fixture_line": 16,
+        "status": "solver_failure"
+      },
+      {
+        "detail": "offline solver: unrecognized or ambiguous public task grammar\n",
+        "family": "unrecognized",
+        "fixture_line": 17,
+        "status": "solver_failure"
+      },
+      {
+        "detail": "offline solver: unrecognized or ambiguous public task grammar\n",
+        "family": "unrecognized",
+        "fixture_line": 18,
+        "status": "solver_failure"
+      },
+      {
+        "detail": "offline solver: unrecognized or ambiguous public task grammar\n",
+        "family": "unrecognized",
+        "fixture_line": 19,
+        "status": "solver_failure"
+      },
+      {
+        "detail": "offline solver: unrecognized or ambiguous public task grammar\n",
+        "family": "unrecognized",
+        "fixture_line": 20,
+        "status": "solver_failure"
+      }
+    ],
+    "fixture_provenance": "fresh_key_generated_after_solver_snapshot",
+    "fixtures_sha256": "3eea21fc5a39934df74faad07cd9fcfe071ca4bc5effe69453fbf1dccba398eb",
+    "formal_red_team_complete": false,
+    "limitations": [
+      "One source-visible specialized solver; not two independent five-day attack teams.",
+      "Hidden-case pass rate does not prove correctness on all possible inputs.",
+      "Direct worker evaluation bypasses gateway admission and challenge lifecycle handling.",
+      "No LLM baseline or formal confidence-bound acceptance result is included.",
+      "Timing includes cold subprocess startup and is not the warmed-worker performance gate."
+    ],
+    "model_calls_during_solving": 0,
+    "model_use_audit": "included_solver_source_review_only_not_enforced_by_evaluator",
+    "os_isolation": "NOT_VALIDATED_UNSANDBOXED_ENGINE_ONLY",
+    "pass_rate": 0.0,
+    "passed": 0,
+    "platform": "macOS-15.3.1-arm64-arm-64bit",
+    "python_version": "3.9.6",
+    "runtime_cost": {
+      "evaluation_total_ms": 45008.699,
+      "solver_process_including_python_startup": {
+        "count": 1000,
+        "max_ms": 100.454,
+        "mean_ms": 42.171,
+        "p50_ms": 41.628,
+        "p95_ms": 45.19,
+        "p99_ms": 51.306,
+        "total_ms": 42170.521
+      },
+      "worker_process_including_startup_compile_execute_ipc": {
+        "count": 0
+      }
+    },
+    "sample_count": 1000,
+    "schema_version": 1,
+    "solver_filename": "offline_solver.py",
+    "solver_input": "allowlisted_public_challenge_only",
+    "solver_sha256": "c73aa271393fdc9c886754136bb4e2d56dbf6cfb3c507c7cc733439886f99389",
+    "statuses": {
+      "solver_failure": 1000
+    },
+    "submissions_per_challenge": 1,
+    "worker": "target/debug/build/coggate-worker-d7b77f6639bc5a6b/out/coggate-engine-test-UNSANDBOXED",
+    "worker_sha256": "13dcd237f4aeb128b5dcf2102b7035505562e6330ee031edba19d8bc1bee1b7d"
+  }
+}
