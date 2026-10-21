@@ -9,6 +9,9 @@ jobs:
   prototype:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -23,10 +26,11 @@ jobs:
           lscpu
       - name: Formatting and lint
         run: |
+          mkdir -p artifacts
           cargo fmt --all -- --check
-          cargo clippy --workspace --all-targets --features coggate/dev-tools --locked -- -D warnings
+          cargo clippy --workspace --all-targets --features coggate/dev-tools --locked -- -D warnings 2>&1 | tee artifacts/lint.log
       - name: Core, lifecycle, engine and Linux isolation tests
-        run: cargo test --workspace --features coggate/dev-tools --locked
+        run: cargo test --workspace --features coggate/dev-tools --locked 2>&1 | tee artifacts/tests.log
       - name: Build production artifacts
         run: |
           mkdir -p artifacts
@@ -43,11 +47,16 @@ jobs:
           cargo build -p coggate --example demo --features dev-tools --locked
       - name: Strict Linux reference and independent solver evaluation
         run: |
-          target/debug/examples/demo --run 100
+          target/debug/examples/demo --run 100 2>&1 | tee artifacts/reference.log
           python3 scripts/evaluate_solver.py --samples 1000 --worker "$(cat artifacts/worker-path.txt)" > artifacts/offline-solver.json
       - name: Enforce complete size budget
         if: steps.size.outcome == 'failure'
         run: exit 1
+      - name: Publish public experiment diagnostics
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: python3 scripts/ci_report.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -57,3 +66,4 @@ jobs:
             artifacts/offline-solver.json
             artifacts/solver.sha256
             artifacts/release-build.jsonl
+            artifacts/*.log
