@@ -130,6 +130,7 @@ this generator to production; changing labels or keys alone does not fix it.
 
 The [screened composition experiment](shortcut-hardening.md) rejects candidates
 with observable constant/shortcut solutions or ineffective stages, then retains
-distinguishing hidden inputs within the 32-case budget. Its search is bounded
+distinguishing hidden inputs within 24 cases, then generates eight independent
+mixed-distribution cases after acceptance. Its search is bounded
 and fails explicitly on exhaustion. This development-only quality gate does
 not change the public grammar or establish resistance to a correct parser.

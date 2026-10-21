@@ -14,7 +14,9 @@ grammar. Passing a challenge does not prove a model was called.**
 The first milestone tests two hypotheses before investing in five language
 bindings: the complete runtime increment can fit in 512,000 bytes, and a public
 generator can impose a meaningful cost on specialized offline-developed solvers.
-The Rust/Linux x86_64 prototype measured **347,664 bytes** of complete increment.
+The default Rust/Linux x86_64 prototype measured **347,664 bytes** of complete
+increment; the screened experiment including its strict worker measured
+**371,432 bytes**.
 The current generator has failed the second hypothesis: the included offline
 solver passed **1,000/1,000** fresh challenges on the strict Linux worker.
 
@@ -138,5 +140,13 @@ passed 46/1,000, 140/1,000 and 298/1,000 before screening, then 0/1,000, 0/999 a
 0/1,000; one exhausted issuance was counted separately. The correct adaptive
 solver still passed 1,000/1,000. These are strict Linux results. Screening remains
 development-only and is excluded from the default size measurement.
+
+The follow-up v3 experiment reserves eight independent mixed-distribution tests
+after selecting a challenge. A deliberately incorrect program that fails on
+mixed numeric scales passed 996/1,000 v2 challenges, then 0/1,000 v3 challenges;
+independent inputs confirmed every tested mutant was wrong. Correct complete
+parsers passed 1,000/1,000 in both groups. The screened runtime now has its own
+complete size measurement above. These results improve test coverage; the core
+offline-solver gate remains failed.
 
 MIT licensed; upstream MicroQuickJS notices are retained.

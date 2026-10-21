@@ -183,8 +183,9 @@ challenge, so the core anti-solver product gate remains failed.
 Only the small boundary-input fix changes the default runtime. The screened
 generator and its development statistics remain behind `dev-tools`. The default
 host size measurement does not qualify a runtime that includes screening.
-Production promotion would require a separate complete size measurement,
-issuance-cost limits and a successful adaptive attack evaluation.
+The follow-up below adds a separate complete Rust/Linux screened measurement.
+Production promotion still requires issuance-cost limits and a successful
+adaptive attack evaluation; other language bindings remain unqualified.
 
 The current screening bank is public and finite. It cannot detect every partial
 implementation, and killing its own chosen mutations is a regression property,
@@ -248,6 +249,51 @@ arbitrarily rare input-dependent mistakes, and it does not make the complete
 parser less capable. A separate `host-screened` release-size probe includes
 screened issuance, state handling, verification and the strict mandatory worker;
 the default host's size must not be substituted for this measurement.
+
+### v3 strict Linux evidence
+
+[CI run 39557577215](https://github.com/KID-joker/coggate/actions/runs/39557577215)
+passed at commit `c2b66bb879e63b071df1655a15525247fe1f4d38`. The complete
+[machine-readable evidence](results/linux-distribution-hardening.json) retains
+15 reports, including both comparison groups, their correct controls, source
+and fixture hashes, previous shortcut regressions, size and platform details.
+The downloaded artifact SHA-256 matched GitHub's published digest:
+`08489f4a13d3ab0602a93251d49e1c88eb157a47f923fb819f22b00612eb0ad2`.
+
+| Program | Screened v2 | Screened v3 |
+| --- | ---: | ---: |
+| Frozen mixed-scale incorrect program | 996 / 1,000 | 0 / 1,000 |
+| Complete correct parser on the same fixtures | 1,000 / 1,000 | 1,000 / 1,000 |
+| Programs independently proven incorrect by the extra probe | 1,000 / 1,000 | 1,000 / 1,000 |
+| Issuance failures | 0 / 1,000 | 0 / 1,000 |
+
+All v3 mutation rejections were `wrong_answer`. The three previous screened
+attacks—typed constant, ignoring guards and checking guards on original
+input—also each passed 0/1,000 with no issuance failures or execution errors.
+A separate complete-parser run passed 1,000/1,000. Its 3/4/5/6-stage distribution
+was 416/304/178/102, so the shorter-task bias persists.
+
+The v3 distribution run generated challenges in mean 42.186 ms, p95 115.042 ms
+and p99 182.487 ms, versus v2's 40.483/109.683/156.129 ms. These are debug
+issuance measurements on independent samples, not a paired causal estimate or
+the release warm-verification gate. V3 averaged 8.235 candidates, with a maximum
+of 54; its largest witness set used nine of the 24 search slots. All successful
+v3 cases recorded 24 search inputs plus eight independent inputs.
+
+The complete screened Rust/Linux increment is **371,432 bytes**:
+460,264-byte integrated host − 283,600-byte baseline + 194,768-byte mandatory
+strict worker. It is 23,768 bytes above the default scheme and below 512,000.
+This build enables `dev-tools` to reach the experimental API; its size report
+records that feature explicitly. The separate default measurement remains
+347,664 bytes without that feature. `provenance.size_build` describes the
+default measurement; `screened-size.build_features` describes the screened one.
+The unused development engine-test binary is not a deployment requirement.
+Go, Java, Python and Node.js binding sizes remain unmeasured.
+
+The runner used Linux x86_64, kernel 7.0.0-1017-azure, glibc 2.39,
+AMD EPYC 7763, Rust 1.99.1 and GCC 13.3.0. Linux isolation and previous boundary
+regressions also passed. None of these results changes the failed core
+anti-solver conclusion: the complete correct offline parser still passes.
 
 For background, [EvalPlus](https://arxiv.org/abs/2305.01210) studies how stronger
 test inputs reveal incorrect generated programs. This experiment uses only
