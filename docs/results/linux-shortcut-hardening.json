@@ -1,0 +1,2536 @@
+{
+  "artifact_id": 12324369871,
+  "artifact_sha256": "b48ddb27b5dc329a739df424a2690c4f01015cb208f7882aba9693543a71fe6c",
+  "ci_conclusion": "success",
+  "ci_run": "https://github.com/KID-joker/coggate/actions/runs/39553230858",
+  "report_source": "Complete prototype-evidence artifact downloaded via nightly.link; archive SHA-256 verified against the GitHub artifact API digest",
+  "reports": {
+    "boundary-mutants.json": {
+      "evaluation": {
+        "by_family": {
+          "adjacent_difference": {
+            "pass_rate": 0.0,
+            "passed": 0,
+            "sample_count": 87
+          },
+          "filter_sum": {
+            "pass_rate": 1.0,
+            "passed": 91,
+            "sample_count": 91
+          },
+          "longest_run": {
+            "pass_rate": 1.0,
+            "passed": 107,
+            "sample_count": 107
+          },
+          "outside_in_pairs": {
+            "pass_rate": 1.0,
+            "passed": 110,
+            "sample_count": 110
+          },
+          "prefix_total": {
+            "pass_rate": 1.0,
+            "passed": 98,
+            "sample_count": 98
+          },
+          "residue_buckets": {
+            "pass_rate": 1.0,
+            "passed": 115,
+            "sample_count": 115
+          },
+          "sort_limit": {
+            "pass_rate": 1.0,
+            "passed": 102,
+            "sample_count": 102
+          },
+          "stable_partition": {
+            "pass_rate": 1.0,
+            "passed": 97,
+            "sample_count": 97
+          },
+          "unique_occurrence": {
+            "pass_rate": 1.0,
+            "passed": 101,
+            "sample_count": 101
+          },
+          "window_sum": {
+            "pass_rate": 0.0,
+            "passed": 0,
+            "sample_count": 92
+          }
+        },
+        "case_count": 32000,
+        "conclusion": "attack_success_observed",
+        "experiment": "public_grammar_white_box_baseline",
+        "failure_examples": [
+          {
+            "detail": "",
+            "family": "window_sum",
+            "fixture_line": 5,
+            "status": "wrong_answer"
+          },
+          {
+            "detail": "",
+            "family": "adjacent_difference",
+            "fixture_line": 14,
+            "status": "wrong_answer"
+          },
+          {
+            "detail": "",
+            "family": "window_sum",
+            "fixture_line": 25,
+            "status": "wrong_answer"
+          },
+          {
+            "detail": "",
+            "family": "window_sum",
+            "fixture_line": 39,
+            "status": "wrong_answer"
+          },
+          {
+            "detail": "",
+            "family": "adjacent_difference",
+            "fixture_line": 46,
+            "status": "wrong_answer"
+          },
+          {
+            "detail": "",
+            "family": "adjacent_difference",
+            "fixture_line": 48,
+            "status": "wrong_answer"
+          },
+          {
+            "detail": "",
+            "family": "adjacent_difference",
+            "fixture_line": 50,
+            "status": "wrong_answer"
+          },
+          {
+            "detail": "",
+            "family": "window_sum",
+            "fixture_line": 54,
+            "status": "wrong_answer"
+          },
+          {
+            "detail": "",
+            "family": "window_sum",
+            "fixture_line": 57,
+            "status": "wrong_answer"
+          },
+          {
+            "detail": "",
+            "family": "window_sum",
+            "fixture_line": 62,
+            "status": "wrong_answer"
+          },
+          {
+            "detail": "",
+            "family": "window_sum",
+            "fixture_line": 65,
+            "status": "wrong_answer"
+          },
+          {
+            "detail": "",
+            "family": "window_sum",
+            "fixture_line": 69,
+            "status": "wrong_answer"
+          },
+          {
+            "detail": "",
+            "family": "adjacent_difference",
+            "fixture_line": 71,
+            "status": "wrong_answer"
+          },
+          {
+            "detail": "",
+            "family": "window_sum",
+            "fixture_line": 84,
+            "status": "wrong_answer"
+          },
+          {
+            "detail": "",
+            "family": "window_sum",
+            "fixture_line": 85,
+            "status": "wrong_answer"
+          },
+          {
+            "detail": "",
+            "family": "window_sum",
+            "fixture_line": 89,
+            "status": "wrong_answer"
+          },
+          {
+            "detail": "",
+            "family": "adjacent_difference",
+            "fixture_line": 92,
+            "status": "wrong_answer"
+          },
+          {
+            "detail": "",
+            "family": "adjacent_difference",
+            "fixture_line": 99,
+            "status": "wrong_answer"
+          },
+          {
+            "detail": "",
+            "family": "window_sum",
+            "fixture_line": 101,
+            "status": "wrong_answer"
+          },
+          {
+            "detail": "",
+            "family": "adjacent_difference",
+            "fixture_line": 102,
+            "status": "wrong_answer"
+          }
+        ],
+        "fixture_provenance": "fresh_key_generated_after_solver_snapshot",
+        "fixtures_sha256": "0f5c09d0f3071c5301c7ae748d2ee7dec6b284ef690b6a627d1937f96a0b7204",
+        "formal_red_team_complete": false,
+        "issuance_attempts": 1000,
+        "issuance_failure_reasons": {},
+        "issuance_failures": 0,
+        "limitations": [
+          "One source-visible specialized solver; not two independent five-day attack teams.",
+          "Hidden-case pass rate does not prove correctness on all possible inputs.",
+          "Direct worker evaluation bypasses gateway admission and challenge lifecycle handling.",
+          "No LLM baseline or formal confidence-bound acceptance result is included.",
+          "Timing includes cold subprocess startup and is not the warmed-worker performance gate.",
+          "Issuance failures are availability failures, not successful defenses against a solver."
+        ],
+        "model_calls_during_solving": null,
+        "model_use_audit": "included_solver_source_review_only_not_enforced_by_evaluator",
+        "os_isolation": "strict_worker_self_test",
+        "pass_rate": 0.821,
+        "pass_rate_denominator": "issued_challenges_only",
+        "pass_rate_per_issuance_attempt": 0.821,
+        "passed": 821,
+        "platform": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+        "python_version": "3.12.3",
+        "runtime_cost": {
+          "evaluation_total_ms": 31623.709,
+          "generator_per_challenge": {
+            "count": 1000,
+            "max_ms": 3.475,
+            "mean_ms": 2.072,
+            "p50_ms": 2.082,
+            "p95_ms": 2.627,
+            "p99_ms": 2.815,
+            "total_ms": 2071.908
+          },
+          "solver_process_including_python_startup": {
+            "count": 1000,
+            "max_ms": 26.855,
+            "mean_ms": 23.15,
+            "p50_ms": 23.123,
+            "p95_ms": 24.021,
+            "p99_ms": 24.463,
+            "total_ms": 23149.701
+          },
+          "worker_process_including_startup_compile_execute_ipc": {
+            "count": 1000,
+            "max_ms": 11.043,
+            "mean_ms": 5.305,
+            "p50_ms": 5.197,
+            "p95_ms": 6.297,
+            "p99_ms": 6.56,
+            "total_ms": 5305.318
+          }
+        },
+        "sample_count": 1000,
+        "schema_version": 1,
+        "solver_arguments": [],
+        "solver_filename": "boundary_mutant_solver.py",
+        "solver_input": "allowlisted_public_challenge_only",
+        "solver_sha256": "8d4e9a6a8f06154633728b9b7b04d50b648b6d5c2170c5c0348d1bc598d95fcf",
+        "statuses": {
+          "passed": 821,
+          "wrong_answer": 179
+        },
+        "submissions_per_challenge": 1,
+        "worker": "/home/runner/work/coggate/coggate/target/release/build/coggate-worker-98dde0ca5947b8d8/out/coggate-worker",
+        "worker_sha256": "112baee9deac9b0c49199d68845fb70aa4cbc4e83b26185f7cacd90ca885d7bf"
+      },
+      "experiment": "hidden_test_boundary_mutant_regression",
+      "failures": [],
+      "family_checks": {
+        "adjacent_difference": {
+          "check_passed": true,
+          "expected_passed": 0,
+          "passed": 0,
+          "role": "incorrect_boundary_mutant",
+          "sample_count": 87
+        },
+        "filter_sum": {
+          "check_passed": true,
+          "expected_passed": 91,
+          "passed": 91,
+          "role": "correct_control",
+          "sample_count": 91
+        },
+        "longest_run": {
+          "check_passed": true,
+          "expected_passed": 107,
+          "passed": 107,
+          "role": "correct_control",
+          "sample_count": 107
+        },
+        "outside_in_pairs": {
+          "check_passed": true,
+          "expected_passed": 110,
+          "passed": 110,
+          "role": "correct_control",
+          "sample_count": 110
+        },
+        "prefix_total": {
+          "check_passed": true,
+          "expected_passed": 98,
+          "passed": 98,
+          "role": "correct_control",
+          "sample_count": 98
+        },
+        "residue_buckets": {
+          "check_passed": true,
+          "expected_passed": 115,
+          "passed": 115,
+          "role": "correct_control",
+          "sample_count": 115
+        },
+        "sort_limit": {
+          "check_passed": true,
+          "expected_passed": 102,
+          "passed": 102,
+          "role": "correct_control",
+          "sample_count": 102
+        },
+        "stable_partition": {
+          "check_passed": true,
+          "expected_passed": 97,
+          "passed": 97,
+          "role": "correct_control",
+          "sample_count": 97
+        },
+        "unique_occurrence": {
+          "check_passed": true,
+          "expected_passed": 101,
+          "passed": 101,
+          "role": "correct_control",
+          "sample_count": 101
+        },
+        "window_sum": {
+          "check_passed": true,
+          "expected_passed": 0,
+          "passed": 0,
+          "role": "incorrect_boundary_mutant",
+          "sample_count": 92
+        }
+      },
+      "limitations": [
+        "Tests two specific incorrect implementations, not model use.",
+        "Does not establish resistance to a correct specialized solver.",
+        "Engine-only results make no Linux OS isolation claim."
+      ],
+      "mutation_source_sha256": "8d4e9a6a8f06154633728b9b7b04d50b648b6d5c2170c5c0348d1bc598d95fcf",
+      "mutations": [
+        {
+          "after": "if(x>%d && x<%d){result.push(a*x+b);}",
+          "before": "if(x>=%d && x<=%d){result.push(a*x+b);}",
+          "name": "adjacent_difference_strict_bounds"
+        },
+        {
+          "after": "if(total>threshold){result.push(total);}",
+          "before": "if(total>=threshold){result.push(total);}",
+          "name": "window_sum_strict_threshold"
+        }
+      ],
+      "original_solver_sha256": "c73aa271393fdc9c886754136bb4e2d56dbf6cfb3c507c7cc733439886f99389",
+      "requested_samples": 1000,
+      "schema_version": 1,
+      "status": "passed"
+    },
+    "composition-solver.json": {
+      "by_family": {
+        "composition_3_steps": {
+          "pass_rate": 1.0,
+          "passed": 287,
+          "sample_count": 287
+        },
+        "composition_4_steps": {
+          "pass_rate": 1.0,
+          "passed": 256,
+          "sample_count": 256
+        },
+        "composition_5_steps": {
+          "pass_rate": 1.0,
+          "passed": 237,
+          "sample_count": 237
+        },
+        "composition_6_steps": {
+          "pass_rate": 1.0,
+          "passed": 220,
+          "sample_count": 220
+        }
+      },
+      "case_count": 32000,
+      "conclusion": "current_generator_is_solved_by_a_non_model_specialized_script",
+      "experiment": "composition_grammar_adaptive_white_box",
+      "failure_examples": [],
+      "fixture_provenance": "fresh_key_generated_after_solver_snapshot",
+      "fixtures_sha256": "58d3c80f93d9eebebdd85b6643a86af9798818cd95b1d8cd1800731aee80b45d",
+      "formal_red_team_complete": false,
+      "issuance_attempts": 1000,
+      "issuance_failure_reasons": {},
+      "issuance_failures": 0,
+      "limitations": [
+        "One source-visible specialized solver; not two independent five-day attack teams.",
+        "Hidden-case pass rate does not prove correctness on all possible inputs.",
+        "Direct worker evaluation bypasses gateway admission and challenge lifecycle handling.",
+        "No LLM baseline or formal confidence-bound acceptance result is included.",
+        "Timing includes cold subprocess startup and is not the warmed-worker performance gate.",
+        "Issuance failures are availability failures, not successful defenses against a solver."
+      ],
+      "model_calls_during_solving": 0,
+      "model_use_audit": "included_solver_source_review_only_not_enforced_by_evaluator",
+      "os_isolation": "strict_worker_self_test",
+      "pass_rate": 1.0,
+      "pass_rate_denominator": "issued_challenges_only",
+      "pass_rate_per_issuance_attempt": 1.0,
+      "passed": 1000,
+      "platform": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+      "python_version": "3.12.3",
+      "runtime_cost": {
+        "evaluation_total_ms": 48130.93,
+        "generator_per_challenge": {
+          "count": 1000,
+          "max_ms": 3.325,
+          "mean_ms": 1.974,
+          "p50_ms": 1.972,
+          "p95_ms": 2.348,
+          "p99_ms": 2.549,
+          "total_ms": 1973.914
+        },
+        "solver_process_including_python_startup": {
+          "count": 1000,
+          "max_ms": 34.984,
+          "mean_ms": 31.586,
+          "p50_ms": 31.496,
+          "p95_ms": 32.779,
+          "p99_ms": 33.244,
+          "total_ms": 31585.62
+        },
+        "worker_process_including_startup_compile_execute_ipc": {
+          "count": 1000,
+          "max_ms": 16.321,
+          "mean_ms": 13.369,
+          "p50_ms": 13.301,
+          "p95_ms": 14.365,
+          "p99_ms": 15.135,
+          "total_ms": 13368.911
+        }
+      },
+      "sample_count": 1000,
+      "schema_version": 1,
+      "solver_arguments": [],
+      "solver_filename": "composition_solver.py",
+      "solver_input": "allowlisted_public_challenge_only",
+      "solver_sha256": "d0c4cf5ddce01bd72f33f3727b8d415c6916979d835868be200fda776b037047",
+      "statuses": {
+        "passed": 1000
+      },
+      "submissions_per_challenge": 1,
+      "worker": "/home/runner/work/coggate/coggate/target/release/build/coggate-worker-98dde0ca5947b8d8/out/coggate-worker",
+      "worker_sha256": "112baee9deac9b0c49199d68845fb70aa4cbc4e83b26185f7cacd90ca885d7bf"
+    },
+    "guards-after.json": {
+      "by_family": {
+        "composition_3_steps_ignore_guards": {
+          "pass_rate": 0.0,
+          "passed": 0,
+          "sample_count": 465
+        },
+        "composition_4_steps_ignore_guards": {
+          "pass_rate": 0.0,
+          "passed": 0,
+          "sample_count": 287
+        },
+        "composition_5_steps_ignore_guards": {
+          "pass_rate": 0.0,
+          "passed": 0,
+          "sample_count": 168
+        },
+        "composition_6_steps_ignore_guards": {
+          "pass_rate": 0.0,
+          "passed": 0,
+          "sample_count": 79
+        }
+      },
+      "case_count": 31968,
+      "conclusion": "no_success_in_this_sample",
+      "experiment": "screened_composition_shortcut_resistance",
+      "failure_examples": [
+        {
+          "detail": "",
+          "family": "composition_4_steps_ignore_guards",
+          "fixture_line": 1,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_4_steps_ignore_guards",
+          "fixture_line": 2,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_3_steps_ignore_guards",
+          "fixture_line": 3,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_4_steps_ignore_guards",
+          "fixture_line": 4,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_4_steps_ignore_guards",
+          "fixture_line": 5,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_3_steps_ignore_guards",
+          "fixture_line": 6,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_3_steps_ignore_guards",
+          "fixture_line": 7,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_4_steps_ignore_guards",
+          "fixture_line": 8,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_3_steps_ignore_guards",
+          "fixture_line": 9,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_3_steps_ignore_guards",
+          "fixture_line": 10,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_5_steps_ignore_guards",
+          "fixture_line": 11,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_5_steps_ignore_guards",
+          "fixture_line": 12,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_4_steps_ignore_guards",
+          "fixture_line": 13,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_4_steps_ignore_guards",
+          "fixture_line": 14,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_3_steps_ignore_guards",
+          "fixture_line": 15,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_5_steps_ignore_guards",
+          "fixture_line": 16,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_5_steps_ignore_guards",
+          "fixture_line": 17,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_5_steps_ignore_guards",
+          "fixture_line": 18,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_3_steps_ignore_guards",
+          "fixture_line": 19,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_3_steps_ignore_guards",
+          "fixture_line": 20,
+          "status": "wrong_answer"
+        }
+      ],
+      "fixture_provenance": "fresh_key_generated_after_solver_snapshot",
+      "fixtures_sha256": "2a0067d41a70a5e47ee96ee6fba62bf3bef8d34aee51c8e0c7e53720df6af852",
+      "formal_red_team_complete": false,
+      "issuance_attempts": 1000,
+      "issuance_failure_reasons": {
+        "candidate_budget_exhausted": 1
+      },
+      "issuance_failures": 1,
+      "limitations": [
+        "One source-visible specialized solver; not two independent five-day attack teams.",
+        "Hidden-case pass rate does not prove correctness on all possible inputs.",
+        "Direct worker evaluation bypasses gateway admission and challenge lifecycle handling.",
+        "No LLM baseline or formal confidence-bound acceptance result is included.",
+        "Timing includes cold subprocess startup and is not the warmed-worker performance gate.",
+        "Issuance failures are availability failures, not successful defenses against a solver."
+      ],
+      "model_calls_during_solving": 0,
+      "model_use_audit": "included_solver_source_review_only_not_enforced_by_evaluator",
+      "os_isolation": "strict_worker_self_test",
+      "pass_rate": 0.0,
+      "pass_rate_denominator": "issued_challenges_only",
+      "pass_rate_per_issuance_attempt": 0.0,
+      "passed": 0,
+      "platform": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+      "python_version": "3.12.3",
+      "runtime_cost": {
+        "evaluation_total_ms": 88021.067,
+        "generator_per_challenge": {
+          "count": 1000,
+          "max_ms": 293.7,
+          "mean_ms": 41.932,
+          "p50_ms": 28.335,
+          "p95_ms": 119.925,
+          "p99_ms": 203.097,
+          "total_ms": 41932.415
+        },
+        "solver_process_including_python_startup": {
+          "count": 999,
+          "max_ms": 44.065,
+          "mean_ms": 31.878,
+          "p50_ms": 31.832,
+          "p95_ms": 32.985,
+          "p99_ms": 33.732,
+          "total_ms": 31846.195
+        },
+        "worker_process_including_startup_compile_execute_ipc": {
+          "count": 999,
+          "max_ms": 19.011,
+          "mean_ms": 13.034,
+          "p50_ms": 12.963,
+          "p95_ms": 13.915,
+          "p99_ms": 14.585,
+          "total_ms": 13020.601
+        }
+      },
+      "sample_count": 999,
+      "schema_version": 1,
+      "screening": {
+        "accepted_pool_inputs": {
+          "count": 999,
+          "max": 128,
+          "mean": 128.0,
+          "min": 128,
+          "total": 127872
+        },
+        "candidate_count": {
+          "count": 999,
+          "max": 56,
+          "mean": 8.719,
+          "min": 1,
+          "total": 8710
+        },
+        "candidate_limit": {
+          "count": 999,
+          "max": 64,
+          "mean": 64.0,
+          "min": 64,
+          "total": 63936
+        },
+        "final_case_count": {
+          "count": 999,
+          "max": 32,
+          "mean": 32.0,
+          "min": 32,
+          "total": 31968
+        },
+        "input_pool_limit": {
+          "count": 999,
+          "max": 128,
+          "mean": 128.0,
+          "min": 128,
+          "total": 127872
+        },
+        "mandatory_case_count": {
+          "count": 999,
+          "max": 4,
+          "mean": 4.0,
+          "min": 4,
+          "total": 3996
+        },
+        "mutation_evaluations": {
+          "count": 999,
+          "max": 24704,
+          "mean": 4278.583,
+          "min": 768,
+          "total": 4274304
+        },
+        "peak_pool_inputs": {
+          "count": 999,
+          "max": 128,
+          "mean": 128.0,
+          "min": 128,
+          "total": 127872
+        },
+        "reference_evaluations": {
+          "count": 999,
+          "max": 7168,
+          "mean": 1115.996,
+          "min": 128,
+          "total": 1114880
+        },
+        "rejected_constant": {
+          "count": 999,
+          "max": 6,
+          "mean": 0.363,
+          "min": 0,
+          "total": 363
+        },
+        "rejected_count": {
+          "count": 999,
+          "max": 55,
+          "mean": 7.719,
+          "min": 0,
+          "total": 7711
+        },
+        "rejected_coverage": {
+          "count": 999,
+          "max": 0,
+          "mean": 0.0,
+          "min": 0,
+          "total": 0
+        },
+        "rejected_guard": {
+          "count": 999,
+          "max": 21,
+          "mean": 2.031,
+          "min": 0,
+          "total": 2029
+        },
+        "rejected_original_guard": {
+          "count": 999,
+          "max": 2,
+          "mean": 0.109,
+          "min": 0,
+          "total": 109
+        },
+        "rejected_shortcut": {
+          "count": 999,
+          "max": 0,
+          "mean": 0.0,
+          "min": 0,
+          "total": 0
+        },
+        "rejected_stage": {
+          "count": 999,
+          "max": 37,
+          "mean": 5.215,
+          "min": 0,
+          "total": 5210
+        },
+        "requirement_count": {
+          "count": 999,
+          "max": 30,
+          "mean": 24.802,
+          "min": 22,
+          "total": 24777
+        },
+        "shortcut_evaluations": {
+          "count": 999,
+          "max": 101760,
+          "mean": 16042.282,
+          "min": 1920,
+          "total": 16026240
+        },
+        "total_pool_inputs": {
+          "count": 999,
+          "max": 7168,
+          "mean": 1115.996,
+          "min": 128,
+          "total": 1114880
+        },
+        "witness_case_count": {
+          "count": 999,
+          "max": 9,
+          "mean": 5.707,
+          "min": 4,
+          "total": 5701
+        }
+      },
+      "solver_arguments": [
+        "--ignore-guards"
+      ],
+      "solver_filename": "composition_solver.py",
+      "solver_input": "allowlisted_public_challenge_only",
+      "solver_sha256": "d0c4cf5ddce01bd72f33f3727b8d415c6916979d835868be200fda776b037047",
+      "statuses": {
+        "wrong_answer": 999
+      },
+      "submissions_per_challenge": 1,
+      "worker": "/home/runner/work/coggate/coggate/target/release/build/coggate-worker-98dde0ca5947b8d8/out/coggate-worker",
+      "worker_sha256": "112baee9deac9b0c49199d68845fb70aa4cbc4e83b26185f7cacd90ca885d7bf"
+    },
+    "guards-before.json": {
+      "by_family": {
+        "composition_3_steps_ignore_guards": {
+          "pass_rate": 0.17857142857142858,
+          "passed": 45,
+          "sample_count": 252
+        },
+        "composition_4_steps_ignore_guards": {
+          "pass_rate": 0.11946902654867257,
+          "passed": 27,
+          "sample_count": 226
+        },
+        "composition_5_steps_ignore_guards": {
+          "pass_rate": 0.12781954887218044,
+          "passed": 34,
+          "sample_count": 266
+        },
+        "composition_6_steps_ignore_guards": {
+          "pass_rate": 0.1328125,
+          "passed": 34,
+          "sample_count": 256
+        }
+      },
+      "case_count": 32000,
+      "conclusion": "attack_success_observed",
+      "experiment": "composition_grammar_adaptive_white_box",
+      "failure_examples": [
+        {
+          "detail": "",
+          "family": "composition_4_steps_ignore_guards",
+          "fixture_line": 1,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_6_steps_ignore_guards",
+          "fixture_line": 3,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_3_steps_ignore_guards",
+          "fixture_line": 4,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_4_steps_ignore_guards",
+          "fixture_line": 5,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_5_steps_ignore_guards",
+          "fixture_line": 6,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_6_steps_ignore_guards",
+          "fixture_line": 8,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_4_steps_ignore_guards",
+          "fixture_line": 9,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_5_steps_ignore_guards",
+          "fixture_line": 11,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_5_steps_ignore_guards",
+          "fixture_line": 12,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_6_steps_ignore_guards",
+          "fixture_line": 13,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_4_steps_ignore_guards",
+          "fixture_line": 14,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_4_steps_ignore_guards",
+          "fixture_line": 15,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_5_steps_ignore_guards",
+          "fixture_line": 16,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_4_steps_ignore_guards",
+          "fixture_line": 17,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_6_steps_ignore_guards",
+          "fixture_line": 18,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_5_steps_ignore_guards",
+          "fixture_line": 19,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_4_steps_ignore_guards",
+          "fixture_line": 20,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_4_steps_ignore_guards",
+          "fixture_line": 21,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_3_steps_ignore_guards",
+          "fixture_line": 22,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_5_steps_ignore_guards",
+          "fixture_line": 23,
+          "status": "wrong_answer"
+        }
+      ],
+      "fixture_provenance": "fresh_key_generated_after_solver_snapshot",
+      "fixtures_sha256": "ca30358e2ba40aaf83378893d40aa0e57ecbf4470645bc5ff92777d2b6c74b03",
+      "formal_red_team_complete": false,
+      "issuance_attempts": 1000,
+      "issuance_failure_reasons": {},
+      "issuance_failures": 0,
+      "limitations": [
+        "One source-visible specialized solver; not two independent five-day attack teams.",
+        "Hidden-case pass rate does not prove correctness on all possible inputs.",
+        "Direct worker evaluation bypasses gateway admission and challenge lifecycle handling.",
+        "No LLM baseline or formal confidence-bound acceptance result is included.",
+        "Timing includes cold subprocess startup and is not the warmed-worker performance gate.",
+        "Issuance failures are availability failures, not successful defenses against a solver."
+      ],
+      "model_calls_during_solving": 0,
+      "model_use_audit": "included_solver_source_review_only_not_enforced_by_evaluator",
+      "os_isolation": "strict_worker_self_test",
+      "pass_rate": 0.14,
+      "pass_rate_denominator": "issued_challenges_only",
+      "pass_rate_per_issuance_attempt": 0.14,
+      "passed": 140,
+      "platform": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+      "python_version": "3.12.3",
+      "runtime_cost": {
+        "evaluation_total_ms": 48496.275,
+        "generator_per_challenge": {
+          "count": 1000,
+          "max_ms": 2.643,
+          "mean_ms": 1.968,
+          "p50_ms": 1.964,
+          "p95_ms": 2.344,
+          "p99_ms": 2.495,
+          "total_ms": 1967.63
+        },
+        "solver_process_including_python_startup": {
+          "count": 1000,
+          "max_ms": 44.372,
+          "mean_ms": 32.134,
+          "p50_ms": 32.077,
+          "p95_ms": 33.442,
+          "p99_ms": 34.29,
+          "total_ms": 32134.28
+        },
+        "worker_process_including_startup_compile_execute_ipc": {
+          "count": 1000,
+          "max_ms": 21.291,
+          "mean_ms": 13.341,
+          "p50_ms": 13.249,
+          "p95_ms": 14.346,
+          "p99_ms": 15.214,
+          "total_ms": 13340.664
+        }
+      },
+      "sample_count": 1000,
+      "schema_version": 1,
+      "solver_arguments": [
+        "--ignore-guards"
+      ],
+      "solver_filename": "composition_solver.py",
+      "solver_input": "allowlisted_public_challenge_only",
+      "solver_sha256": "d0c4cf5ddce01bd72f33f3727b8d415c6916979d835868be200fda776b037047",
+      "statuses": {
+        "passed": 140,
+        "wrong_answer": 860
+      },
+      "submissions_per_challenge": 1,
+      "worker": "/home/runner/work/coggate/coggate/target/release/build/coggate-worker-98dde0ca5947b8d8/out/coggate-worker",
+      "worker_sha256": "112baee9deac9b0c49199d68845fb70aa4cbc4e83b26185f7cacd90ca885d7bf"
+    },
+    "offline-solver.json": {
+      "by_family": {
+        "adjacent_difference": {
+          "pass_rate": 1.0,
+          "passed": 101,
+          "sample_count": 101
+        },
+        "filter_sum": {
+          "pass_rate": 1.0,
+          "passed": 102,
+          "sample_count": 102
+        },
+        "longest_run": {
+          "pass_rate": 1.0,
+          "passed": 108,
+          "sample_count": 108
+        },
+        "outside_in_pairs": {
+          "pass_rate": 1.0,
+          "passed": 90,
+          "sample_count": 90
+        },
+        "prefix_total": {
+          "pass_rate": 1.0,
+          "passed": 83,
+          "sample_count": 83
+        },
+        "residue_buckets": {
+          "pass_rate": 1.0,
+          "passed": 97,
+          "sample_count": 97
+        },
+        "sort_limit": {
+          "pass_rate": 1.0,
+          "passed": 83,
+          "sample_count": 83
+        },
+        "stable_partition": {
+          "pass_rate": 1.0,
+          "passed": 112,
+          "sample_count": 112
+        },
+        "unique_occurrence": {
+          "pass_rate": 1.0,
+          "passed": 105,
+          "sample_count": 105
+        },
+        "window_sum": {
+          "pass_rate": 1.0,
+          "passed": 119,
+          "sample_count": 119
+        }
+      },
+      "case_count": 32000,
+      "conclusion": "current_generator_is_solved_by_a_non_model_specialized_script",
+      "experiment": "public_grammar_white_box_baseline",
+      "failure_examples": [],
+      "fixture_provenance": "fresh_key_generated_after_solver_snapshot",
+      "fixtures_sha256": "8a9003ffb714261d11f09cd656f31463165082e9b49afc95bd714a320a8c0486",
+      "formal_red_team_complete": false,
+      "issuance_attempts": 1000,
+      "issuance_failure_reasons": {},
+      "issuance_failures": 0,
+      "limitations": [
+        "One source-visible specialized solver; not two independent five-day attack teams.",
+        "Hidden-case pass rate does not prove correctness on all possible inputs.",
+        "Direct worker evaluation bypasses gateway admission and challenge lifecycle handling.",
+        "No LLM baseline or formal confidence-bound acceptance result is included.",
+        "Timing includes cold subprocess startup and is not the warmed-worker performance gate.",
+        "Issuance failures are availability failures, not successful defenses against a solver."
+      ],
+      "model_calls_during_solving": 0,
+      "model_use_audit": "included_solver_source_review_only_not_enforced_by_evaluator",
+      "os_isolation": "strict_worker_self_test",
+      "pass_rate": 1.0,
+      "pass_rate_denominator": "issued_challenges_only",
+      "pass_rate_per_issuance_attempt": 1.0,
+      "passed": 1000,
+      "platform": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+      "python_version": "3.12.3",
+      "runtime_cost": {
+        "evaluation_total_ms": 31719.185,
+        "generator_per_challenge": {
+          "count": 1000,
+          "max_ms": 3.521,
+          "mean_ms": 2.067,
+          "p50_ms": 2.08,
+          "p95_ms": 2.65,
+          "p99_ms": 2.93,
+          "total_ms": 2066.505
+        },
+        "solver_process_including_python_startup": {
+          "count": 1000,
+          "max_ms": 34.188,
+          "mean_ms": 23.21,
+          "p50_ms": 23.105,
+          "p95_ms": 24.251,
+          "p99_ms": 25.387,
+          "total_ms": 23209.957
+        },
+        "worker_process_including_startup_compile_execute_ipc": {
+          "count": 1000,
+          "max_ms": 8.926,
+          "mean_ms": 5.3,
+          "p50_ms": 5.198,
+          "p95_ms": 6.264,
+          "p99_ms": 6.657,
+          "total_ms": 5299.924
+        }
+      },
+      "sample_count": 1000,
+      "schema_version": 1,
+      "solver_arguments": [],
+      "solver_filename": "offline_solver.py",
+      "solver_input": "allowlisted_public_challenge_only",
+      "solver_sha256": "c73aa271393fdc9c886754136bb4e2d56dbf6cfb3c507c7cc733439886f99389",
+      "statuses": {
+        "passed": 1000
+      },
+      "submissions_per_challenge": 1,
+      "worker": "/home/runner/work/coggate/coggate/target/release/build/coggate-worker-98dde0ca5947b8d8/out/coggate-worker",
+      "worker_sha256": "112baee9deac9b0c49199d68845fb70aa4cbc4e83b26185f7cacd90ca885d7bf"
+    },
+    "original-guards-after.json": {
+      "by_family": {
+        "composition_3_steps_original_input_guards": {
+          "pass_rate": 0.0,
+          "passed": 0,
+          "sample_count": 471
+        },
+        "composition_4_steps_original_input_guards": {
+          "pass_rate": 0.0,
+          "passed": 0,
+          "sample_count": 277
+        },
+        "composition_5_steps_original_input_guards": {
+          "pass_rate": 0.0,
+          "passed": 0,
+          "sample_count": 143
+        },
+        "composition_6_steps_original_input_guards": {
+          "pass_rate": 0.0,
+          "passed": 0,
+          "sample_count": 109
+        }
+      },
+      "case_count": 32000,
+      "conclusion": "no_success_in_this_sample",
+      "experiment": "screened_composition_shortcut_resistance",
+      "failure_examples": [
+        {
+          "detail": "",
+          "family": "composition_4_steps_original_input_guards",
+          "fixture_line": 1,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_5_steps_original_input_guards",
+          "fixture_line": 2,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_5_steps_original_input_guards",
+          "fixture_line": 3,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_5_steps_original_input_guards",
+          "fixture_line": 4,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_3_steps_original_input_guards",
+          "fixture_line": 5,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_4_steps_original_input_guards",
+          "fixture_line": 6,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_5_steps_original_input_guards",
+          "fixture_line": 7,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_3_steps_original_input_guards",
+          "fixture_line": 8,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_3_steps_original_input_guards",
+          "fixture_line": 9,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_3_steps_original_input_guards",
+          "fixture_line": 10,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_3_steps_original_input_guards",
+          "fixture_line": 11,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_6_steps_original_input_guards",
+          "fixture_line": 12,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_4_steps_original_input_guards",
+          "fixture_line": 13,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_4_steps_original_input_guards",
+          "fixture_line": 14,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_5_steps_original_input_guards",
+          "fixture_line": 15,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_4_steps_original_input_guards",
+          "fixture_line": 16,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_4_steps_original_input_guards",
+          "fixture_line": 17,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_4_steps_original_input_guards",
+          "fixture_line": 18,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_3_steps_original_input_guards",
+          "fixture_line": 19,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_4_steps_original_input_guards",
+          "fixture_line": 20,
+          "status": "wrong_answer"
+        }
+      ],
+      "fixture_provenance": "fresh_key_generated_after_solver_snapshot",
+      "fixtures_sha256": "afa410236e4b1eca190f510eda6a5fea111d466a0aad6b9e52e9043fff03dd7e",
+      "formal_red_team_complete": false,
+      "issuance_attempts": 1000,
+      "issuance_failure_reasons": {},
+      "issuance_failures": 0,
+      "limitations": [
+        "One source-visible specialized solver; not two independent five-day attack teams.",
+        "Hidden-case pass rate does not prove correctness on all possible inputs.",
+        "Direct worker evaluation bypasses gateway admission and challenge lifecycle handling.",
+        "No LLM baseline or formal confidence-bound acceptance result is included.",
+        "Timing includes cold subprocess startup and is not the warmed-worker performance gate.",
+        "Issuance failures are availability failures, not successful defenses against a solver."
+      ],
+      "model_calls_during_solving": 0,
+      "model_use_audit": "included_solver_source_review_only_not_enforced_by_evaluator",
+      "os_isolation": "strict_worker_self_test",
+      "pass_rate": 0.0,
+      "pass_rate_denominator": "issued_challenges_only",
+      "pass_rate_per_issuance_attempt": 0.0,
+      "passed": 0,
+      "platform": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+      "python_version": "3.12.3",
+      "runtime_cost": {
+        "evaluation_total_ms": 84015.211,
+        "generator_per_challenge": {
+          "count": 1000,
+          "max_ms": 244.965,
+          "mean_ms": 37.584,
+          "p50_ms": 27.875,
+          "p95_ms": 102.068,
+          "p99_ms": 157.715,
+          "total_ms": 37583.931
+        },
+        "solver_process_including_python_startup": {
+          "count": 1000,
+          "max_ms": 40.993,
+          "mean_ms": 31.75,
+          "p50_ms": 31.651,
+          "p95_ms": 32.897,
+          "p99_ms": 34.066,
+          "total_ms": 31750.281
+        },
+        "worker_process_including_startup_compile_execute_ipc": {
+          "count": 1000,
+          "max_ms": 21.783,
+          "mean_ms": 13.379,
+          "p50_ms": 13.325,
+          "p95_ms": 14.295,
+          "p99_ms": 14.913,
+          "total_ms": 13378.942
+        }
+      },
+      "sample_count": 1000,
+      "schema_version": 1,
+      "screening": {
+        "accepted_pool_inputs": {
+          "count": 1000,
+          "max": 128,
+          "mean": 128.0,
+          "min": 128,
+          "total": 128000
+        },
+        "candidate_count": {
+          "count": 1000,
+          "max": 52,
+          "mean": 8.042,
+          "min": 1,
+          "total": 8042
+        },
+        "candidate_limit": {
+          "count": 1000,
+          "max": 64,
+          "mean": 64.0,
+          "min": 64,
+          "total": 64000
+        },
+        "final_case_count": {
+          "count": 1000,
+          "max": 32,
+          "mean": 32.0,
+          "min": 32,
+          "total": 32000
+        },
+        "input_pool_limit": {
+          "count": 1000,
+          "max": 128,
+          "mean": 128.0,
+          "min": 128,
+          "total": 128000
+        },
+        "mandatory_case_count": {
+          "count": 1000,
+          "max": 4,
+          "mean": 4.0,
+          "min": 4,
+          "total": 4000
+        },
+        "mutation_evaluations": {
+          "count": 1000,
+          "max": 25344,
+          "mean": 4052.352,
+          "min": 768,
+          "total": 4052352
+        },
+        "peak_pool_inputs": {
+          "count": 1000,
+          "max": 128,
+          "mean": 128.0,
+          "min": 128,
+          "total": 128000
+        },
+        "reference_evaluations": {
+          "count": 1000,
+          "max": 6656,
+          "mean": 1029.376,
+          "min": 128,
+          "total": 1029376
+        },
+        "rejected_constant": {
+          "count": 1000,
+          "max": 5,
+          "mean": 0.309,
+          "min": 0,
+          "total": 309
+        },
+        "rejected_count": {
+          "count": 1000,
+          "max": 51,
+          "mean": 7.042,
+          "min": 0,
+          "total": 7042
+        },
+        "rejected_coverage": {
+          "count": 1000,
+          "max": 0,
+          "mean": 0.0,
+          "min": 0,
+          "total": 0
+        },
+        "rejected_guard": {
+          "count": 1000,
+          "max": 14,
+          "mean": 1.856,
+          "min": 0,
+          "total": 1856
+        },
+        "rejected_original_guard": {
+          "count": 1000,
+          "max": 3,
+          "mean": 0.123,
+          "min": 0,
+          "total": 123
+        },
+        "rejected_shortcut": {
+          "count": 1000,
+          "max": 0,
+          "mean": 0.0,
+          "min": 0,
+          "total": 0
+        },
+        "rejected_stage": {
+          "count": 1000,
+          "max": 35,
+          "mean": 4.754,
+          "min": 0,
+          "total": 4754
+        },
+        "requirement_count": {
+          "count": 1000,
+          "max": 30,
+          "mean": 24.846,
+          "min": 22,
+          "total": 24846
+        },
+        "shortcut_evaluations": {
+          "count": 1000,
+          "max": 97920,
+          "mean": 14847.36,
+          "min": 1920,
+          "total": 14847360
+        },
+        "total_pool_inputs": {
+          "count": 1000,
+          "max": 6656,
+          "mean": 1029.376,
+          "min": 128,
+          "total": 1029376
+        },
+        "witness_case_count": {
+          "count": 1000,
+          "max": 9,
+          "mean": 5.744,
+          "min": 4,
+          "total": 5744
+        }
+      },
+      "solver_arguments": [
+        "--original-input-guards"
+      ],
+      "solver_filename": "composition_solver.py",
+      "solver_input": "allowlisted_public_challenge_only",
+      "solver_sha256": "d0c4cf5ddce01bd72f33f3727b8d415c6916979d835868be200fda776b037047",
+      "statuses": {
+        "wrong_answer": 1000
+      },
+      "submissions_per_challenge": 1,
+      "worker": "/home/runner/work/coggate/coggate/target/release/build/coggate-worker-98dde0ca5947b8d8/out/coggate-worker",
+      "worker_sha256": "112baee9deac9b0c49199d68845fb70aa4cbc4e83b26185f7cacd90ca885d7bf"
+    },
+    "original-guards-before.json": {
+      "by_family": {
+        "composition_3_steps_original_input_guards": {
+          "pass_rate": 0.3700787401574803,
+          "passed": 94,
+          "sample_count": 254
+        },
+        "composition_4_steps_original_input_guards": {
+          "pass_rate": 0.33211678832116787,
+          "passed": 91,
+          "sample_count": 274
+        },
+        "composition_5_steps_original_input_guards": {
+          "pass_rate": 0.26337448559670784,
+          "passed": 64,
+          "sample_count": 243
+        },
+        "composition_6_steps_original_input_guards": {
+          "pass_rate": 0.21397379912663755,
+          "passed": 49,
+          "sample_count": 229
+        }
+      },
+      "case_count": 32000,
+      "conclusion": "attack_success_observed",
+      "experiment": "composition_grammar_adaptive_white_box",
+      "failure_examples": [
+        {
+          "detail": "",
+          "family": "composition_4_steps_original_input_guards",
+          "fixture_line": 1,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_6_steps_original_input_guards",
+          "fixture_line": 2,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_4_steps_original_input_guards",
+          "fixture_line": 3,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_5_steps_original_input_guards",
+          "fixture_line": 5,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_5_steps_original_input_guards",
+          "fixture_line": 6,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_5_steps_original_input_guards",
+          "fixture_line": 9,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_4_steps_original_input_guards",
+          "fixture_line": 11,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_4_steps_original_input_guards",
+          "fixture_line": 13,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_6_steps_original_input_guards",
+          "fixture_line": 15,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_5_steps_original_input_guards",
+          "fixture_line": 16,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_5_steps_original_input_guards",
+          "fixture_line": 17,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_6_steps_original_input_guards",
+          "fixture_line": 18,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_4_steps_original_input_guards",
+          "fixture_line": 19,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_4_steps_original_input_guards",
+          "fixture_line": 20,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_6_steps_original_input_guards",
+          "fixture_line": 21,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_3_steps_original_input_guards",
+          "fixture_line": 22,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_3_steps_original_input_guards",
+          "fixture_line": 23,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_4_steps_original_input_guards",
+          "fixture_line": 24,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_5_steps_original_input_guards",
+          "fixture_line": 25,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "composition_6_steps_original_input_guards",
+          "fixture_line": 26,
+          "status": "wrong_answer"
+        }
+      ],
+      "fixture_provenance": "fresh_key_generated_after_solver_snapshot",
+      "fixtures_sha256": "6ded87300a108472734886a9a72925ff1ac3fba21823188a2950e59d7e4ef481",
+      "formal_red_team_complete": false,
+      "issuance_attempts": 1000,
+      "issuance_failure_reasons": {},
+      "issuance_failures": 0,
+      "limitations": [
+        "One source-visible specialized solver; not two independent five-day attack teams.",
+        "Hidden-case pass rate does not prove correctness on all possible inputs.",
+        "Direct worker evaluation bypasses gateway admission and challenge lifecycle handling.",
+        "No LLM baseline or formal confidence-bound acceptance result is included.",
+        "Timing includes cold subprocess startup and is not the warmed-worker performance gate.",
+        "Issuance failures are availability failures, not successful defenses against a solver."
+      ],
+      "model_calls_during_solving": 0,
+      "model_use_audit": "included_solver_source_review_only_not_enforced_by_evaluator",
+      "os_isolation": "strict_worker_self_test",
+      "pass_rate": 0.298,
+      "pass_rate_denominator": "issued_challenges_only",
+      "pass_rate_per_issuance_attempt": 0.298,
+      "passed": 298,
+      "platform": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+      "python_version": "3.12.3",
+      "runtime_cost": {
+        "evaluation_total_ms": 49012.555,
+        "generator_per_challenge": {
+          "count": 1000,
+          "max_ms": 2.829,
+          "mean_ms": 1.976,
+          "p50_ms": 1.976,
+          "p95_ms": 2.369,
+          "p99_ms": 2.523,
+          "total_ms": 1976.288
+        },
+        "solver_process_including_python_startup": {
+          "count": 1000,
+          "max_ms": 48.79,
+          "mean_ms": 32.112,
+          "p50_ms": 31.959,
+          "p95_ms": 33.432,
+          "p99_ms": 35.283,
+          "total_ms": 32111.658
+        },
+        "worker_process_including_startup_compile_execute_ipc": {
+          "count": 1000,
+          "max_ms": 23.64,
+          "mean_ms": 13.802,
+          "p50_ms": 13.65,
+          "p95_ms": 15.1,
+          "p99_ms": 16.64,
+          "total_ms": 13801.587
+        }
+      },
+      "sample_count": 1000,
+      "schema_version": 1,
+      "solver_arguments": [
+        "--original-input-guards"
+      ],
+      "solver_filename": "composition_solver.py",
+      "solver_input": "allowlisted_public_challenge_only",
+      "solver_sha256": "d0c4cf5ddce01bd72f33f3727b8d415c6916979d835868be200fda776b037047",
+      "statuses": {
+        "passed": 298,
+        "wrong_answer": 702
+      },
+      "submissions_per_challenge": 1,
+      "worker": "/home/runner/work/coggate/coggate/target/release/build/coggate-worker-98dde0ca5947b8d8/out/coggate-worker",
+      "worker_sha256": "112baee9deac9b0c49199d68845fb70aa4cbc4e83b26185f7cacd90ca885d7bf"
+    },
+    "provenance.json": {
+      "architecture": "x86_64",
+      "cc": "cc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0\nCopyright (C) 2023 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.",
+      "commit": "28f05dcb533d7b472a55f44e6a3f97f7555e1092",
+      "cpu": "AMD EPYC 7763 64-Core Processor",
+      "platform": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+      "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)\nbinary: rustc\ncommit-hash: 58cf8f9c35b355199727627d07ae34a4e2846d67\ncommit-date: 2026-10-13\nhost: x86_64-unknown-linux-gnu\nrelease: 1.99.1\nLLVM version: 23.1.1",
+      "size_build": "release profile, Rust baseline/integrated host, no dev-tools",
+      "tests": "workspace with coggate/dev-tools"
+    },
+    "screened-adaptive.json": {
+      "by_family": {
+        "composition_3_steps": {
+          "pass_rate": 1.0,
+          "passed": 407,
+          "sample_count": 407
+        },
+        "composition_4_steps": {
+          "pass_rate": 1.0,
+          "passed": 317,
+          "sample_count": 317
+        },
+        "composition_5_steps": {
+          "pass_rate": 1.0,
+          "passed": 179,
+          "sample_count": 179
+        },
+        "composition_6_steps": {
+          "pass_rate": 1.0,
+          "passed": 97,
+          "sample_count": 97
+        }
+      },
+      "case_count": 32000,
+      "conclusion": "current_generator_is_solved_by_a_non_model_specialized_script",
+      "experiment": "screened_composition_shortcut_resistance",
+      "failure_examples": [],
+      "fixture_provenance": "fresh_key_generated_after_solver_snapshot",
+      "fixtures_sha256": "d9c97393dd8d25861d76670f897d95d2270177960c1c44be8da4e561f7f5c848",
+      "formal_red_team_complete": false,
+      "issuance_attempts": 1000,
+      "issuance_failure_reasons": {},
+      "issuance_failures": 0,
+      "limitations": [
+        "One source-visible specialized solver; not two independent five-day attack teams.",
+        "Hidden-case pass rate does not prove correctness on all possible inputs.",
+        "Direct worker evaluation bypasses gateway admission and challenge lifecycle handling.",
+        "No LLM baseline or formal confidence-bound acceptance result is included.",
+        "Timing includes cold subprocess startup and is not the warmed-worker performance gate.",
+        "Issuance failures are availability failures, not successful defenses against a solver."
+      ],
+      "model_calls_during_solving": 0,
+      "model_use_audit": "included_solver_source_review_only_not_enforced_by_evaluator",
+      "os_isolation": "strict_worker_self_test",
+      "pass_rate": 1.0,
+      "pass_rate_denominator": "issued_challenges_only",
+      "pass_rate_per_issuance_attempt": 1.0,
+      "passed": 1000,
+      "platform": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+      "python_version": "3.12.3",
+      "runtime_cost": {
+        "evaluation_total_ms": 85229.812,
+        "generator_per_challenge": {
+          "count": 1000,
+          "max_ms": 236.298,
+          "mean_ms": 38.854,
+          "p50_ms": 27.415,
+          "p95_ms": 118.793,
+          "p99_ms": 160.392,
+          "total_ms": 38854.123
+        },
+        "solver_process_including_python_startup": {
+          "count": 1000,
+          "max_ms": 43.059,
+          "mean_ms": 31.753,
+          "p50_ms": 31.659,
+          "p95_ms": 32.867,
+          "p99_ms": 33.609,
+          "total_ms": 31753.209
+        },
+        "worker_process_including_startup_compile_execute_ipc": {
+          "count": 1000,
+          "max_ms": 20.554,
+          "mean_ms": 13.255,
+          "p50_ms": 13.175,
+          "p95_ms": 14.09,
+          "p99_ms": 15.041,
+          "total_ms": 13254.654
+        }
+      },
+      "sample_count": 1000,
+      "schema_version": 1,
+      "screening": {
+        "accepted_pool_inputs": {
+          "count": 1000,
+          "max": 128,
+          "mean": 128.0,
+          "min": 128,
+          "total": 128000
+        },
+        "candidate_count": {
+          "count": 1000,
+          "max": 52,
+          "mean": 8.242,
+          "min": 1,
+          "total": 8242
+        },
+        "candidate_limit": {
+          "count": 1000,
+          "max": 64,
+          "mean": 64.0,
+          "min": 64,
+          "total": 64000
+        },
+        "final_case_count": {
+          "count": 1000,
+          "max": 32,
+          "mean": 32.0,
+          "min": 32,
+          "total": 32000
+        },
+        "input_pool_limit": {
+          "count": 1000,
+          "max": 128,
+          "mean": 128.0,
+          "min": 128,
+          "total": 128000
+        },
+        "mandatory_case_count": {
+          "count": 1000,
+          "max": 4,
+          "mean": 4.0,
+          "min": 4,
+          "total": 4000
+        },
+        "mutation_evaluations": {
+          "count": 1000,
+          "max": 20992,
+          "mean": 4101.76,
+          "min": 768,
+          "total": 4101760
+        },
+        "peak_pool_inputs": {
+          "count": 1000,
+          "max": 128,
+          "mean": 128.0,
+          "min": 128,
+          "total": 128000
+        },
+        "reference_evaluations": {
+          "count": 1000,
+          "max": 6656,
+          "mean": 1054.976,
+          "min": 128,
+          "total": 1054976
+        },
+        "rejected_constant": {
+          "count": 1000,
+          "max": 6,
+          "mean": 0.351,
+          "min": 0,
+          "total": 351
+        },
+        "rejected_count": {
+          "count": 1000,
+          "max": 51,
+          "mean": 7.242,
+          "min": 0,
+          "total": 7242
+        },
+        "rejected_coverage": {
+          "count": 1000,
+          "max": 0,
+          "mean": 0.0,
+          "min": 0,
+          "total": 0
+        },
+        "rejected_guard": {
+          "count": 1000,
+          "max": 16,
+          "mean": 1.864,
+          "min": 0,
+          "total": 1864
+        },
+        "rejected_original_guard": {
+          "count": 1000,
+          "max": 4,
+          "mean": 0.101,
+          "min": 0,
+          "total": 101
+        },
+        "rejected_shortcut": {
+          "count": 1000,
+          "max": 0,
+          "mean": 0.0,
+          "min": 0,
+          "total": 0
+        },
+        "rejected_stage": {
+          "count": 1000,
+          "max": 37,
+          "mean": 4.926,
+          "min": 0,
+          "total": 4926
+        },
+        "requirement_count": {
+          "count": 1000,
+          "max": 30,
+          "mean": 25.037,
+          "min": 22,
+          "total": 25037
+        },
+        "shortcut_evaluations": {
+          "count": 1000,
+          "max": 96000,
+          "mean": 15150.72,
+          "min": 1920,
+          "total": 15150720
+        },
+        "total_pool_inputs": {
+          "count": 1000,
+          "max": 6656,
+          "mean": 1054.976,
+          "min": 128,
+          "total": 1054976
+        },
+        "witness_case_count": {
+          "count": 1000,
+          "max": 9,
+          "mean": 5.755,
+          "min": 4,
+          "total": 5755
+        }
+      },
+      "solver_arguments": [],
+      "solver_filename": "composition_solver.py",
+      "solver_input": "allowlisted_public_challenge_only",
+      "solver_sha256": "d0c4cf5ddce01bd72f33f3727b8d415c6916979d835868be200fda776b037047",
+      "statuses": {
+        "passed": 1000
+      },
+      "submissions_per_challenge": 1,
+      "worker": "/home/runner/work/coggate/coggate/target/release/build/coggate-worker-98dde0ca5947b8d8/out/coggate-worker",
+      "worker_sha256": "112baee9deac9b0c49199d68845fb70aa4cbc4e83b26185f7cacd90ca885d7bf"
+    },
+    "shortcut-after.json": {
+      "by_family": {
+        "shortcut_typed_constant": {
+          "pass_rate": 0.0,
+          "passed": 0,
+          "sample_count": 1000
+        }
+      },
+      "case_count": 32000,
+      "conclusion": "no_success_in_this_sample",
+      "experiment": "screened_composition_shortcut_resistance",
+      "failure_examples": [
+        {
+          "detail": "",
+          "family": "shortcut_typed_constant",
+          "fixture_line": 1,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "shortcut_typed_constant",
+          "fixture_line": 2,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "shortcut_typed_constant",
+          "fixture_line": 3,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "shortcut_typed_constant",
+          "fixture_line": 4,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "shortcut_typed_constant",
+          "fixture_line": 5,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "shortcut_typed_constant",
+          "fixture_line": 6,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "shortcut_typed_constant",
+          "fixture_line": 7,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "shortcut_typed_constant",
+          "fixture_line": 8,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "shortcut_typed_constant",
+          "fixture_line": 9,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "shortcut_typed_constant",
+          "fixture_line": 10,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "shortcut_typed_constant",
+          "fixture_line": 11,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "shortcut_typed_constant",
+          "fixture_line": 12,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "shortcut_typed_constant",
+          "fixture_line": 13,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "shortcut_typed_constant",
+          "fixture_line": 14,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "shortcut_typed_constant",
+          "fixture_line": 15,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "shortcut_typed_constant",
+          "fixture_line": 16,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "shortcut_typed_constant",
+          "fixture_line": 17,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "shortcut_typed_constant",
+          "fixture_line": 18,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "shortcut_typed_constant",
+          "fixture_line": 19,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "shortcut_typed_constant",
+          "fixture_line": 20,
+          "status": "wrong_answer"
+        }
+      ],
+      "fixture_provenance": "fresh_key_generated_after_solver_snapshot",
+      "fixtures_sha256": "cb29ba5338fb8b4474d6245e1d3702d62d6df85feb618c39cf7d4b4f288d4fce",
+      "formal_red_team_complete": false,
+      "issuance_attempts": 1000,
+      "issuance_failure_reasons": {},
+      "issuance_failures": 0,
+      "limitations": [
+        "One source-visible specialized solver; not two independent five-day attack teams.",
+        "Hidden-case pass rate does not prove correctness on all possible inputs.",
+        "Direct worker evaluation bypasses gateway admission and challenge lifecycle handling.",
+        "No LLM baseline or formal confidence-bound acceptance result is included.",
+        "Timing includes cold subprocess startup and is not the warmed-worker performance gate.",
+        "Issuance failures are availability failures, not successful defenses against a solver."
+      ],
+      "model_calls_during_solving": 0,
+      "model_use_audit": "included_solver_source_review_only_not_enforced_by_evaluator",
+      "os_isolation": "strict_worker_self_test",
+      "pass_rate": 0.0,
+      "pass_rate_denominator": "issued_challenges_only",
+      "pass_rate_per_issuance_attempt": 0.0,
+      "passed": 0,
+      "platform": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+      "python_version": "3.12.3",
+      "runtime_cost": {
+        "evaluation_total_ms": 74463.53,
+        "generator_per_challenge": {
+          "count": 1000,
+          "max_ms": 242.285,
+          "mean_ms": 40.434,
+          "p50_ms": 27.11,
+          "p95_ms": 123.511,
+          "p99_ms": 181.439,
+          "total_ms": 40434.211
+        },
+        "solver_process_including_python_startup": {
+          "count": 1000,
+          "max_ms": 39.912,
+          "mean_ms": 28.681,
+          "p50_ms": 28.536,
+          "p95_ms": 29.698,
+          "p99_ms": 34.79,
+          "total_ms": 28680.635
+        },
+        "worker_process_including_startup_compile_execute_ipc": {
+          "count": 1000,
+          "max_ms": 6.83,
+          "mean_ms": 4.13,
+          "p50_ms": 4.022,
+          "p95_ms": 4.799,
+          "p99_ms": 5.748,
+          "total_ms": 4129.853
+        }
+      },
+      "sample_count": 1000,
+      "schema_version": 1,
+      "screening": {
+        "accepted_pool_inputs": {
+          "count": 1000,
+          "max": 128,
+          "mean": 128.0,
+          "min": 128,
+          "total": 128000
+        },
+        "candidate_count": {
+          "count": 1000,
+          "max": 52,
+          "mean": 8.536,
+          "min": 1,
+          "total": 8536
+        },
+        "candidate_limit": {
+          "count": 1000,
+          "max": 64,
+          "mean": 64.0,
+          "min": 64,
+          "total": 64000
+        },
+        "final_case_count": {
+          "count": 1000,
+          "max": 32,
+          "mean": 32.0,
+          "min": 32,
+          "total": 32000
+        },
+        "input_pool_limit": {
+          "count": 1000,
+          "max": 128,
+          "mean": 128.0,
+          "min": 128,
+          "total": 128000
+        },
+        "mandatory_case_count": {
+          "count": 1000,
+          "max": 4,
+          "mean": 4.0,
+          "min": 4,
+          "total": 4000
+        },
+        "mutation_evaluations": {
+          "count": 1000,
+          "max": 24192,
+          "mean": 4275.072,
+          "min": 768,
+          "total": 4275072
+        },
+        "peak_pool_inputs": {
+          "count": 1000,
+          "max": 128,
+          "mean": 128.0,
+          "min": 128,
+          "total": 128000
+        },
+        "reference_evaluations": {
+          "count": 1000,
+          "max": 6656,
+          "mean": 1092.608,
+          "min": 128,
+          "total": 1092608
+        },
+        "rejected_constant": {
+          "count": 1000,
+          "max": 6,
+          "mean": 0.346,
+          "min": 0,
+          "total": 346
+        },
+        "rejected_count": {
+          "count": 1000,
+          "max": 51,
+          "mean": 7.536,
+          "min": 0,
+          "total": 7536
+        },
+        "rejected_coverage": {
+          "count": 1000,
+          "max": 0,
+          "mean": 0.0,
+          "min": 0,
+          "total": 0
+        },
+        "rejected_guard": {
+          "count": 1000,
+          "max": 19,
+          "mean": 2.004,
+          "min": 0,
+          "total": 2004
+        },
+        "rejected_original_guard": {
+          "count": 1000,
+          "max": 3,
+          "mean": 0.109,
+          "min": 0,
+          "total": 109
+        },
+        "rejected_shortcut": {
+          "count": 1000,
+          "max": 0,
+          "mean": 0.0,
+          "min": 0,
+          "total": 0
+        },
+        "rejected_stage": {
+          "count": 1000,
+          "max": 38,
+          "mean": 5.077,
+          "min": 0,
+          "total": 5077
+        },
+        "requirement_count": {
+          "count": 1000,
+          "max": 30,
+          "mean": 25.035,
+          "min": 22,
+          "total": 25035
+        },
+        "shortcut_evaluations": {
+          "count": 1000,
+          "max": 97920,
+          "mean": 15724.8,
+          "min": 1920,
+          "total": 15724800
+        },
+        "total_pool_inputs": {
+          "count": 1000,
+          "max": 6656,
+          "mean": 1092.608,
+          "min": 128,
+          "total": 1092608
+        },
+        "witness_case_count": {
+          "count": 1000,
+          "max": 8,
+          "mean": 5.764,
+          "min": 4,
+          "total": 5764
+        }
+      },
+      "solver_arguments": [],
+      "solver_filename": "shortcut_solver.py",
+      "solver_input": "allowlisted_public_challenge_only",
+      "solver_sha256": "5fd0d6487d64eea316c0915de3c75255e60b7a3ced749327ebbc3c3f62539d69",
+      "statuses": {
+        "wrong_answer": 1000
+      },
+      "submissions_per_challenge": 1,
+      "worker": "/home/runner/work/coggate/coggate/target/release/build/coggate-worker-98dde0ca5947b8d8/out/coggate-worker",
+      "worker_sha256": "112baee9deac9b0c49199d68845fb70aa4cbc4e83b26185f7cacd90ca885d7bf"
+    },
+    "shortcut-before.json": {
+      "by_family": {
+        "shortcut_typed_constant": {
+          "pass_rate": 0.046,
+          "passed": 46,
+          "sample_count": 1000
+        }
+      },
+      "case_count": 32000,
+      "conclusion": "attack_success_observed",
+      "experiment": "composition_grammar_adaptive_white_box",
+      "failure_examples": [
+        {
+          "detail": "",
+          "family": "shortcut_typed_constant",
+          "fixture_line": 1,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "shortcut_typed_constant",
+          "fixture_line": 2,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "shortcut_typed_constant",
+          "fixture_line": 3,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "shortcut_typed_constant",
+          "fixture_line": 4,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "shortcut_typed_constant",
+          "fixture_line": 5,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "shortcut_typed_constant",
+          "fixture_line": 6,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "shortcut_typed_constant",
+          "fixture_line": 7,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "shortcut_typed_constant",
+          "fixture_line": 8,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "shortcut_typed_constant",
+          "fixture_line": 9,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "shortcut_typed_constant",
+          "fixture_line": 11,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "shortcut_typed_constant",
+          "fixture_line": 13,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "shortcut_typed_constant",
+          "fixture_line": 14,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "shortcut_typed_constant",
+          "fixture_line": 15,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "shortcut_typed_constant",
+          "fixture_line": 16,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "shortcut_typed_constant",
+          "fixture_line": 17,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "shortcut_typed_constant",
+          "fixture_line": 18,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "shortcut_typed_constant",
+          "fixture_line": 19,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "shortcut_typed_constant",
+          "fixture_line": 20,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "shortcut_typed_constant",
+          "fixture_line": 21,
+          "status": "wrong_answer"
+        },
+        {
+          "detail": "",
+          "family": "shortcut_typed_constant",
+          "fixture_line": 22,
+          "status": "wrong_answer"
+        }
+      ],
+      "fixture_provenance": "fresh_key_generated_after_solver_snapshot",
+      "fixtures_sha256": "8430003b7f21c4a2e199877d5a59eb9a910952a20cadbf43fd752b7ea4f5cdf1",
+      "formal_red_team_complete": false,
+      "issuance_attempts": 1000,
+      "issuance_failure_reasons": {},
+      "issuance_failures": 0,
+      "limitations": [
+        "One source-visible specialized solver; not two independent five-day attack teams.",
+        "Hidden-case pass rate does not prove correctness on all possible inputs.",
+        "Direct worker evaluation bypasses gateway admission and challenge lifecycle handling.",
+        "No LLM baseline or formal confidence-bound acceptance result is included.",
+        "Timing includes cold subprocess startup and is not the warmed-worker performance gate.",
+        "Issuance failures are availability failures, not successful defenses against a solver."
+      ],
+      "model_calls_during_solving": 0,
+      "model_use_audit": "included_solver_source_review_only_not_enforced_by_evaluator",
+      "os_isolation": "strict_worker_self_test",
+      "pass_rate": 0.046,
+      "pass_rate_denominator": "issued_challenges_only",
+      "pass_rate_per_issuance_attempt": 0.046,
+      "passed": 46,
+      "platform": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+      "python_version": "3.12.3",
+      "runtime_cost": {
+        "evaluation_total_ms": 35998.229,
+        "generator_per_challenge": {
+          "count": 1000,
+          "max_ms": 2.853,
+          "mean_ms": 1.967,
+          "p50_ms": 1.961,
+          "p95_ms": 2.366,
+          "p99_ms": 2.595,
+          "total_ms": 1966.586
+        },
+        "solver_process_including_python_startup": {
+          "count": 1000,
+          "max_ms": 39.839,
+          "mean_ms": 28.751,
+          "p50_ms": 28.656,
+          "p95_ms": 29.944,
+          "p99_ms": 30.846,
+          "total_ms": 28750.682
+        },
+        "worker_process_including_startup_compile_execute_ipc": {
+          "count": 1000,
+          "max_ms": 6.786,
+          "mean_ms": 4.228,
+          "p50_ms": 4.246,
+          "p95_ms": 4.82,
+          "p99_ms": 5.225,
+          "total_ms": 4227.687
+        }
+      },
+      "sample_count": 1000,
+      "schema_version": 1,
+      "solver_arguments": [],
+      "solver_filename": "shortcut_solver.py",
+      "solver_input": "allowlisted_public_challenge_only",
+      "solver_sha256": "5fd0d6487d64eea316c0915de3c75255e60b7a3ced749327ebbc3c3f62539d69",
+      "statuses": {
+        "passed": 46,
+        "wrong_answer": 954
+      },
+      "submissions_per_challenge": 1,
+      "worker": "/home/runner/work/coggate/coggate/target/release/build/coggate-worker-98dde0ca5947b8d8/out/coggate-worker",
+      "worker_sha256": "112baee9deac9b0c49199d68845fb70aa4cbc4e83b26185f7cacd90ca885d7bf"
+    },
+    "size.json": {
+      "baseline": {
+        "bytes": 283600,
+        "elf": true,
+        "path": "/home/runner/work/coggate/coggate/target/release/examples/host-baseline",
+        "sha256": "a19e1f46994733515d972a439fe6be43e83718fe964f5ac90abcc0a8dcbeb8c5"
+      },
+      "budget_passed": true,
+      "increment_bytes": 347664,
+      "integrated": {
+        "bytes": 436496,
+        "elf": true,
+        "path": "/home/runner/work/coggate/coggate/target/release/examples/host-integrated",
+        "sha256": "798db272e58d63c0df4c0f2923143e5596d12f53562de7b08303a83dbf67cc05"
+      },
+      "limit_bytes": 512000,
+      "linux_measurement": true,
+      "note": "Same toolchain/profile; uncompressed required files. No dev-tools feature. A non-Linux production worker is only an unsupported-platform stub.",
+      "platform": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+      "schema": 1,
+      "scope": "Rust minimal host + mandatory worker; other bindings not measured",
+      "worker": {
+        "bytes": 194768,
+        "elf": true,
+        "path": "/home/runner/work/coggate/coggate/target/release/build/coggate-worker-98dde0ca5947b8d8/out/coggate-worker",
+        "sha256": "112baee9deac9b0c49199d68845fb70aa4cbc4e83b26185f7cacd90ca885d7bf"
+      }
+    }
+  },
+  "schema_version": 1,
+  "source_commit": "28f05dcb533d7b472a55f44e6a3f97f7555e1092"
+}

@@ -14,7 +14,7 @@ grammar. Passing a challenge does not prove a model was called.**
 The first milestone tests two hypotheses before investing in five language
 bindings: the complete runtime increment can fit in 512,000 bytes, and a public
 generator can impose a meaningful cost on specialized offline-developed solvers.
-The Rust/Linux x86_64 prototype measured **347,160 bytes** of complete increment.
+The Rust/Linux x86_64 prototype measured **347,664 bytes** of complete increment.
 The current generator has failed the second hypothesis: the included offline
 solver passed **1,000/1,000** fresh challenges on the strict Linux worker.
 
@@ -133,7 +133,10 @@ compatibility and strict Linux runs.
 
 The [shortcut-hardening experiment](docs/shortcut-hardening.md) adds bounded
 screening against constant answers, skipped stages and ignored conditions, plus
-inclusive-boundary regressions for the default generator. Screening remains
-development-only; correct adaptive solvers remain a separate acceptance barrier.
+inclusive-boundary regressions for the default generator. Three tested shortcuts
+passed 46/1,000, 140/1,000 and 298/1,000 before screening, then 0/1,000, 0/999 and
+0/1,000; one exhausted issuance was counted separately. The correct adaptive
+solver still passed 1,000/1,000. These are strict Linux results. Screening remains
+development-only and is excluded from the default size measurement.
 
 MIT licensed; upstream MicroQuickJS notices are retained.

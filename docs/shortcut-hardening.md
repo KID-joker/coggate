@@ -120,6 +120,64 @@ control. Its success therefore does not imply successful anti-agent
 discrimination. Zero successes in 1,000 shortcut samples is also insufficient
 for the frozen formal 0.1% confidence-bound gate.
 
+## Strict Linux results
+
+[CI run 39553230858](https://github.com/KID-joker/coggate/actions/runs/39553230858)
+passed for commit `28f05dcb533d7b472a55f44e6a3f97f7555e1092`. The complete
+[machine-readable reports](results/linux-shortcut-hardening.json) include source
+and fixture hashes, arguments, status distributions, generation statistics,
+worker hashes and platform provenance. The downloaded artifact was verified
+against GitHub's SHA-256 digest
+`b48ddb27b5dc329a739df424a2690c4f01015cb208f7882aba9693543a71fe6c`.
+Full reports are retained in the artifact; public check annotations alone are
+incomplete because their per-step limits were reached.
+
+Each comparison uses independent fresh instances. The counts below measure
+passing issued challenges; an issuance failure has no submitted program.
+
+| Frozen solver mode | Original composition | Screened v2 | Screened issuance failures / attempts |
+| --- | ---: | ---: | ---: |
+| Return `[]` or `0` by public output type | 46 / 1,000 | 0 / 1,000 | 0 / 1,000 |
+| Execute all stages, ignore all conditions | 140 / 1,000 | 0 / 999 | 1 / 1,000 |
+| Check conditions against original input | 298 / 1,000 | 0 / 1,000 | 0 / 1,000 |
+| Correct complete public-grammar solver | 1,000 / 1,000 | 1,000 / 1,000 | 0 / 1,000 |
+
+Every rejection in the screened attack runs was `wrong_answer`, with no
+compilation, timeout or protocol failures. The single exhausted issuance remains
+an availability failure; it is not included among the 999 rejected submissions.
+The first CI attempt at commit `c1d7705` had stopped its entire batch on this
+expected generation error. The final evaluator records the failure separately
+without changing the 64-candidate budget or silently replacing the attempt.
+
+The default-generator boundary regression rejected both incorrect families:
+adjacent differences 0/87 passed and windows 0/92 passed. The other eight
+unmodified families passed 821/821 as positive controls. Correct baseline
+programs separately passed 1,000/1,000.
+
+In the full adaptive screened run, average issuance required 8.242 candidates;
+the observed maximum was 52. Debug-build generation took mean 38.854 ms,
+p95 118.793 ms and p99 160.392 ms on the Linux runner. These are issuance
+measurements, not the release-build warm verification latency gate. Across the
+four screened runs there was one exhausted issuance in 4,000 attempts. The
+full-adaptive run's 3/4/5/6-stage counts were 407/317/179/97, confirming the
+screening-induced distribution shift.
+
+The release default Rust host increased by **347,664 bytes**, including its
+mandatory worker, which is 504 bytes above the previous baseline and below
+512,000 bytes. This excludes the development screening generator and does not
+qualify the other language bindings. The run used Linux x86_64, AMD EPYC 7763,
+glibc 2.39, Rust 1.99.1 and GCC 13.3.0; exact versions are in the report.
+
+The composition solver source hash is
+`d0c4cf5ddce01bd72f33f3727b8d415c6916979d835868be200fda776b037047`.
+Different modes share that source but have different recorded arguments.
+The standalone shortcut solver hash is
+`5fd0d6487d64eea316c0915de3c75255e60b7a3ced749327ebbc3c3f62539d69`.
+
+The outcome is a demonstrated improvement against the listed shortcuts and
+boundary mistakes. The complete adaptive solver still solves every sampled
+challenge, so the core anti-solver product gate remains failed.
+
 ## Scope and remaining limitations
 
 Only the small boundary-input fix changes the default runtime. The screened
